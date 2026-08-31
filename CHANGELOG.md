@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-31
+
+Action and documentation fixes. The scanner binary is unchanged from 0.1.0.
+
+### Fixed
+
+- **The documented workflow never uploaded its results.** The scan step fails the job when it
+  finds anything at or above `fail-on`, so the SARIF upload step after it was skipped in exactly
+  the runs that had findings to report, and nothing reached GitHub code scanning. The example now
+  guards that step with `if: always() && hashFiles('bastyn.sarif') != ''`.
+- **The documented workflow could not have run at all.** It omitted `actions/checkout`, so there
+  was no code to scan, and `permissions: security-events: write`, without which the upload is
+  rejected. It is now a complete, copy-pasteable workflow. The SARIF upload also moves to
+  `github/codeql-action/upload-sarif@v4`; `v3` was a major version behind.
+- **Pinning the action did not pin the binary.** `action.yml` defaulted its `version` input to
+  `latest`, so `uses: BASTYN-labs/bastyn-scan@v0.1.0` installed whatever the newest release
+  happened to be, which is the opposite of what pinning an exact version is for. The default is
+  now the release the action was tagged for, and a release job fails if the two drift apart.
+  Pass `version: latest` to opt back in to always taking the newest.
+- The JSON example in the README reported `bastyn_version` as `0.1.1` while the released binary
+  was `0.1.0`.
+
 ## [0.1.0] - 2026-08-31
 
 First alpha. `bastyn scan` finds real issues; the embedded classifier does not ship yet.
@@ -243,5 +265,6 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.0

@@ -229,7 +229,7 @@ With no connection, Bastyn skips CVEs and says so under "Coverage gaps", with th
 
 ```json
 {
-  "bastyn_version": "0.1.1",
+  "bastyn_version": "0.1.0",
   "root": ".",
   "summary": {
     "files_scanned": 3, "files_skipped": 0,
@@ -258,12 +258,37 @@ In `--format json` the grouping is a `crosswalks` array with one entry per frame
 ### GitHub Actions
 
 ```yaml
-- uses: BASTYN-labs/bastyn-scan@v0
-  with:
-    fail-on: high
-- uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: bastyn.sarif
+name: Bastyn security scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF
+
+jobs:
+  bastyn:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan AI agent code
+        uses: BASTYN-labs/bastyn-scan@v0
+        with:
+          fail-on: high
+
+      # `always()` matters: the scan step fails the job when it finds
+      # something at or above `fail-on`, and without this the upload is
+      # skipped in exactly the runs that have findings to report.
+      - name: Upload results to code scanning
+        if: always() && hashFiles('bastyn.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: bastyn.sarif
+          category: bastyn
 ```
 
 ## Measured coverage

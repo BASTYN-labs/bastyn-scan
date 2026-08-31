@@ -39,6 +39,21 @@ jobs:
             echo "::error::tag ${TAG} does not match crate version ${version}"
             exit 1
           fi
+      - name: Check the action installs the binary from this release
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # action.yml's `version` default is what a caller gets when they do
+          # not name one. If it lags the tag, then pinning the action to an
+          # exact version still installs some other release's binary, which
+          # is the opposite of what pinning is for.
+          # Read it with awk rather than yq: the Ubuntu runner image ships
+          # jq but not yq, so a yq here would fail the first release to run it.
+          default="$(awk '/^  version:/{f=1} f && /^    default:/{print $2; exit}' action.yml)"
+          if [ "$default" != "$TAG" ]; then
+            echo "::error::action.yml installs ${default} but this release is ${TAG}; update the default"
+            exit 1
+          fi
 
   create-release:
     name: create release

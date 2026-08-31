@@ -12,9 +12,12 @@ inputs:
     required: false
     default: "."
   version:
-    description: Bastyn version to use, e.g. "v0.1.0". Defaults to the latest release.
+    description: >
+      Bastyn version to install. Defaults to the release this action was
+      tagged for, so pinning the action pins the binary. Pass "latest" to
+      always take the newest release instead.
     required: false
-    default: latest
+    default: v0.1.1
   format:
     description: Output format written to the log. One of text, json, or sarif.
     required: false
