@@ -67,8 +67,12 @@ fn eval_on_a_literal_is_not_flagged() {
 /// loading the real file. Measured 2026-08-28 against 65 real third-party
 /// repositories: every one of this rule's 5 corpus findings was a false
 /// positive of one of the two shapes the `none:`/`metavariable_not_matches:`
-/// entries below exclude -- see `rules/bastyn.yml`'s comment above the rule
-/// for the full writeup.
+/// entries below exclude. Extended 2026-08-31 to exclude an arbitrary-count
+/// plain-literal concatenation (previously capped at 2-5 adjacent literals)
+/// via a `metavariable_not_matches` regex anchored end-to-end, rather than
+/// enumerated `none:` shapes -- see `rules/bastyn.yml`'s comment above the
+/// rule for the full writeup, including the two alternatives (an ast-grep
+/// `$$$` ellipsis `none:`, a `flow:` migration) tried and rejected.
 const LLM10_003_RULE_YAML: &str = r#"
 rules:
   - id: BAS-LLM10-003
@@ -81,23 +85,17 @@ rules:
     any:
       - $CUR.execute($ARG)
     none:
-      - $CUR.execute("$LIT")
-      - $CUR.execute('$LIT')
       - $CUR.execute("""$LIT""")
       - $CUR.execute('''$LIT''')
       - $CUR.execute($FN("$LIT"))
       - $CUR.execute($FN('$LIT'))
       - $CUR.execute($FN("""$LIT"""))
       - $CUR.execute($FN('''$LIT'''))
-      - $CUR.execute("$A" "$B")
-      - $CUR.execute("$A" "$B" "$C")
-      - $CUR.execute("$A" "$B" "$C" "$D")
-      - $CUR.execute("$A" "$B" "$C" "$D" "$E")
     metavariable_matches:
       CUR: "(?i)(cursor|cur|db|conn|connection)"
       ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     metavariable_not_matches:
-      ARG: '^\s*(select|insert|update)\('
+      ARG: '^\s*(select|insert|update)\(|^\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*$'
     description: A database cursor executes a query built from model output.
     remediation: Never interpolate model output into a SQL string.
 "#;
@@ -190,6 +188,74 @@ fn bas_llm10_003_ignores_adjacent_literal_concatenation() {
     let findings = scan_source(&ruleset, Path::new("bot.py"), source);
 
     assert!(findings.is_empty(), "findings: {findings:?}");
+}
+
+/// A bare double-quoted literal with no concatenation at all -- the
+/// simplest shape `metavariable_not_matches`'s literal-concatenation regex
+/// has to cover now that the dedicated `none: - $CUR.execute("$LIT")` entry
+/// is gone, folded into that regex's "one or more" case.
+#[test]
+fn bas_llm10_003_ignores_a_bare_double_quoted_literal() {
+    let ruleset = llm10_003_ruleset();
+    let source = "cursor.execute(\"SELECT completion_tokens FROM t\")\n";
+
+    let findings = scan_source(&ruleset, Path::new("bot.py"), source);
+
+    assert!(findings.is_empty(), "findings: {findings:?}");
+}
+
+/// The real false positive this exclusion was rewritten for: a query split
+/// across more literal segments than the rule's old `none:` enumeration
+/// covered (previously capped at 5), one of which -- `completion_tokens`, a
+/// real `LiteLLM_SpendLogs` column -- contains an ARG trigger word for a
+/// reason that has nothing to do with model output.
+#[test]
+fn bas_llm10_003_ignores_arbitrarily_many_adjacent_literals() {
+    let ruleset = llm10_003_ruleset();
+    let source = "cur.execute(\n    \"SELECT model, \"\n    \"prompt_tokens, \"\n    \"completion_tokens, \"\n    \"startTime, \"\n    \"endTime \"\n    \"FROM LiteLLM_SpendLogs\"\n)\n";
+
+    let findings = scan_source(&ruleset, Path::new("bot.py"), source);
+
+    assert!(findings.is_empty(), "findings: {findings:?}");
+}
+
+/// The same shape, single-quoted -- a quote style the old enumerated
+/// `none:` entries never covered for the multi-literal case at all.
+#[test]
+fn bas_llm10_003_ignores_adjacent_single_quoted_literals() {
+    let ruleset = llm10_003_ruleset();
+    let source = "cur.execute(\n    'SELECT model, '\n    'prompt_tokens, '\n    'completion_tokens, '\n    'FROM LiteLLM_SpendLogs'\n)\n";
+
+    let findings = scan_source(&ruleset, Path::new("bot.py"), source);
+
+    assert!(findings.is_empty(), "findings: {findings:?}");
+}
+
+/// The exact reported shape: adjacent segments that mix quote styles (the
+/// last one switches to single quotes to hold a double-quoted identifier
+/// without escaping it). Each segment is independently either style, not
+/// all-double or all-single.
+#[test]
+fn bas_llm10_003_ignores_adjacent_literals_with_mixed_quote_styles() {
+    let ruleset = llm10_003_ruleset();
+    let source = "cur.execute(\n    \"SELECT model, \"\n    \"prompt_tokens, \"\n    \"completion_tokens, \"\n    \"startTime, \"\n    \"endTime \"\n    'FROM \"LiteLLM_SpendLogs\"'\n)\n";
+
+    let findings = scan_source(&ruleset, Path::new("bot.py"), source);
+
+    assert!(findings.is_empty(), "findings: {findings:?}");
+}
+
+/// The literal-concatenation regex is anchored end-to-end so it cannot
+/// swallow a real vulnerability: `%`-interpolation starts with a quoted
+/// literal but does not consist *only* of quoted literals.
+#[test]
+fn bas_llm10_003_still_flags_percent_interpolation_after_many_literals_fix() {
+    let ruleset = llm10_003_ruleset();
+    let source = "cursor.execute(\"INSERT INTO t (a) VALUES ('%s')\" % response)\n";
+
+    let findings = scan_source(&ruleset, Path::new("bot.py"), source);
+
+    assert_eq!(findings.len(), 1, "findings: {findings:?}");
 }
 
 /// False-positive shape 2: a `SQLAlchemy` query-builder expression, a corpus
