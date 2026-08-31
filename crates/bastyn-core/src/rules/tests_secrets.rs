@@ -291,6 +291,22 @@ fn bas_zt1_010_ignores_a_smoke_test_fixture_secret() {
 }
 
 #[test]
+fn bas_zt1_010_ignores_a_value_scrubbed_before_persisting() {
+    // Measured 2026-08-31: private_repo["accessToken"] = "[REDACTED]" is a
+    // redaction routine scrubbing a secret before writing it out, the
+    // opposite of a leaked credential. $KEY binds the whole subscript
+    // expression (its text contains "Token"), and "[REDACTED]" clears the
+    // 8+ character length gate, so only the placeholder-word exclusion can
+    // stop this from firing.
+    let ruleset = ruleset();
+    let source = "private_repo[\"accessToken\"] = \"[REDACTED]\"\n";
+
+    let findings = scan_source(&ruleset, Path::new("intake_engine.py"), source);
+
+    assert!(!ids(&findings).contains(&"BAS-ZT1-010"), "{findings:?}");
+}
+
+#[test]
 fn bas_zt1_010_ignores_a_strftime_format_string() {
     // Measured 2026-08-28: DATE_FORMAT_TOKENS = "%Y-%m-%d" survived the
     // no-digit/no-uppercase gate on the strength of a single uppercase
@@ -488,6 +504,7 @@ fn generic_credential_rule_agrees_with_credential_module_on_placeholders() {
         "REPLACE_WITH_YOUR_TOKEN",
         "xxx",
         "OPENAI_API_KEY",
+        "[REDACTED]",
     ];
     for value in placeholders {
         assert!(
