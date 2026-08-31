@@ -506,7 +506,7 @@ why  = "A public, unauthenticated chat endpoint (correct for a public chatbot) w
 
 [[expect_none]]
 file = "clean/near_misses.py"
-why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules."
+why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens."
 
 [[expect_none]]
 file = "clean/mcp/mcp.json"
@@ -746,5 +746,5 @@ why  = "A public, unauthenticated /chat Express endpoint (correct for a public c
 
 [[expect_none]]
 file = "clean/near_misses.ts"
-why  = "eval on a literal, new Function() on a literal, approxTokens/tokenCount/apiKeyName/maxTokens near-miss variable names, process.env credential handling, a non-prompt-shaped template literal, a parameterized SQL query, RegExp.prototype.exec, and better-sqlite3's Database.exec -- the TS/JS analogs of every near-miss in clean/near_misses.py, plus the two receiver shapes BAS-LLM10-006 confused for child_process (measured 2026-08-28: 18 of the rule's findings, 29% of all findings in the corpus, were pattern.exec/db.exec misidentified as a shell call) -- plus isPlaceholderKey(), whose own placeholder-detection literals used to trip BAS-ZT1-003."
+why  = "eval on a literal, new Function() on a literal, approxTokens/tokenCount/apiKeyName/maxTokens near-miss variable names, process.env credential handling, a non-prompt-shaped template literal, a parameterized SQL query, RegExp.prototype.exec, and better-sqlite3's Database.exec -- the TS/JS analogs of every near-miss in clean/near_misses.py, plus the two receiver shapes BAS-LLM10-006 confused for child_process (measured 2026-08-28: 18 of the rule's findings, 29% of all findings in the corpus, were pattern.exec/db.exec misidentified as a shell call) -- plus isPlaceholderKey(), whose own placeholder-detection literals used to trip BAS-ZT1-003. Plus two 2026-08-31 additions: a Bearer token that is unexpanded {{env.X}} template syntax, and a credential scrubbed to [REDACTED] before being persisted."
 

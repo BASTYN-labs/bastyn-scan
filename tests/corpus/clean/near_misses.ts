@@ -94,3 +94,18 @@ export function isPlaceholderKey(key: string): boolean {
 export function resolveOllaBridgeKey(userKey: string | undefined): string {
   return userKey || process.env.OLLABRIDGE_API_KEY || "sk-ollabridge-local";
 }
+
+/**
+ * A live-looking "Bearer <token>" that is actually unexpanded template
+ * syntax, substituted by the application's own templating layer at
+ * execution time -- no secret is embedded. Measured 2026-08-31 against a
+ * real DAST tool's request executor (twin_executor.py's TS analog).
+ */
+export const dastAuthHeaders = { Authorization: "Bearer {{env.DAST_AUTH_TOKEN}}" };
+
+/**
+ * A value scrubbed *before* being persisted, not a leaked one. TS analog of
+ * intake_engine.py's `private_repo["accessToken"] = "[REDACTED]"`. Measured
+ * 2026-08-31 against a real repository-intake pipeline.
+ */
+const scrubbedRepo = { accessToken: "[REDACTED]" };
