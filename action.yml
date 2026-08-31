@@ -1,5 +1,5 @@
 name: Bastyn - Instant SAST for AI Agents
-description: Instant SAST for AI agent and MCP code—find security flaws, secrets, and CVEs on every code change.
+description: Instant SAST for AI agent and MCP code. Find security flaws, secrets, and CVEs on every code change.
 author: Bastyn Labs
 
 branding:
