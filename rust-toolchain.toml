@@ -1,0 +1,6 @@
+# Contributors get the same toolchain and components without extra setup.
+# Tracks stable; the minimum supported version is pinned by `rust-version`
+# in Cargo.toml and enforced by a dedicated CI job.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

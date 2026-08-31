@@ -1,0 +1,750 @@
+# The specification of what Bastyn should find. See FORMAT.md.
+#
+# Written from real failure modes measured against a production agentic app
+# (see tests/corpus/README.md), not from the rules themselves — a corpus
+# derived from the rules only proves a rule matches its own fixture, which
+# is how the tool that inspired this repo shipped at 20% recall.
+#
+# Every [[expect]], [[known_gap]], and [[known_false_positive]] entry below
+# was checked against the scanner built from this commit
+# (`cargo build --release`) before being recorded, per FORMAT.md's contract.
+# See README.md for the full reconciliation and the measured recall.
+#
+# Observation-kind entries (kind = "observation") only appear in the
+# default report with --show-observations; the harness must pass that
+# flag when checking this manifest, or run twice (once for defects, once
+# with --show-observations for the rest).
+#
+# CVE-based findings (BAS-CVE-001, category LLM04) require live network
+# access to OSV.dev. `--offline` — the mode this corpus is verified against
+# — makes zero network calls by design (CveStatus::SkippedOffline) and
+# therefore produces zero CVE findings no matter what is pinned. The LLM04
+# entries below are recorded as known_gap for that reason: not because the
+# capability doesn't exist, but because it is unreachable in the verified
+# mode. If the release gate runs online, those four entries are the first
+# candidates to promote to [[expect]] — see FORMAT.md on how a known_gap is
+# retired.
+
+# =====================================================================
+# vulnerable/ — one realistic instance per detectable category
+# =====================================================================
+
+[[expect]]
+file     = "vulnerable/llm01_prompt_injection.py"
+line     = 26
+rule     = "BAS-ZT4-001"
+category = "LLM01"
+kind     = "defect"
+severity = "high"
+why      = "An internal wiki runbook page -- editable by anyone -- is folded straight into the agent's instructions with no delimiter separating instructions from untrusted content."
+
+[[expect]]
+file     = "vulnerable/llm03_excessive_agency.py"
+line     = 9
+rule     = "BAS-LLM03-001"
+category = "LLM03"
+kind     = "defect"
+severity = "high"
+why      = "shutdown_server is a destructive tool exposed via @tool with no confirmation guard before it acts."
+
+[[expect]]
+file     = "vulnerable/llm03_excessive_agency.py"
+line     = 29
+rule     = "BAS-LLM03-001"
+category = "LLM03"
+kind     = "defect"
+severity = "high"
+why      = "update_server_config is a state-changing tool exposed via @tool with no confirmation guard -- not named with a delete/drop/... verb, the exact gap the head-to-head benchmark against a Python prototype exposed: the prototype flagged all 8 undecorated tool functions in a real repository's file and Bastyn caught only the one destructively-named one."
+
+[[expect]]
+file     = "vulnerable/llm06_unbounded_consumption.py"
+line     = 19
+rule     = "BAS-LLM06-001"
+category = "LLM06"
+kind     = "observation"
+severity = "low"
+why      = "The ticket-backlog summarization call sets no max_tokens, so nothing in the repository bounds its cost or latency. Observation, not a defect: an edge limiter may exist."
+
+[[expect]]
+file     = "vulnerable/llm08_hidden_context_exposure.py"
+line     = 8
+rule     = "BAS-LLM08-001"
+category = "LLM08"
+kind     = "defect"
+severity = "critical"
+why      = "An internal webhook signing secret is embedded in the system prompt template the model reads on every call."
+
+[[expect]]
+file     = "vulnerable/llm10_eval_on_model_reply.py"
+line     = 40
+rule     = "BAS-LLM10-001"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "The model's own reply is passed straight to eval() as a suggested remediation -- unconditional remote code execution."
+
+[[expect]]
+file     = "vulnerable/llm10_eval_on_model_reply.py"
+line     = 50
+rule     = "BAS-LLM10-002"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "The model's suggested shell one-liner is run with subprocess.run(..., shell=True)."
+
+[[expect]]
+file     = "vulnerable/llm10_eval_on_model_reply.py"
+line     = 59
+rule     = "BAS-LLM10-003"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism."
+
+[[expect]]
+file     = "vulnerable/zt1_static_credentials.py"
+line     = 13
+rule     = "BAS-ZT1-001"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "A real-looking OpenAI key is committed straight into source instead of coming from the environment or a secret manager."
+
+[[expect]]
+file     = "vulnerable/zt3_isolation/mcp.json"
+line     = 5
+rule     = "BAS-MCP-001"
+category = "ZT3"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-logs MCP server is launched with root filesystem access (\"/\") instead of a scoped directory."
+
+[[expect]]
+file     = "vulnerable/zt4_no_delimiter.py"
+line     = 14
+rule     = "BAS-ZT4-001"
+category = "ZT4"
+kind     = "defect"
+severity = "high"
+why      = "A customer's raw, fully untrusted ticket text is concatenated directly into the persona instructions with no delimiter or separate message role."
+
+[[expect]]
+file     = "vulnerable/zt2_wildcard_tool_grant.py"
+line     = 29
+rule     = "BAS-ZT2-001"
+category = "ZT2"
+kind     = "defect"
+severity = "high"
+why      = "allowed_tools=\"*\" grants every tool, present and future, to the agent in Python application code."
+
+# ---------------------------------------------------------------------
+# Test paths. A credential in a fixture is still found, but reported as an
+# observation rather than a defect — measured on 2026-08-28 as the single
+# largest false-positive source in the rule set (23 of BAS-ZT1-002's 32
+# findings across 65 real repositories). The pair of entries below pins both
+# halves: the downgrade happens in a real test path, and does not happen in a
+# directory that merely contains the letters "test".
+# ---------------------------------------------------------------------
+
+[[expect]]
+file     = "vulnerable/tests/test_settings_fixture.py"
+line     = 29
+rule     = "BAS-ZT1-002"
+category = "ZT1"
+kind     = "observation"
+severity = "critical"
+why      = "A throwaway DSN in a test fixture. Still found, and still critical if the credential turns out to be real, but reported as an observation because the path says fixture -- so it is out of the default report and never fails a build."
+
+[[expect]]
+file     = "vulnerable/tests/test_settings_fixture.py"
+line     = 36
+rule     = "BAS-ZT1-002"
+category = "ZT1"
+kind     = "observation"
+severity = "critical"
+why      = "The same downgrade for the dict-literal shape, which is what most of the 23 measured real-world instances actually looked like."
+
+[[expect]]
+file     = "vulnerable/latest/config.py"
+line     = 16
+rule     = "BAS-ZT1-002"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "`latest/` contains the letters \"test\" and is not a test directory. This stays a defect; a substring-based test-path check would silently demote a real hardcoded credential in shipped configuration."
+
+# ---------------------------------------------------------------------
+# vulnerable/ — known gaps: a realistic instance exists, no rule catches it
+# ---------------------------------------------------------------------
+
+[[known_gap]]
+file     = "vulnerable/llm02_sensitive_info_disclosure.py"
+line     = 29
+category = "LLM02"
+why      = "A customer's full PII record (SSN, DOB, billing address, card digits) is serialized into the model message with no redaction or minimization. No rule inspects the content of a runtime-built message string."
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/requirements.txt"
+line     = 12
+category = "LLM04"
+why      = "requests==2.19.1 has real published advisories. BAS-CVE-001 would catch this online; --offline (the verified mode) makes zero network calls, so it is unreachable there."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/requirements.txt"
+line     = 13
+category = "LLM04"
+why      = "cryptography==38.0.4 has real published advisories. Same offline-network gap as the requests entry above."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/requirements.txt"
+line     = 14
+category = "LLM04"
+why      = "urllib3==1.26.14 has real published advisories. Same offline-network gap as the requests entry above."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/requirements.txt"
+line     = 15
+category = "LLM04"
+why      = "certifi==2022.12.7 has real published advisories. Same offline-network gap as the requests entry above."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm09_vector_embedding_weaknesses.py"
+line     = 21
+category = "LLM09"
+why      = "A runbook vector-store query has no tenant/namespace filter in a multi-tenant deployment. No rule inspects a vector query call for tenant isolation."
+
+[[known_gap]]
+file     = "vulnerable/zt5_memory_and_context.py"
+line     = 15
+category = "ZT5"
+why      = "Conversation memory is keyed globally by ticket ID with no per-org scoping, in a multi-tenant deployment. No rule inspects how a memory/session store is keyed."
+
+[[known_gap]]
+file     = "vulnerable/zt6_observability_and_logging.py"
+line     = 22
+category = "ZT6"
+why      = "A tool call that bypasses the audited call path and reaches the infra client directly, leaving no record of which ticket or session triggered it. Needs cross-referencing two call sites; no rule expresses that."
+
+# ---------------------------------------------------------------------
+# vulnerable/real_misses/ — the four real misses measured against a
+# production agentic app (see README.md for the measurement).
+# ---------------------------------------------------------------------
+
+[[expect]]
+file     = "vulnerable/real_misses/eval_compile_rce.py"
+line     = 37
+rule     = "BAS-LLM10-004"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "eval(compile(model_reply, ...)) -- the taint is one hop away from the model reply through a local variable named `compiled`. BAS-LLM10-004 drops the response/reply/... name requirement and flags eval()/exec() on any non-literal argument."
+
+[[expect]]
+file     = "vulnerable/real_misses/overridable_system_prompt.py"
+line     = 19
+rule     = "BAS-ZT4-002"
+category = "LLM01"
+kind     = "defect"
+severity = "high"
+why      = "A caller-supplied override fully replaces the system prompt (f\"System: {override}{context}\\n\\nUser: {user_input}\"). BAS-ZT4-002 accepts more than one interpolation, gated on the first being override-shaped."
+
+[[expect]]
+file     = "vulnerable/real_misses/hardcoded_dict_secrets.py"
+line     = 15
+rule     = "BAS-ZT1-002"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "A live database URL with an inline password, as a dict literal value (\"database_url\": \"postgresql://admin:password123@...\"). BAS-ZT1-002 gates on the value's own credential shape rather than an assignment target."
+
+[[expect]]
+file     = "vulnerable/real_misses/hardcoded_dict_secrets.py"
+line     = 16
+rule     = "BAS-ZT1-002"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "An admin token as a dict literal value (\"admin_secret\": \"SUPER-SECRET-TOKEN-...\"). Same dict-literal shape as the database_url entry above."
+
+[[expect]]
+file     = "vulnerable/real_misses/override_or_fallback_prompt.py"
+line     = 28
+rule     = "BAS-ZT4-002"
+category = "LLM01"
+kind     = "defect"
+severity = "high"
+why      = "`system_prompt = system_override or self._build_system_prompt(...)` -- the caller's override replaces the instruction channel outright. Measured 2026-08-28: this is the only caller-supplied prompt override in 65 real repositories, and it is an `or` fallback, not the f-string interpolation BAS-ZT4-002 was originally written against."
+
+[[expect]]
+file     = "vulnerable/real_misses/eval_expression_tool.js"
+line     = 26
+rule     = "BAS-LLM10-005"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "eval() on a model-supplied `expression` inside an agent tool. The variable is named for what the value is, which is what every real instance measured on 2026-08-28 did, so the old response/reply/... name gate could never fire -- BAS-LLM10-005 now gates on the argument not being a literal, exactly as BAS-LLM10-004 does for Python."
+
+[[expect]]
+file     = "vulnerable/real_misses/eval_expression_tool.js"
+line     = 34
+rule     = "BAS-LLM10-005"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "new Function() on a template literal built from model-derived text. A template literal is not a fixed literal, so the `none:` exclusion does not cover it -- and should not."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/autonomous_action_from_model_text.py"
+line     = 29
+category = "LLM03"
+why      = "The model is instructed to emit an EXECUTE_SIGNAL{...} marker; the app re.search()es for it and dispatches the embedded JSON with no confirmation. BAS-LLM03-001 only matches a destructive-named @tool function with a missing guard clause -- there is no tool function here at all, just free text parsed for a marker."
+
+# ---------------------------------------------------------------------
+# vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
+# below run in the *opposite* direction from every `[[known_gap]]` above,
+# which is why they are a distinct entry type, `[[known_false_positive]]`,
+# rather than known_gap entries. A known_gap is a recall gap: a real defect
+# the engine is expected to miss. These are a precision gap: a safe call
+# BAS-LLM10-004 is expected to keep flagging anyway, because proving it
+# safe needs seeing a sibling statement (a prior assignment or guard
+# clause) that `none:`/`inside:` cannot reach -- both only ever look at the
+# matched node itself or its ancestors, never a sibling. See the file's own
+# docstring for the full investigation.
+#
+# Recorded here anyway, per this codebase's practice of writing every known
+# limitation down rather than leaving it silently untested (see README.md's
+# "detection is recorded as a known_gap, not quietly left out" -- the same
+# practice applies to known_false_positive). `corpus_gate`'s
+# `find_promotable` only ever looks at `[[known_gap]]` entries, so these two
+# can never trigger its "promote to [[expect]]" suggestion -- that
+# suggestion would have been wrong here: promoting either of these to
+# `[[expect]]` would assert code that is provably not vulnerable is a
+# defect. They were briefly filed as `[[known_gap]]` before this entry type
+# existed, which produced exactly that wrong suggestion every run; see
+# corpus_gate.rs's MAX_KNOWN_GAPS history comment for that correction.
+# ---------------------------------------------------------------------
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/eval_guarded_by_local_check.py"
+line     = 65
+category = "LLM10"
+why      = "eval(class_name) where class_name can only ever be self.__class__.__name__ of a closed set of subclasses defined in this module -- not attacker-influenceable. The taint-safety proof lives at class_name's assignment one line above the call, which `none:` cannot see (it only matches alternate shapes of the eval() call node itself)."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/eval_guarded_by_local_check.py"
+line     = 81
+category = "LLM10"
+why      = "eval(f\"torch.{torch_dtype}\") guarded one line above by an exact-match check against a 3-item whitelist that raises before eval() is ever reached. The guard is a sibling if/raise statement, not part of the eval() call's own node, so `none:` (same-node exclusion) and `inside:` (ancestor constraint) both structurally cannot express it."
+
+# ---------------------------------------------------------------------
+# vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not
+# expressed in application source at all. ZT3 had no rule until the infra
+# analyser read container configuration.
+# ---------------------------------------------------------------------
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/Dockerfile"
+line     = 10
+rule     = "BAS-INFRA-002"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "ENV OPENAI_API_KEY=sk-proj-... bakes a provider key into an image layer, where `docker inspect` reads it back. Same value shape as BAS-ZT1-003, so a key is a key whether it sits in TypeScript or a Dockerfile."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/Dockerfile"
+line     = 14
+rule     = "BAS-INFRA-006"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "ENV DB_PASSWORD=Sup3rWeakPass! is a hardcoded credential, not shaped like a provider key -- BAS-INFRA-002's `sk-`-shaped gate does not cover it, and the two rules must not double-report the same literal."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/Dockerfile"
+line     = 18
+rule     = "BAS-INFRA-001"
+category = "ZT3"
+kind     = "defect"
+severity = "high"
+why      = "USER root is the last USER in the final stage, so the shipped image runs as root. Explicitly choosing root is a defect; the same file's clean/ counterpart takes root to build and gives it back before the entrypoint."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/Dockerfile.worker"
+line     = 3
+rule     = "BAS-INFRA-001"
+category = "ZT3"
+kind     = "observation"
+severity = "low"
+why      = "No USER instruction anywhere. Docker falls back to root, but a --user flag or a Kubernetes securityContext can set it from outside, so this is an observation -- 35 of the 57 Dockerfiles the scan reaches in the calibration corpus look like this."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
+line     = 4
+rule     = "BAS-INFRA-004"
+category = "ZT3"
+kind     = "defect"
+severity = "critical"
+why      = "privileged: true removes the capability, seccomp and device restrictions that make a container a boundary at all. No deployment makes that right."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
+line     = 5
+rule     = "BAS-INFRA-005"
+category = "ZT3"
+kind     = "observation"
+severity = "low"
+why      = "network_mode: host removes the network boundary, but it is also how a metrics or discovery sidecar is normally deployed -- context the repository cannot settle."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
+line     = 8
+rule     = "BAS-INFRA-003"
+category = "ZT3"
+kind     = "defect"
+severity = "critical"
+why      = "Mounting /var/run/docker.sock is full control of the Docker daemon: anything in the container can start a privileged container and take the host. The ./workspace bind mount on the line above must not be flagged."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
+line     = 11
+rule     = "BAS-INFRA-006"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "MYSQL_PASSWORD=password in the list form of environment: is a real weak default -- verbatim shape from the head-to-head benchmark against a Python prototype, which caught this class and Bastyn originally missed it entirely."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
+line     = 12
+rule     = "BAS-INFRA-006"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "SERVICE_TOKEN=svc_4f8a1c62d90b47e3a5216fbc8de07394 -- a hardcoded token that does not match any vendor-specific key shape (BAS-ZT1-003's `sk-` gate), caught here because the generic check gates on the credential-shaped variable name, not the value's own shape."
+
+[[expect]]
+file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
+line     = 18
+rule     = "BAS-INFRA-006"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "MYSQL_ROOT_PASSWORD: 'aa123456' in the mapping form of environment: -- format parity with the list-form findings above. MYSQL_DATABASE on the line below must not be flagged."
+
+# =====================================================================
+# mcp/ — MCP server configuration shapes
+# =====================================================================
+
+[[expect]]
+file     = "mcp/streamable_http/mcp.json"
+line     = 4
+rule     = "BAS-MCP-002"
+category = "ZT1"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-metrics server is reached over plain http:// with no Authorization/token/key in headers or env."
+
+[[expect_none]]
+file = "mcp/streamable_http/claude_desktop_config.json"
+why  = "Same server, reached over https:// with a Bearer Authorization header -- must not be flagged."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.json"
+line     = 5
+rule     = "BAS-MCP-001"
+category = "ZT3"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-logs stdio server is launched with root filesystem access (\"/\"); the opsbot-runbooks server in the same file, scoped to /srv/opsbot/runbooks, must not be flagged."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.yaml"
+line     = 6
+rule     = "BAS-MCP-001"
+category = "ZT3"
+kind     = "defect"
+severity = "high"
+why      = "Same two-server config as mcp.json, in YAML: format parity. The reported line is the first line containing the literal offending arg text (\"/\"), which in YAML's layout is the preceding args entry, not the bare \"/\" line itself -- the documented approximate-location behaviour in mcp/checks.rs, confirmed by running the built scanner."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.toml"
+line     = 3
+rule     = "BAS-MCP-001"
+category = "ZT3"
+kind     = "defect"
+severity = "high"
+why      = "Same two-server config as mcp.json, in TOML: format parity."
+
+# =====================================================================
+# clean/ — same jobs, done safely. Every near-miss that fools naive rules.
+# =====================================================================
+
+[[expect_none]]
+file = "clean/config.py"
+why  = "os.environ subscript for the API key (not a string literal), a secret-named variable holding an env-var *name* not a value, token/count-named numeric variables, and a default DSN whose host is localhost -- BAS-ZT1-002's placeholder-value exclusion (measured 2026-08-28: 9 of the rule's remaining findings, after the test-path downgrade, were exactly this shape in application config, not a fixture)."
+
+[[expect_none]]
+file = "clean/prompts.py"
+why  = "A prompt-named variable with no sk--shaped content, and untrusted input kept in its own ChatPromptTemplate slot rather than f-string-interpolated into instructions."
+
+[[expect_none]]
+file = "clean/tools.py"
+why  = "A destructive tool guarded by a decorator (@require_confirmation) and one guarded by assert, instead of the inline if-not-raise/return shape BAS-LLM03-001's none: exclusion recognises. See README.md: the assert-guarded case is a CONFIRMED PRECISION BUG on the current scanner (BAS-LLM03-001 fires on tools.py:35), kept in the corpus deliberately rather than hidden. Plus update_server_config, a state-changing (not destructive-named) tool guarded by the same inline if-not-raise shape -- proves the 2026-08-28 verb-list widening still respects existing guard shapes."
+
+[[expect_none]]
+file = "clean/agent.py"
+why  = "eval() on a literal in a sanity check, and an LLM call with max_tokens set."
+
+[[expect_none]]
+file = "clean/app.py"
+why  = "A public, unauthenticated chat endpoint (correct for a public chatbot) with no rate limiting (unprovable from a repository -- the limiter lives at the edge)."
+
+[[expect_none]]
+file = "clean/near_misses.py"
+why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules."
+
+[[expect_none]]
+file = "clean/mcp/mcp.json"
+why  = "A correctly scoped stdio server and an authenticated https remote server with an explicit allowedTools list -- must not be flagged."
+
+[[expect_none]]
+file = "clean/Dockerfile"
+why  = "A multi-stage build whose builder stage runs USER root and whose shipped stage ends on USER app -- Docker resets the user at every FROM, so the builder says nothing about the image. Plus ENV OPENAI_API_KEY_NAME=OPENAI_API_KEY, a variable holding an env-var *name*, which is the Dockerfile analog of clean/config.py's near-miss. Plus ENV DB_PASSWORD=${DB_PASSWORD}, the correct environment-interpolation pattern BAS-INFRA-006 must walk past."
+
+[[expect_none]]
+file = "clean/docker-compose.yml"
+why  = "privileged: false, network_mode: bridge, a project-relative bind mount and a named volume -- every shape BAS-INFRA-003/004/005 must walk past. Plus every BAS-INFRA-006 near-miss: an interpolated MYSQL_PASSWORD, a credentials-file path on GOOGLE_APPLICATION_CREDENTIALS, a boolean flag on MYSQL_ALLOW_EMPTY_PASSWORD, an empty MYSQL_PASSWORD, and a documented placeholder on MYSQL_ROOT_PASSWORD."
+
+# ---------------------------------------------------------------------
+# Shapes measured on a real application that the corpus did not originally
+# cover. Added after scanning it and finding these missed.
+# ---------------------------------------------------------------------
+
+[[known_gap]]
+file     = "vulnerable/real_misses/three_interpolation_override.py"
+line     = 25
+category = "LLM01"
+why      = "A caller-supplied override replaces the system prompt in a bare `return` with three interpolations. BAS-ZT4-002 hard-codes two, and the count-independent alternative does not work because metavariable_matches has no effect on a $$$ multi-node capture."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/hardcoded_dict_secrets.py"
+line     = 32
+category = "ZT1"
+why      = "An uppercase-and-dashes admin token (SUPER-SECRET-ADMIN-TOKEN-2025) as a dict value. BAS-ZT1-002's value gate requires 12+ hex characters after the keyword, which is what keeps it off `api_key_name = \"OPENAI_API_KEY\"` in the clean corpus. Widening it to any long string flags that too, so recall here costs precision."
+
+[[expect]]
+file     = "vulnerable/zt3_isolation/mcp.json"
+line     = 5
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "An MCP server launched via npx with no version pin resolves to whatever the registry serves at run time, inside the agent's trust boundary."
+
+# =====================================================================
+# TypeScript/JavaScript additions -- OpsBot's Node service
+#
+# TS/JS engine support was landing in a parallel task while this section
+# was written, so it could not be measured against a build that
+# understands TypeScript. Every entry below is therefore recorded as
+# [[known_gap]], never [[expect]], regardless of how closely the code
+# shape resembles a pattern that already exists for Python -- per
+# FORMAT.md, a known_gap that turns out to be caught is a trivial
+# promotion, but a wrong [[expect]] breaks the build for whoever merges
+# TS support next. Written using the real APIs of LangChain.js
+# (@langchain/core, @langchain/openai), the Vercel AI SDK (ai,
+# @ai-sdk/openai), and the official MCP TypeScript SDK
+# (@modelcontextprotocol/sdk) -- verified to type-check against the real
+# published packages (see the corpus task's report for the tsc command
+# used). Variable names follow real developer usage (runbookText,
+# suggestion, assistantNote, customerMessage) rather than the
+# response/reply/user/input-shaped names a naming-based rule would key
+# on -- deliberately, per the corpus's own standard: a corpus shaped to
+# match visible rules only proves a rule matches its own fixture.
+#
+# Every [[expect_none]] entry in this section stands on its own, though:
+# a scanner that produces zero findings on a clean file is correct
+# regardless of whether it understands TypeScript at all yet.
+# =====================================================================
+
+[[known_gap]]
+file     = "vulnerable/llm01_prompt_injection.ts"
+line     = 32
+category = "LLM01"
+why      = "buildAgentInstructions() template-literal-interpolates the untrusted runbook page text directly into the instruction string, no delimiter -- the same defect as vulnerable/llm01_prompt_injection.py, deliberately reproduced under a parameter named runbookText (what the value is) rather than a user/input/raw/message-shaped name a naming-gated rule would key on."
+
+[[known_gap]]
+file     = "vulnerable/llm02_sensitive_info_disclosure.ts"
+line     = 30
+category = "LLM02"
+why      = "answerAccountQuestion() serializes a customer's full PII (SSN, DOB, billing address, card digits) into a template literal handed to the Vercel AI SDK's generateText(), no field-level redaction. No rule in bastyn.yml inspects message/prompt content in either language; secrets.yml's LLM02 rules match credential shapes, not PII assembled into a prompt at runtime."
+
+[[expect]]
+file     = "vulnerable/llm03_excessive_agency.js"
+line     = 22
+rule     = "BAS-LLM03-002"
+category = "LLM03"
+kind     = "defect"
+severity = "high"
+why      = "shutdownServer, a destructive tool registered via the Vercel AI SDK's tool(), has no confirmation guard in its execute() before calling infraClient.shutdown(). Promoted from known_gap on 2026-08-28: BAS-LLM03-002 used to require a `name:` property inside tool({...}), which that SDK's helper does not have -- the tool's name is the binding it is assigned to, which is what the rule now reads."
+
+[[expect]]
+file     = "vulnerable/llm03_excessive_agency.js"
+line     = 49
+rule     = "BAS-LLM03-002"
+category = "LLM03"
+kind     = "defect"
+severity = "high"
+why      = "updateServerConfig is a state-changing tool with no confirmation guard, not named with a delete/drop/... verb -- the JS/TS twin of the same gap the head-to-head benchmark exposed on the Python side."
+
+[[known_gap]]
+file     = "vulnerable/llm03_excessive_agency.js"
+line     = 68
+category = "LLM03"
+why      = "purgeIncidentHistory, the same defect as shutdownServer above but registered as a property key in a tools object rather than a const binding. This is the majority shape by a wide margin: of 122 `tool({` registrations across 65 real repositories on 2026-08-28, 100 are property keys and none are const bindings. BAS-LLM03-002 cannot express it: `$NAME: tool({...})` compiles without error and matches nothing, because ast-grep parses a bare property snippet as a labeled statement (measured directly against ast_grep_core). The enclosing shapes that do match report the enclosing statement's line rather than the tool's and see only one tool per object, which is an approximate match rather than a detection."
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/package.json"
+line     = 7
+category = "LLM04"
+why      = "axios@0.21.0 has real published advisories (e.g. GHSA-3g43-6gmg-66jw, GHSA-4w2v-q235-vp99, GHSA-8hc4-vh64-cxmj -- SSRF and credential-leaking redirect handling), confirmed against OSV.dev. BAS-CVE-001 needs live network access; --offline (the corpus's verified mode) makes zero network calls, and BAS-CVE-001 has no npm/OSV ecosystem support yet regardless."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/package.json"
+line     = 8
+category = "LLM04"
+why      = "lodash@4.17.15 has real published advisories (e.g. GHSA-29mw-wpgm-hmr9 -- prototype pollution in zipObjectDeep), confirmed against OSV.dev. Same offline-network and npm-ecosystem-support gap as the axios entry above."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/package.json"
+line     = 9
+category = "LLM04"
+why      = "minimist@1.2.5 has a real published advisory (GHSA-xvch-5gv4-984h -- prototype pollution), confirmed against OSV.dev. Same offline-network and npm-ecosystem-support gap as the axios entry above."
+requires_network = true
+
+[[known_gap]]
+file     = "vulnerable/llm04_supply_chain/package.json"
+line     = 10
+category = "LLM04"
+why      = "node-fetch@2.6.0 has real published advisories (e.g. GHSA-r683-j2x4-v87g -- exposure of sensitive information via redirect, GHSA-w7rc-rwvf-8q5r), confirmed against OSV.dev. Same offline-network and npm-ecosystem-support gap as the axios entry above."
+requires_network = true
+
+[[expect]]
+file     = "vulnerable/llm06_unbounded_consumption.tsx"
+line     = 26
+rule     = "BAS-LLM06-002"
+category = "LLM06"
+kind     = "observation"
+severity = "low"
+why      = "summarizeTicketBacklog(), called from a Next.js App Router Server Component (.tsx), calls the Vercel AI SDK's streamText() with no maxOutputTokens set, so nothing bounds the call's cost or latency. Observation, not a defect: an edge limiter may already exist. Promoted from known_gap on 2026-08-28. Also exercises .tsx extension dispatch."
+
+[[expect]]
+file     = "vulnerable/llm01_prompt_injection.ts"
+line     = 14
+rule     = "BAS-LLM06-002"
+category = "LLM06"
+kind     = "observation"
+severity = "low"
+why      = "The ChatOpenAI instance backing this file's prompt-injection scenario is constructed with no maxTokens, so nothing bounds a single call's cost or latency. Found incidentally while grounding BAS-LLM06-002 against this corpus on 2026-08-28 -- a real gap the corpus already contained, not one written to order."
+
+[[expect]]
+file     = "vulnerable/llm08_hidden_context_exposure.ts"
+line     = 11
+rule     = "BAS-LLM08-002"
+category = "LLM08"
+kind     = "defect"
+severity = "critical"
+why      = "SYSTEM_PROMPT_TEMPLATE embeds a webhook signing secret (sk-ops-...) directly in the instruction text renderSystemPrompt() sends on every call, with only a 'never reveal this' instruction as a control. Promoted from known_gap on 2026-08-28. Line 11 (the `export const ... =` line the declaration starts on), not line 12 (the string's own line) as the known_gap guessed before the rule existed to measure it against."
+
+[[expect]]
+file     = "vulnerable/llm10_eval_on_model_reply.ts"
+line     = 41
+rule     = "BAS-LLM10-005"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "runSuggestedExpression() passes the model's own reply straight to eval(), through a local variable named suggestion rather than response/reply/completion/...-shaped. Promoted from known_gap on 2026-08-28: BAS-LLM10-005 no longer gates on the argument's name, only on it not being a literal, so the naming that used to defeat it no longer does. Reported by the JavaScript rule rather than a TypeScript twin, because JS rules now compile against the TypeScript grammar too -- the twin was a byte-identical duplicate and was deleted."
+
+[[known_gap]]
+file     = "vulnerable/llm10_eval_on_model_reply.ts"
+line     = 52
+category = "LLM10"
+why      = "executeSuggestedShellCommand() runs the model's reply through node:child_process's exec() -- the JS analog of subprocess.run(..., shell=True) -- again via a variable named suggestion, not response/reply/...-shaped."
+
+[[expect]]
+file     = "vulnerable/llm10_eval_on_model_reply.ts"
+line     = 65
+rule     = "BAS-LLM10-006"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "executeSuggestedShellCommandSync() runs the model's reply through cp.execSync(), child_process imported under the cp namespace alias. Proves BAS-LLM10-006 still catches real receiver-qualified child_process usage after its receiver gate was narrowed away from any object with an .exec/.execSync method (see clean/near_misses.ts for the false positives that narrowing fixes)."
+
+[[known_gap]]
+file     = "vulnerable/llm10_eval_on_model_reply.ts"
+line     = 74
+category = "LLM10"
+why      = "logSuggestionToDb() concatenates the model's own text directly into an INSERT statement via a node-postgres Pool's query(). The receiver is named db (would match a cursor|cur|db|conn|connection-shaped gate), but the interpolated variable is named assistantNote, not response/reply/...-shaped -- one gate would hit, the other would miss, the same split-gate shape documented for bastyn-cobaia's app/agents.py:69."
+
+[[expect]]
+file     = "vulnerable/zt1_static_credentials.ts"
+line     = 14
+rule     = "BAS-ZT1-003"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "OPENAI_API_KEY is a real-looking sk-proj-... key committed as an exported const literal instead of read from process.env or a secret manager."
+
+[[expect]]
+file     = "vulnerable/zt2_wildcard_tool_grant.ts"
+line     = 30
+rule     = "BAS-ZT2-002"
+category = "ZT2"
+kind     = "defect"
+severity = "high"
+why      = "buildOpsbotAgent() calls selectToolsForAgent(ALL_TOOLS, \"*\") -- OpsBot's own internal tool-scoping layer -- with the wildcard grant, positionally rather than as a named allowedTools= keyword argument, which is the ordinary call shape in TS/JS and a further structural difference from the Python rule's named-kwarg pattern. Promoted from known_gap on 2026-08-28: BAS-ZT2-002 gates on the called function's own name (tool|agent-shaped) rather than the grant value's name, which is what let it close this gap without the false-positive blowup an ungated `$FN($$$PRE, \"*\")` produced across 65 real repositories (CORS headers, glob patterns, route wildcards)."
+
+[[expect]]
+file     = "vulnerable/zt4_no_delimiter.ts"
+line     = 16
+rule     = "BAS-ZT4-003"
+category = "ZT4"
+kind     = "defect"
+severity = "high"
+why      = "buildReplyPrompt() concatenates the customer's raw, fully untrusted ticket text (customerMessage) directly into the persona instructions template literal, no delimiter or separate message role. Caught by the JavaScript rule once JS rules began reaching .ts files -- the rule was always correct, it simply never ran here."
+
+# ---------------------------------------------------------------------
+# clean/ -- OpsBot's Node service, done safely, plus TS/JS near-misses.
+# ---------------------------------------------------------------------
+
+[[expect_none]]
+file = "clean/config.ts"
+why  = "process.env property access (not a string literal) for the API key; a secret-named variable (apiKeyName) holding an env-var *name*, not a value; and approxTokensPerWord/tokenCount/maxTokensPerCall, numeric variables named with token/count substrings."
+
+[[expect_none]]
+file = "clean/prompts.ts"
+why  = "A prompt-named variable (SYSTEM_PROMPT) with no sk--shaped content; untrusted input kept in its own @langchain/core ChatPromptTemplate slot, never template-literal-interpolated into the instruction text."
+
+[[expect_none]]
+file = "clean/tools.ts"
+why  = "A destructive tool guarded by a wrapper function (requireConfirmation) and one guarded by an inline if-throw as the first statement of execute() -- both genuinely safe, in the two guard shapes real code actually uses. Plus updateServerConfig, a state-changing (not destructive-named) tool guarded by the same inline if-throw shape -- the JS/TS twin of the same proof in clean/tools.py."
+
+[[expect_none]]
+file = "clean/agent.ts"
+why  = "eval() on a literal inside console.assert(); an LLM call with maxOutputTokens set (Vercel AI SDK) and another with max_tokens set (OpenAI Node SDK, no receiver-name gate to hide behind); and an agent tool grant scoped to an explicit list rather than the bare wildcard string BAS-ZT2-002 looks for."
+
+[[expect_none]]
+file = "clean/app.ts"
+why  = "A public, unauthenticated /chat Express endpoint (correct for a public chatbot); no rate limiting (unprovable from a repository -- the limiter lives at the edge)."
+
+[[expect_none]]
+file = "clean/near_misses.ts"
+why  = "eval on a literal, new Function() on a literal, approxTokens/tokenCount/apiKeyName/maxTokens near-miss variable names, process.env credential handling, a non-prompt-shaped template literal, a parameterized SQL query, RegExp.prototype.exec, and better-sqlite3's Database.exec -- the TS/JS analogs of every near-miss in clean/near_misses.py, plus the two receiver shapes BAS-LLM10-006 confused for child_process (measured 2026-08-28: 18 of the rule's findings, 29% of all findings in the corpus, were pattern.exec/db.exec misidentified as a shell call) -- plus isPlaceholderKey(), whose own placeholder-detection literals used to trip BAS-ZT1-003."
+

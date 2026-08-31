@@ -1,0 +1,16 @@
+# OpsBot's pinned Python dependencies.
+#
+# known_gap (LLM04) under --offline: BAS-CVE-001 checks pinned dependencies
+# against OSV.dev over the network, and --offline deliberately makes zero
+# network calls (CveStatus::SkippedOffline), producing zero CVE findings
+# regardless of what is pinned here. The four packages below are pinned to
+# versions with real, published advisories, and the unpinned "langchain"
+# range is a supply-chain risk of its own (a fresh install picks up
+# whatever is newest at build time -- unverified, unreviewed). Online, this
+# manifest does produce findings; see README.md.
+openai==1.30.1
+requests==2.19.1
+cryptography==38.0.4
+urllib3==1.26.14
+certifi==2022.12.7
+langchain>=0.1

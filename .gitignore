@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Bastyn output
+/bastyn-report.json
+/bastyn-report.sarif
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

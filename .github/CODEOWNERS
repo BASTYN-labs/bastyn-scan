@@ -1,0 +1,8 @@
+# Default owner for everything in the repository.
+* @claudiotx
+
+# Anything that changes the security posture, the supply-chain policy, or what
+# ships to users needs an explicit look.
+/SECURITY.md            @claudiotx
+/deny.toml              @claudiotx
+/.github/workflows/     @claudiotx

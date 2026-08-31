@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish (e.g. v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # A tag is not a promise that the code works. Prove it before publishing
+  # anything a user can download.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace --all-features --locked
+      - name: Check the tag matches the crate version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version="$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "bastyn-cli") | .version')"
+          if [ "$TAG" != "v${version}" ]; then
+            echo "::error::tag ${TAG} does not match crate version ${version}"
+            exit 1
+          fi
+
+  create-release:
+    name: create release
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "release $TAG already exists; assets will be added to it"
+          else
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          fi
+
+  upload-assets:
+    name: ${{ matrix.target }}
+    needs: [create-release]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl keeps the Linux binaries fully static: no glibc version to
+          # match on the host that runs them.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            build-tool: cross
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            build-tool: cargo
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: bastyn
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          archive: bastyn-$tag-$target
+          include: README.md,LICENSE,NOTICE,CHANGELOG.md
+          locked: true
+          checksum: sha256
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          token: ${{ github.token }}
+
+  # README tells people to use `BASTYN-labs/bastyn-scan@v0`, so something has to
+  # keep that tag pointing at the newest v0.x.y. It runs last, and only after
+  # every leg of upload-assets has succeeded: a release missing the Windows zip
+  # is not a release the alias should be advertising.
+  major-alias:
+    name: move major alias tag
+    needs: [upload-assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Detached at the released commit, which is what the alias must point
+          # at. persist-credentials defaults to true, so the checkout's
+          # GITHUB_TOKEN is what authenticates the push below.
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          # Full history: pushing a tag out of a shallow clone is the kind of
+          # thing that works until the one release where it does not.
+          fetch-depth: 0
+      - name: Move the major-version alias
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # The push trigger's trailing `*` admits v0.2.0-rc.1, and moving v0
+          # onto a release candidate would hand it to every user pinned at @v0
+          # without them asking for it. Only an exact vMAJOR.MINOR.PATCH owns
+          # the alias; anything with a suffix leaves it where it is.
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::$TAG is not a final release tag; leaving the major alias untouched"
+            exit 0
+          fi
+          # Derived, not hardcoded, so v1.0.0 moves v1 without an edit here.
+          major="v${BASH_REMATCH[1]}"
+
+          # Belt and braces for the tag-shape check above: a release someone
+          # flagged prerelease or left as a draft by hand should not be aliased
+          # either, whatever its tag looks like.
+          state="$(gh release view "$TAG" --json isDraft,isPrerelease \
+            --jq '"\(.isDraft) \(.isPrerelease)"')"
+          if [ "$state" != "false false" ]; then
+            echo "::notice::release $TAG is a draft or prerelease (isDraft/isPrerelease = $state); leaving $major untouched"
+            exit 0
+          fi
+
+          sha="$(git rev-parse HEAD)"
+          echo "moving $major to $sha ($TAG)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --force --annotate "$major" "$sha" -m "Major-version alias, currently $TAG"
+          git push --force origin "refs/tags/$major"

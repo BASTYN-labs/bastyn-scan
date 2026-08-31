@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a capability Bastyn does not have.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the roadmap in the [README](https://github.com/BASTYN-labs/bastyn-scan#roadmap)
+        first. The feature may already be planned.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Bastyn makes hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like Bastyn to do
+      description: Include the command line or output shape you have in mind, if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you are doing instead
+      description: Workarounds, or other tools that solve this today.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contracts
+    attributes:
+      label: Compatibility
+      options:
+        - label: This would change exit-code meanings or the `--format json` shape
+          required: false

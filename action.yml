@@ -1,0 +1,153 @@
+name: Bastyn - Instant SAST for AI Agents
+description: SAST for AI agent and MCP code. Find security flaws, secrets, and CVEs on every PR, commit, and release.
+author: Bastyn Labs
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  path:
+    description: Directory to scan, relative to the workspace.
+    required: false
+    default: "."
+  version:
+    description: Bastyn version to use, e.g. "v0.1.0". Defaults to the latest release.
+    required: false
+    default: latest
+  format:
+    description: Output format written to the log. One of text, json, or sarif.
+    required: false
+    default: text
+  sarif-file:
+    description: Write a SARIF report to this path, for upload to code scanning. Empty to skip.
+    required: false
+    default: bastyn.sarif
+  fail-on:
+    description: Minimum severity that fails the step. One of low, medium, high, critical, or none.
+    required: false
+    default: high
+  show-observations:
+    description: Include context-dependent observations alongside defects.
+    required: false
+    default: "false"
+  offline:
+    description: Skip the CVE lookup, which is the only step that uses the network.
+    required: false
+    default: "false"
+
+outputs:
+  sarif-file:
+    description: Path to the SARIF report, if one was written.
+    value: ${{ steps.scan.outputs.sarif-file }}
+  exit-code:
+    description: The scanner's exit code. 0 clean, 1 findings, 2 execution error.
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Bastyn
+      shell: bash
+      env:
+        BASTYN_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        # RUNNER_OS carries no architecture, so it cannot pick between the
+        # x86_64 and aarch64 builds on its own. GitHub offers arm64 Linux
+        # (ubuntu-24.04-arm) and x86_64 macOS (macos-13) runners, and choosing
+        # on OS alone hands both of them a binary for the wrong architecture.
+        # RUNNER_ARCH is one of X86, X64, ARM, or ARM64.
+        os="${RUNNER_OS:-}"
+        arch="${RUNNER_ARCH:-}"
+        case "$os-$arch" in
+          Linux-X64)   suffix="x86_64-unknown-linux-musl";  archive="tar.gz" ;;
+          Linux-ARM64) suffix="aarch64-unknown-linux-musl"; archive="tar.gz" ;;
+          macOS-X64)   suffix="x86_64-apple-darwin";        archive="tar.gz" ;;
+          macOS-ARM64) suffix="aarch64-apple-darwin";       archive="tar.gz" ;;
+          Windows-X64) suffix="x86_64-pc-windows-msvc";     archive="zip"    ;;
+          # Anything else has no artifact to download. Stop here rather than
+          # guessing: a wrong-architecture binary installs cleanly and then
+          # fails at the first run with "Exec format error", which reads as a
+          # bug in the scanner rather than a bug in this step.
+          *)
+            echo "::error::no bastyn release binary for runner OS '$os' on architecture '$arch'. Built targets: Linux X64, Linux ARM64, macOS X64, macOS ARM64, Windows X64."
+            exit 1
+            ;;
+        esac
+
+        if [ "$BASTYN_VERSION" = "latest" ]; then
+          tag="$(gh release view --repo BASTYN-labs/bastyn-scan --json tagName --jq .tagName)"
+        else
+          tag="$BASTYN_VERSION"
+        fi
+        echo "installing bastyn $tag for $suffix"
+
+        dir="$RUNNER_TEMP/bastyn"
+        mkdir -p "$dir"
+        gh release download "$tag" \
+          --repo BASTYN-labs/bastyn-scan \
+          --pattern "bastyn-${tag}-${suffix}.${archive}" \
+          --dir "$dir"
+
+        cd "$dir"
+        if [ "$archive" = "zip" ]; then unzip -q "bastyn-${tag}-${suffix}.zip"; else tar xzf "bastyn-${tag}-${suffix}.tar.gz"; fi
+        echo "$dir" >> "$GITHUB_PATH"
+
+    - name: Run Bastyn
+      id: scan
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        SCAN_FORMAT: ${{ inputs.format }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SHOW_OBSERVATIONS: ${{ inputs.show-observations }}
+        OFFLINE: ${{ inputs.offline }}
+      run: |
+        # GitHub runs composite `shell: bash` steps as `bash -e -o pipefail`,
+        # and `set -uo pipefail` does not turn `-e` off. Every command whose
+        # non-zero exit is meaningful here is therefore written so it cannot
+        # abort the script -- see the `if` around the scan below.
+        set -uo pipefail
+
+        args=(scan "$SCAN_PATH" --format "$SCAN_FORMAT" --fail-on "$FAIL_ON")
+        [ "$SHOW_OBSERVATIONS" = "true" ] && args+=(--show-observations)
+        [ "$OFFLINE" = "true" ] && args+=(--offline)
+
+        # SARIF always goes to a file when asked for, independently of the
+        # format written to the log, so a readable log and an uploadable
+        # report are not mutually exclusive.
+        if [ -n "$SARIF_FILE" ]; then
+          sarif_args=(scan "$SCAN_PATH" --format sarif)
+          [ "$SHOW_OBSERVATIONS" = "true" ] && sarif_args+=(--show-observations)
+          [ "$OFFLINE" = "true" ] && sarif_args+=(--offline)
+          bastyn "${sarif_args[@]}" > "$SARIF_FILE" || true
+          echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
+        fi
+
+        # `if` rather than a bare call: under `-e` a non-zero exit would end
+        # the script here, before the code it produced could be recorded --
+        # which silently emptied this action's documented `exit-code` output
+        # for every scan that actually found something.
+        if bastyn "${args[@]}"; then code=0; else code=$?; fi
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        case "$code" in
+          0) echo "::notice::Bastyn found nothing to act on" ;;
+          1) echo "::error::Bastyn found issues at or above the $FAIL_ON threshold" ;;
+          *) echo "::error::Bastyn could not complete the scan (exit $code)" ;;
+        esac
+
+        # Exit 0 here and fail in the next step instead, so that recording
+        # the outcome and failing on it stay separate concerns: nothing this
+        # step does after the scan can be skipped by the scan's own result.
+
+    # Split from the step above so recording the result cannot be skipped.
+    - name: Propagate the scan's exit code
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit-code }}
+      run: exit "$CODE"

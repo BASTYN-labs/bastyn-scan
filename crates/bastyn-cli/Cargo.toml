@@ -1,0 +1,34 @@
+[package]
+name = "bastyn-cli"
+description = "Single-binary static analysis for AI and agent code."
+default-run = "bastyn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "bastyn"
+path = "src/main.rs"
+
+[dependencies]
+bastyn-core = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request makes the in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Cargo passes `--cap-lints allow` to dependencies, so this denies warnings
+  # in our code only.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+      - run: cargo test --workspace --all-features --locked
+      # The distributed artifact is the release binary, so the release profile
+      # (LTO, panic=abort, stripped) gets built and exercised, not just the
+      # debug build the tests use.
+      - run: cargo build --release --locked
+
+      # Scan our own fixtures with the real binary and assert the exit-code
+      # contract. This is the end-to-end check the unit tests cannot make: the
+      # shipped artifact, on this platform, against known-answer inputs.
+      #
+      # Note the repository root deliberately contains vulnerable fixture code,
+      # so a bare `scan .` is expected to exit 1. That is the tool working.
+      # The gate prints recall and precision against the corpus. Running it
+      # with --nocapture puts those numbers in every CI log, so a regression is
+      # visible in the run that caused it rather than only in a red test.
+      - name: Corpus gate (precision and recall)
+        run: cargo test -p bastyn-core --test corpus_gate --locked -- --nocapture
+
+      - name: Self-scan (exit-code contract)
+        shell: bash
+        run: |
+          # `shell: bash` implies -e, which would abort on the first
+          # deliberately non-zero exit before any assertion runs.
+          set +e
+          set -uo pipefail
+          bin=target/release/bastyn
+
+          "$bin" scan tests/fixtures/clean_agent --offline --quiet
+          clean=$?
+          "$bin" scan tests/fixtures/vulnerable_agent --offline --quiet
+          vuln=$?
+          "$bin" scan tests/fixtures/vulnerable_agent --offline --quiet --fail-on none
+          nogate=$?
+          "$bin" scan does-not-exist --offline --quiet 2>/dev/null
+          missing=$?
+
+          echo "clean=$clean vulnerable=$vuln fail-on-none=$nogate missing-path=$missing"
+
+          fail=0
+          [ "$clean"   -eq 0 ] || { echo "::error::clean fixture should exit 0, got $clean"; fail=1; }
+          [ "$vuln"    -eq 1 ] || { echo "::error::vulnerable fixture should exit 1, got $vuln"; fail=1; }
+          [ "$nogate"  -eq 0 ] || { echo "::error::--fail-on none should exit 0, got $nogate"; fail=1; }
+          [ "$missing" -eq 2 ] || { echo "::error::missing path should exit 2, got $missing"; fail=1; }
+          exit "$fail"
+
+  msrv:
+    name: minimum supported rust version
+    runs-on: ubuntu-latest
+    env:
+      # Overrides `rust-toolchain.toml`, which pins stable for contributors.
+      # Keep in sync with `rust-version` in Cargo.toml.
+      RUSTUP_TOOLCHAIN: 1.88.0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo test --workspace --all-features --locked
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps --all-features --locked
+
+  supply-chain:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --all-features check
+
+  # Single required status check for branch protection: stays green only if
+  # every job above succeeded, including every leg of the matrix.
+  ci:
+    name: ci
+    if: always()
+    needs: [fmt, clippy, test, msrv, docs, supply-chain]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every job succeeded
+        env:
+          # Interpolated into the environment rather than the script, so job
+          # names can never be injected into the shell.
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS"
+          if jq -e 'to_entries | any(.value.result != "success")' <<< "$NEEDS" > /dev/null; then
+            echo "::error::one or more required jobs did not succeed"
+            exit 1
+          fi

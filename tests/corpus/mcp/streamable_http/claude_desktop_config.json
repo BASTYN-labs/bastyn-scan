@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "opsbot-metrics": {
+      "url": "https://metrics.internal.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${OPSBOT_METRICS_TOKEN}"
+      }
+    }
+  }
+}

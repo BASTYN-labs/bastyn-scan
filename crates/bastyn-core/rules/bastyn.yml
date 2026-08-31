@@ -1,0 +1,1088 @@
+# Bastyn rule corpus.
+#
+# "Say less, be right." Every rule here is verified against a real fixture
+# pair in tests/fixtures/{vulnerable_agent,clean_agent} and against the
+# ast-grep patterns directly in crates/bastyn-core/tests/rule_patterns.rs.
+# A pattern that cannot be made precise is not in this file — see that test
+# file's module docs for the ones that were tried and dropped.
+#
+# Schema: id, title, kind (defect|observation), severity, confidence,
+# categories (from bastyn_core::category::Category), language, in_test_paths
+# (optional, downgrade|report, default downgrade), any (required, non-empty),
+# none (optional exclusions matched against the same node), inside (optional
+# ancestor constraint), metavariable_matches (optional per-capture regex),
+# description, remediation.
+#
+# `in_test_paths` exists because of a measurement: scanning 65 real
+# third-party AI repositories on 2026-08-28, BAS-ZT1-002 produced 32 findings
+# and 23 of them (72%) were placeholder DSNs in test fixtures — the single
+# largest measured source of false positives in this rule set. A match in a
+# test path (see crates/bastyn-core/src/test_path.rs for what counts) is
+# therefore reported as an observation rather than a defect by default: out of
+# the default report, still there under --show-observations, so a genuinely
+# leaked secret that happens to live in a fixture is never silently dropped.
+# A rule says `in_test_paths: report` when its finding is worth reading even
+# in a fixture.
+
+rules:
+  # ---------------------------------------------------------------------
+  # LLM10 — Improper Output Handling. The highest-value category: running,
+  # querying, or shelling out with model output is always wrong, in every
+  # deployment. Never context-dependent, which is why it leads the file.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-001
+    title: Model output executed as code
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10, ZT4]
+    language: python
+    any:
+      - eval($ARG)
+      - exec($ARG)
+    none:
+      - eval("$LIT")
+    # Migrated off `metavariable_matches` on 2026-08-28. The gate this
+    # replaces was ARG matching
+    # `(?i)(response|reply|completion|message|content|choices|output|generated)`
+    # -- a guess about what the author called the variable, not a fact about
+    # where its value came from. Measured by
+    # crates/bastyn-core/tests/brittleness_gate.rs, that gate caught 0 of 10
+    # realistic alternative namings of the identical bug (`suggestion`,
+    # `statement`, `expression`, `code`, ...) and it caught the one real
+    # corpus finding it ever produced by accident, because the subscript
+    # happened to read `r['Messages']`.
+    #
+    # `flow:` asks the question the rule title actually claims to answer:
+    # did this value come out of a model. `unguarded: true` drops the match
+    # when a check against a fixed set already dominates the call, and
+    # `sink: code_execution` extends the same test one call outwards, to a
+    # local function that forwards the value into eval/exec -- a shape no
+    # `any:` pattern can describe, because the call site names that function
+    # rather than eval.
+    #
+    # BAS-LLM10-004 still covers eval()/exec() on *any* non-literal at
+    # `confidence: medium`, so nothing this rule stops claiming stops being
+    # reported; it is reported at the confidence the evidence supports.
+    flow:
+      variable: ARG
+      source: model_output
+      unguarded: true
+      sink: code_execution
+    description: >
+      A value that came from a model call is executed as Python, either
+      directly by eval()/exec() or by a function in this file that passes it
+      straight through to one. A model reply is untrusted input; running it is
+      arbitrary remote code execution the moment an attacker can influence
+      what the model says.
+    remediation: >
+      Never execute model output. If the agent needs to run model-suggested
+      logic, parse it into a constrained, whitelisted set of operations (a
+      small interpreter or a JSON tool-call schema) instead of eval/exec.
+
+  - id: BAS-LLM10-002
+    title: Model output executed as a shell command
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - os.system($ARG)
+      - subprocess.run($ARG, shell=True)
+      - subprocess.call($ARG, shell=True)
+      - subprocess.Popen($ARG, shell=True)
+    metavariable_matches:
+      ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
+    description: >
+      A model reply is passed straight to a shell with shell=True (or
+      os.system). Anything the model was tricked into saying — including
+      output planted by content it read from the web or from a document — now
+      runs as a shell command with the process's full privileges.
+    remediation: >
+      Do not derive shell commands from model output. If the agent must run a
+      fixed set of commands, dispatch on a whitelist of command names with
+      argv-array subprocess calls (shell=False) and validated arguments —
+      never format model text into a command string.
+
+  # Measured 2026-08-28 against 65 real third-party repositories: this rule
+  # produced 5 findings, all false positives, all one of two shapes --
+  # neither an attacker can influence:
+  #
+  # 1. A bare string-literal argument (single/double/triple-quoted, possibly
+  #    wrapped in one call like SQLAlchemy's `text(...)`, possibly spread
+  #    across several adjacent literals Python concatenates implicitly --
+  #    `"a" "b"` with no operator between them) that merely happens to
+  #    *contain* one of the ARG trigger words as SQL, e.g. `output_redacted
+  #    TEXT` or `error_message TEXT` inside a `CREATE TABLE` DDL string. No
+  #    interpolation syntax (an f-string, `.format()`, `%`, or `+`) is
+  #    present, so there is nothing for an attacker to reach.
+  # 2. A SQLAlchemy query-builder expression (`update(...)`, `select(...)`,
+  #    `insert(...)`) passed to `.execute()`. These build a parameterized
+  #    query object, not a SQL string -- a `message`/`response`-named value
+  #    passed to `.values()` becomes a bound parameter, never query text.
+  #
+  # The `none:` entries below exclude shape 1 for every quote style actually
+  # seen, plus 2-5 adjacent literals (the corpus example needed 4); an
+  # f-string structurally differs from a plain string node (it carries
+  # interpolation children) so `"$LIT"` does not accidentally swallow it --
+  # verified directly against the vulnerable_agent/llm10_eval_on_model_reply
+  # fixtures, both of which stay caught. `metavariable_not_matches` excludes
+  # shape 2 by requiring ARG not *start* with one of the three builder calls
+  # -- anchored so it cannot misfire on an identifier like `select_summary`.
+  # None of `none:`'s alternate-shape matching can express "starts with X"
+  # across an arbitrary method chain (`update(t).where(...).values(...)`),
+  # which is why this rule alone needs both mechanisms.
+  - id: BAS-LLM10-003
+    title: Model output concatenated into a SQL query
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - $CUR.execute($ARG)
+    none:
+      - $CUR.execute("$LIT")
+      - $CUR.execute('$LIT')
+      - $CUR.execute("""$LIT""")
+      - $CUR.execute('''$LIT''')
+      - $CUR.execute($FN("$LIT"))
+      - $CUR.execute($FN('$LIT'))
+      - $CUR.execute($FN("""$LIT"""))
+      - $CUR.execute($FN('''$LIT'''))
+      - $CUR.execute("$A" "$B")
+      - $CUR.execute("$A" "$B" "$C")
+      - $CUR.execute("$A" "$B" "$C" "$D")
+      - $CUR.execute("$A" "$B" "$C" "$D" "$E")
+    metavariable_matches:
+      CUR: "(?i)(cursor|cur|db|conn|connection)"
+      ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
+    metavariable_not_matches:
+      ARG: '^\s*(select|insert|update)\('
+    description: >
+      A database cursor executes a query built from model output. Since the
+      model's reply is attacker-influenceable (via prompt injection from any
+      untrusted document, tool result, or user message it has seen), this is
+      SQL injection with the model as the delivery mechanism.
+    remediation: >
+      Never interpolate model output into a SQL string. Use parameterized
+      queries (cursor.execute(sql, params)) and keep model output confined to
+      parameter values, never to the query text itself.
+
+  # ---------------------------------------------------------------------
+  # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
+  # instructions. This is the shape every "ignore previous instructions"
+  # attack depends on.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT4-001
+    title: Raw user input folded directly into a system prompt
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM01, ZT4]
+    language: python
+    any:
+      - $SYS = f"$$$A{$VAR}$$$B"
+    metavariable_matches:
+      SYS: "(?i)(system|prompt|instruction|persona|template)"
+      VAR: "(?i)(user|request|query|input|raw|message)"
+    description: >
+      A system/instruction prompt is built by f-string-interpolating raw user
+      input directly into the instruction text, with no delimiter separating
+      "what the model must do" from "what the user said." Any user message
+      can now rewrite the model's instructions.
+    remediation: >
+      Keep untrusted input out of the instruction channel. Pass it as a
+      separate user/tool message, or through a templating layer (e.g.
+      ChatPromptTemplate) that keeps it in a clearly delimited data slot the
+      model is told to treat as content, not as commands.
+
+  # ---------------------------------------------------------------------
+  # ZT1 — Identity and Credentials.
+  # ---------------------------------------------------------------------
+
+  # Measured as non-firing on 2026-08-28 across 65 real third-party AI
+  # repositories, and deliberately kept. This is not a broken rule: its
+  # JS/TS twin (BAS-ZT1-003, which reaches .ts and .tsx too) uses the
+  # identical `sk-` gate and fired 5 times on the same corpus, so the gate
+  # works and the shape is
+  # real. What the corpus contains is zero `sk-`-shaped literals in Python —
+  # grepped directly, not inferred from the scan. A rule that is rare is not
+  # a rule that is wrong, and the cost of keeping it is one pattern that
+  # cannot match anything but a provider key.
+  - id: BAS-ZT1-001
+    title: Hardcoded API key
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [ZT1]
+    language: python
+    # A live provider key is leaked wherever it sits, including a fixture:
+    # the fix is to rotate it, and the test-path downgrade must not be what
+    # hides it. The honest cost, measured 2026-08-28: the one `sk-` literal
+    # this rule set found in a test path across 65 repositories was a
+    # placeholder ('sk-must-not-enter-argv'). The downgrade is not a
+    # fake-key filter — the same placeholders turn up in shipped code too —
+    # so gating on the path would trade a real leak for one fake.
+    in_test_paths: report
+    any:
+      - $VAR = "$SECRET"
+      - $VAR = '$SECRET'
+    metavariable_matches:
+      SECRET: "^sk-[A-Za-z0-9_-]{16,}$"
+    description: >
+      A provider API key is a literal in source rather than read from the
+      environment or a secret manager. It ships with every clone of the repo,
+      every log of the source, and every fork.
+    remediation: >
+      Load the key from an environment variable or secret manager
+      (os.environ["OPENAI_API_KEY"]) and rotate the key that leaked into
+      history.
+
+  # ---------------------------------------------------------------------
+  # LLM08 — Hidden Context Exposure: a secret baked into text the model
+  # itself will see (and can therefore repeat back to a user).
+  # ---------------------------------------------------------------------
+
+  # Measured as non-firing on 2026-08-28, and deliberately kept, for exactly
+  # the same reason as BAS-ZT1-001 above: it gates on the same `sk-` shape,
+  # and the calibration corpus contains no `sk-`-shaped literal in any Python
+  # file at all. Nothing about the rule was tested by that run — it is a
+  # narrower rule than ZT1-001 (the literal must also sit in a
+  # prompt/template/system-named variable), so a corpus that cannot exercise
+  # the broader one cannot exercise this either.
+  - id: BAS-LLM08-001
+    title: Secret embedded inside a prompt template
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM08]
+    language: python
+    any:
+      - $VAR = "$CONTENT"
+    metavariable_matches:
+      VAR: "(?i)(prompt|template|system|instruction|persona)"
+      CONTENT: "(?i)sk-[A-Za-z0-9_-]{16,}"
+    description: >
+      A credential-shaped secret is embedded in the text of a prompt or
+      system-message template. Once a secret is part of what the model reads,
+      it is part of what the model can be tricked into repeating — a
+      "don't reveal this" instruction is not a control the model reliably
+      enforces.
+    remediation: >
+      Never put real secrets in prompt text, including as "internal only"
+      instructions. Keep credentials out of the context window entirely; if
+      the model needs to use a credential, do it via a tool call the
+      application executes server-side.
+
+  # ---------------------------------------------------------------------
+  # LLM03 — Excessive Agency: a destructive tool exposed to the agent with
+  # no guard, detected as the absence of an early confirmation check in the
+  # same function.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM03-001
+    title: Unauthorized agent tool exposed without a confirmation guard
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM03]
+    language: python
+    any:
+      - "def $FN($$$ARGS):\n    $$$BODY"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$BODY"
+    # Enumerating guard shapes is structurally incomplete: a guard can live in
+    # a decorator, in middleware, or in the API the tool calls, and this list
+    # can only ever grow. That is why confidence is `medium` rather than
+    # `high`. Every shape here was added because a real safe function was
+    # otherwise reported — see tests/corpus/clean/tools.py.
+    none:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    if not $COND:\n        raise $EXC\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    if not $COND:\n        return $EARLY\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    if not $COND:\n        raise $EXC\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    if not $COND:\n        return $EARLY\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    assert $COND, $MSG\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    assert $COND\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    assert $COND, $MSG\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    assert $COND\n    $$$REST"
+    inside:
+      - "@tool\ndef $FN2($$$A):\n    $$$B"
+      - "@tool\ndef $FN2($$$A) -> $R2:\n    $$$B"
+      - "@tool()\ndef $FN2($$$A):\n    $$$B"
+      - "@tool()\ndef $FN2($$$A) -> $R2:\n    $$$B"
+    # Widened 2026-08-28 after a head-to-head benchmark against a Python
+    # prototype: the prototype flagged all 8 undecorated @tool functions in
+    # one real repository file, this rule caught 1 (the one destructively
+    # named). The other 7 -- create_event, update_event, list_events,
+    # get_calendar_list, get_freebusy_info, is_available_for_meeting,
+    # send_confirmation -- are equally unauthorized, just not named
+    # delete/drop/.... Added every state-changing verb the same benchmark's
+    # own two-tier split (destructive-critical vs. non-destructive-high)
+    # used, minus "add" and "set" and "pay" and "book" -- each collides with
+    # a common English word as a bare prefix (address, settings, payload,
+    # bookmark) that a naming gate anchored only at the start cannot tell
+    # apart from the verb. Read-only verbs (get, list, search, calculate,
+    # ...) are deliberately absent: tests/corpus/clean/tools.py's
+    # get_server_status must stay unflagged.
+    metavariable_matches:
+      FN: "(?i)^(delete|drop|remove|transfer|withdraw|wire|drain|revoke|terminate|shutdown|sell_all|liquidate|send_funds|execute_trade|purge|wipe|create|update|edit|modify|insert|cancel|approve|reject|install|uninstall|register|grant|subscribe|schedule|submit|publish|deploy|charge|refund|send)"
+    description: >
+      A tool exposed to the agent performs a privileged or state-changing
+      action (delete, transfer, create, update, ...) with no guard clause at
+      the top of its body checking a confirmation or authorization condition
+      before acting. If the agent decides to call it, it executes
+      unconditionally.
+    remediation: >
+      Require explicit confirmation or an authorization check before the tool
+      acts: check a confirmed/approved flag (or re-verify authorization) as
+      the first thing the function does, and raise or return early when it is
+      not satisfied.
+
+  # ---------------------------------------------------------------------
+  # LLM06 — Unbounded Consumption. Context-dependent: a limiter can live at
+  # the edge (gateway, proxy) where this repo cannot see it. Observation
+  # only, never a defect — see category::is_context_dependent.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM06-001
+    title: LLM call has no token ceiling
+    kind: observation
+    severity: low
+    confidence: medium
+    categories: [LLM06]
+    language: python
+    any:
+      - $CLIENT.chat.completions.create($$$ARGS)
+    none:
+      - $CLIENT.chat.completions.create(max_tokens=$MT, $$$B)
+      - $CLIENT.chat.completions.create($$$A, max_tokens=$MT)
+      - $CLIENT.chat.completions.create($$$A, max_tokens=$MT, $$$B)
+    metavariable_matches:
+      CLIENT: "(?i)(client|llm|openai|gpt)"
+    description: >
+      This completion call sets no max_tokens, so nothing in the repository
+      bounds a single call's cost or latency. A gateway, proxy, or SDK default
+      elsewhere may already cap this — the source alone cannot say — which is
+      why this is an observation rather than a defect.
+    remediation: >
+      Set an explicit max_tokens (or the provider's equivalent) on the call,
+      or confirm and document the upstream limiter that bounds it.
+
+  # ---------------------------------------------------------------------
+  # ZT1 — a credential-shaped string literal anywhere a value can sit, not
+  # just a direct `$VAR = "$SECRET"` assignment. BAS-ZT1-001 only anchors on
+  # the assignment shape, so a secret that is instead a dict-literal value
+  # (an ordinary shape for a runtime settings object) has no assignment
+  # target of its own and never matches it. This rule drops the assignment
+  # requirement entirely and gates on the value's own shape instead: a
+  # connection string with inline user:pass@ credentials, or a token whose
+  # text names itself as a secret and carries a long hex-like body.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT1-002
+    title: Hardcoded credential in a collection literal
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [ZT1]
+    language: python
+    any:
+      - '"$VALUE"'
+    metavariable_matches:
+      VALUE: '(:\/\/[^\s/:@]+:[^\s/@]+@)|((?i:secret|token|password|api[_-]?key|private[_-]?key)[-_][0-9a-f]{12,})'
+    # Measured 2026-08-28, after the test_path downgrade above already
+    # removed the fixture-DSN majority: 9 of this rule's remaining findings
+    # were still false positives, all a default connection string in an
+    # os.getenv(..., "...")-style fallback in application config -- shipped
+    # code, not a fixture, so `in_test_paths` cannot help. Every one pointed
+    # at localhost/127.0.0.1.
+    #
+    # This is a value-shape exclusion, not a path one, and deliberately not
+    # folded into the test_path mechanism: a DSN whose host is localhost can
+    # never reach anything outside the machine it runs on, so it is not a
+    # usable credential regardless of which file it sits in -- a stronger,
+    # more certain signal than "this path looks like a fixture" (which is
+    # why in_test_paths downgrades rather than deletes: a real secret really
+    # does turn up in a test file sometimes). See
+    # vulnerable/tests/test_settings_fixture.py's docstring for the other
+    # half of that reasoning.
+    #
+    # Restricted to the localhost/127.0.0.1 host signal alone, not the wider
+    # placeholder-word list (password/secret/changeme/...) the false-positive
+    # writeup for this bug also suggested: this rule's second `VALUE`
+    # alternative requires exactly those words ("secret"/"token"/"password"/
+    # "api_key"/"private_key" followed by a hex body) to fire at all, so
+    # excluding on them would gut that alternative entirely -- see
+    # vulnerable/real_misses/hardcoded_dict_secrets.py's admin_secret entry,
+    # a real finding that contains the word "SECRET".
+    metavariable_not_matches:
+      VALUE: '(?i)://[^\s/@]*:[^\s/@]*@(localhost|127\.0\.0\.1)([:/]|$)'
+    description: >
+      A string literal's own content is credential-shaped -- either a
+      connection string with a username and password embedded before the
+      "@" host separator, or a token whose name says "secret"/"token"/... and
+      is followed by a long hex-like body. Unlike a direct `$VAR = "..."`
+      assignment, this fires wherever the literal sits: a dict value, a list
+      entry, a function argument.
+    remediation: >
+      Never embed a password inside a connection string or a live token in
+      source. Load the credential from an environment variable or secret
+      manager, and rotate whatever leaked into history.
+
+  # ---------------------------------------------------------------------
+  # LLM10 — eval()/exec() run on anything other than a string literal is an
+  # unconditional code-execution smell, independent of where the argument
+  # came from. BAS-LLM10-001 only fires when the argument's own text names a
+  # response/reply/... variable; a model reply that has passed through one
+  # local variable (e.g. compile()'s result) carries no such word and is
+  # missed entirely. This rule drops that name requirement and keeps only
+  # the literal-argument exclusion, so it also catches the one-hop case.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-004
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+      - exec($ARG)
+    none:
+      - eval("$LIT")
+      - exec("$LIT")
+    # Measured 2026-08-28: 6 false positives, all this rule, all a call
+    # provably safe from context the rule cannot see -- eval(class_name)
+    # where class_name can only ever be self.__class__.__name__, and
+    # eval(f"torch.{torch_dtype}") guarded one line above by an exact-match
+    # whitelist check. See tests/corpus/vulnerable/real_misses/
+    # eval_guarded_by_local_check.py for both, reproduced and investigated
+    # in full.
+    #
+    # Neither is fixable with `none:`: that field excludes alternate shapes
+    # of the *same* node `any:` matched (see rules::engine::scan_with,
+    # `matched.matches(pattern)`), so it can rule out an argument shape
+    # (`eval("$LIT")` above) but cannot see a sibling statement -- the prior
+    # assignment or guard clause the safety proof actually depends on.
+    # `inside:` only reaches ancestors of the matched node, and the guard in
+    # both cases is a sibling, not an ancestor. Widening `any:` to match a
+    # whole enclosing block so a guard-shape `none:` has something to work
+    # against was considered and rejected: every other finding from this
+    # rule would then report the block's line instead of the call's, and a
+    # guard pattern general enough to mean "checked against N literals
+    # above" without being tied to one example's exact if/elif shape is not
+    # achievable. Recorded as a known_gap (in the opposite direction from
+    # this file's usual recall gaps -- see expected.toml's comment on it)
+    # rather than shipped as an approximate guard pattern that would risk
+    # silently swallowing a real unvalidated eval().
+    description: >
+      eval()/exec() is called with an argument that is not a string literal.
+      Whatever produced this value -- a model reply, a compiled code object
+      derived from one, a config file, a network response -- the moment its
+      contents are attacker-influenceable this is arbitrary code execution,
+      regardless of how many local variables separate the call from its
+      original source.
+    remediation: >
+      Never run eval()/exec() on anything other than a fixed literal. If the
+      agent needs to run model-suggested logic, parse it into a constrained,
+      whitelisted set of operations instead of eval/exec.
+
+  # ---------------------------------------------------------------------
+  # LLM01 / ZT4 — a system prompt built from more than one interpolation,
+  # where the first is a caller-supplied override. BAS-ZT4-001 requires
+  # exactly one interpolation in the f-string, so a prompt that splices in
+  # a full override alongside other context never matches it structurally.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT4-002
+    title: System prompt built from a caller-supplied override
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM01, ZT4]
+    language: python
+    # Assignment and bare return, both with exactly two interpolations.
+    #
+    # The interpolation count is a known limitation, not a choice. A
+    # count-independent pattern (`f"$$$PARTS"` gated by a regex on PARTS) was
+    # tried and does not work: `metavariable_matches` has no effect on a `$$$`
+    # multi-node capture, so the gate is the only thing standing between that
+    # pattern and flagging every f-string in the repository. A real application
+    # interpolating three values is therefore still missed — recorded as a
+    # known gap rather than papered over.
+    #
+    # The `or`-fallback shape was added on 2026-08-28. Across 65 real
+    # third-party AI repositories the f-string shapes above fired zero times,
+    # and the single caller-supplied prompt override the corpus contained was
+    # written the way an optional argument is ordinarily written in Python:
+    # `system_prompt = system_override or self._build_system_prompt(...)`.
+    # That is the stronger version of the same defect -- the override does not
+    # get spliced into the instructions, it replaces them entirely -- and it
+    # is what the interpolation-counting patterns above structurally cannot
+    # see. The two metavariable gates are what keep it off every ordinary
+    # `x = y or default`: the assignment target must be prompt-shaped *and*
+    # the value must be named as an override.
+    any:
+      - '$SYS = f"$$$A{$OVERRIDE}$$$B{$VAR2}$$$C"'
+      - 'return f"$$$A{$OVERRIDE}$$$B{$VAR2}$$$C"'
+      - '$SYS = $OVERRIDE or $FALLBACK'
+    metavariable_matches:
+      SYS: "(?i)(system|prompt|instruction|persona|template)"
+      OVERRIDE: "(?i)(override|overridden|custom_instructions|force_prompt)"
+    description: >
+      A system/instruction prompt is built by f-string-interpolating a
+      caller-supplied override value directly into the instruction text,
+      alongside other content. Whatever sets that override -- a request
+      parameter, a header, a stored setting -- fully replaces the fixed
+      instructions rather than being confined to a data field.
+    remediation: >
+      Do not let a caller-supplied value replace or prepend the system
+      instructions. If per-request customization is a real requirement, keep
+      it in a clearly delimited data slot the model is told to treat as
+      content, and keep the base instructions fixed and caller-invisible.
+
+  # ---------------------------------------------------------------------
+  # ZT2 — Least Agency and Access. A wildcard tool grant in application
+  # code, not just inside a recognised MCP config file (BAS-MCP-003 only
+  # inspects the latter).
+  #
+  # Measured as non-firing on 2026-08-28 across 65 real third-party AI
+  # repositories, and deliberately kept. The corpus was checked directly, not
+  # just by the scan: `allowed_tools` appears in exactly one repository, and
+  # there it is always a scoped list, never `"*"`. There is no near-miss
+  # shape this rule is failing to reach — the defect simply is not present.
+  # Keeping it costs two string patterns and an `inside` constraint that
+  # cannot match anything except the literal grant it describes.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT2-001
+    title: Wildcard tool grant in agent-construction code
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [ZT2]
+    language: python
+    # `any` anchors on the "*" literal itself, not the enclosing call --
+    # matching the call would report the call's own opening line, not the
+    # keyword argument's line. `inside` then requires that literal to
+    # actually be the allowed_tools value of some call, in either quote
+    # style.
+    any:
+      - '"*"'
+      - "'*'"
+    inside:
+      - '$FN(allowed_tools="*", $$$REST)'
+      - '$FN($$$PRE, allowed_tools="*")'
+      - '$FN($$$PRE, allowed_tools="*", $$$REST)'
+      - "$FN(allowed_tools='*', $$$REST)"
+      - "$FN($$$PRE, allowed_tools='*')"
+      - "$FN($$$PRE, allowed_tools='*', $$$REST)"
+    description: >
+      An agent is constructed with allowed_tools="*", granting every tool
+      registered on it -- present and future -- rather than the specific
+      handful the task actually needs. A new destructive tool added later is
+      trusted automatically, with no review of this wiring.
+    remediation: >
+      Replace the wildcard with an explicit list of the tool names this
+      agent actually needs. Review that list whenever a new tool is added to
+      the pool it draws from.
+
+  # ---------------------------------------------------------------------
+  # TypeScript / JavaScript. The JS/TS agentic ecosystem this targets is
+  # LangChain.js, the Vercel AI SDK, and the official MCP TypeScript SDK --
+  # the same shapes as the Python rules above, ported to the syntax those
+  # libraries actually use.
+  #
+  # ast-grep's JS/TS pattern matching turned out to be quote-sensitive: a
+  # pattern written with double quotes does not match a string literal
+  # written with single quotes, and vice versa (Python's grammar treats
+  # quote style as insignificant for `Pattern` matching; JS/TS's does not).
+  # Every rule below that anchors on a string literal therefore lists both
+  # quote styles in `any` -- the same shape BAS-ZT1-001 above already uses
+  # for Python, just for a different reason there (style preference, not a
+  # matcher requirement).
+  # ---------------------------------------------------------------------
+
+  # Widened on 2026-08-28. This rule used to require the argument's own text
+  # to name a response/reply/completion/... variable, and across 65 real
+  # third-party AI repositories it never fired once. The reason is visible in
+  # the corpus: every real eval()/new Function() call on model-derived text
+  # reached it through a variable named for *what the value is* --
+  # `expression`, `calculation`, `resolved` -- because that is how developers
+  # name things. Python already made this trade in BAS-LLM10-004: drop the
+  # name gate, keep only the literal-argument exclusion, and pay for it with
+  # `confidence: medium` rather than `high`. eval() on anything that is not a
+  # fixed literal is a code-execution smell regardless of where the value
+  # came from.
+  - id: BAS-LLM10-005
+    title: eval() or new Function() run on a non-literal expression (JS)
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10, ZT4]
+    language: javascript
+    any:
+      - eval($ARG)
+      - new Function($ARG)
+    none:
+      - eval("$LIT")
+      - eval('$LIT')
+      - new Function("$LIT")
+      - new Function('$LIT')
+    description: >
+      eval() or the Function constructor is called with an argument that is
+      not a string literal. Whatever produced this value -- a model reply, a
+      planner's resolved template, a config file, a network response -- the
+      moment its contents are attacker-influenceable this is arbitrary code
+      execution, regardless of how many local variables separate the call
+      from its original source.
+    remediation: >
+      Never execute anything but a fixed literal. If the agent needs to run
+      model-suggested logic, parse it into a constrained, whitelisted set of
+      operations (a small interpreter or a JSON tool-call schema) instead of
+      eval/Function.
+
+  - id: BAS-LLM10-006
+    title: Model output executed as a shell command (JS)
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: javascript
+    # Two shapes share one ARG name so a single metavariable_matches gate
+    # covers both: the plain-argument form (`exec(reply)`) and the
+    # template-literal form (`exec(`...${reply}...`)`), each with and
+    # without a `child_process`/aliased-import namespace prefix.
+    #
+    # Deliberately no bare `exec($ARG)` variant: `exec` alone collides with
+    # `RegExp.prototype.exec` (`pattern.exec(reply)` is ordinary regex
+    # parsing of a model reply, not shell execution), which would make this
+    # rule fire on completely safe, common code. `execSync` carries no such
+    # collision.
+    #
+    # The receiver on `$CP.exec(...)`/`$CP.execSync(...)` used to be a bare
+    # metavariable (`$CP`), which this comment claimed was "scoped to a
+    # child_process-shaped receiver" -- it was not: `$CP` matches *any*
+    # identifier, so any object with an `.exec` method fired this rule.
+    # Measured 2026-08-28: 18 of BAS-LLM10-006's findings (29% of all
+    # findings in the calibration corpus) were exactly this -- 11
+    # `pattern.exec(response)` (RegExp.prototype.exec) and 7
+    # `db.exec(message)` (better-sqlite3's synchronous Database.exec), see
+    # clean/near_misses.ts.
+    #
+    # The receiver is now the three names a `node:child_process` import is
+    # realistically bound to (`cp`, `child_process`, `childProcess` -- the
+    # namespace-import and CommonJS-require idioms), spelled out literally
+    # rather than gated by a regex on a metavariable. A `metavariable_matches`
+    # constraint on CP was tried and rejected: it is a single gate applied to
+    # every pattern in this `any` list, and the two bare `execSync($ARG)`
+    # patterns below never bind CP at all -- `metavariable_matches` fails
+    # closed on a variable a pattern did not capture (see
+    # `rules::engine::CompiledRule::metavariables_satisfied`), so a CP
+    # constraint would have silently killed those two patterns' matches too.
+    # Enumerating the receiver as literal identifiers avoids that trap
+    # entirely, and also avoids the unanchored-regex-on-a-collapsed-call-chain
+    # failure mode a metavariable gate risks: `$CP` can capture more than a
+    # bare name (e.g. `require("child_process")`), and an unanchored regex
+    # against that text can match a substring of an unrelated chain.
+    any:
+      - cp.exec($ARG)
+      - cp.execSync($ARG)
+      - child_process.exec($ARG)
+      - child_process.execSync($ARG)
+      - childProcess.exec($ARG)
+      - childProcess.execSync($ARG)
+      - execSync($ARG)
+      - cp.exec(`$$$A${$ARG}$$$B`)
+      - cp.execSync(`$$$A${$ARG}$$$B`)
+      - child_process.exec(`$$$A${$ARG}$$$B`)
+      - child_process.execSync(`$$$A${$ARG}$$$B`)
+      - childProcess.exec(`$$$A${$ARG}$$$B`)
+      - childProcess.execSync(`$$$A${$ARG}$$$B`)
+      - execSync(`$$$A${$ARG}$$$B`)
+    metavariable_matches:
+      ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
+    description: >
+      A model reply is passed straight to a shell via child_process.exec,
+      execSync, or interpolated into a template-literal command string.
+      Anything the model was tricked into saying -- including output planted
+      by content it read from the web or from a document -- now runs as a
+      shell command with the process's full privileges.
+    remediation: >
+      Do not derive shell commands from model output. If the agent must run
+      a fixed set of commands, dispatch on a whitelist of command names with
+      argv-array execFile/spawn calls and validated arguments -- never
+      format model text into a command string.
+
+  # Measured as non-firing on 2026-08-28, and deliberately kept *with its
+  # name gate intact* — the one dead rule where widening was measured and
+  # rejected. Across 65 real third-party AI repositories there are 26
+  # template-literal `.query(`...`)` calls; 7 interpolate anything at all,
+  # and all 7 interpolate a table *identifier* from configuration
+  # (`${table}`), which is the one thing a bind parameter cannot carry and
+  # therefore the legitimate reason to build a query by interpolation.
+  # Dropping the ARG name gate the way BAS-LLM10-005 did would have turned
+  # this rule from 0 findings into 7 false positives. The name gate is the
+  # only thing making it precise, and it stays.
+  - id: BAS-LLM10-007
+    title: Model output concatenated into a SQL query (JS)
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: javascript
+    any:
+      - $DB.query(`$$$A${$ARG}$$$B`)
+    metavariable_matches:
+      ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
+    description: >
+      A database query is built by interpolating model output straight into
+      a template-literal SQL string. Since the model's reply is
+      attacker-influenceable (via prompt injection from any untrusted
+      document, tool result, or user message it has seen), this is SQL
+      injection with the model as the delivery mechanism.
+    remediation: >
+      Never interpolate model output into a SQL string. Use a parameterized
+      query (db.query(sql, params)) and keep model output confined to
+      parameter values, never to the query text itself.
+
+  - id: BAS-ZT1-003
+    title: Hardcoded API key (JS/TS)
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [ZT1]
+    language: javascript
+    # Anchored on the string literal's own shape rather than an assignment
+    # target, the same reasoning as BAS-ZT1-002 above: this fires wherever
+    # the literal sits -- a `const`, an object-literal property value, a
+    # function argument -- without needing a variant per surrounding shape.
+    #
+    # Reports through test paths for the same reason as BAS-ZT1-001.
+    in_test_paths: report
+    any:
+      - '"$SECRET"'
+      - "'$SECRET'"
+    metavariable_matches:
+      SECRET: "^sk-[A-Za-z0-9_-]{16,}$"
+    # Measured 2026-08-28: 5 false positives, the sharpest being two
+    # "leaked keys" flagged inside a function whose entire purpose was
+    # *detecting* placeholder keys (an isPlaceholderKey()-shaped helper --
+    # see clean/near_misses.ts). A placeholder value satisfies the length
+    # gate above just as well as a real key does; the length/character-class
+    # shape alone cannot tell them apart, so this is a second, narrower gate
+    # on the placeholder *content* rather than a change to the shape gate.
+    #
+    # Deliberately does not touch `SECRET`'s own regex: a real key with real
+    # entropy (vulnerable/zt1_static_credentials.ts) contains none of these
+    # words and still fires, proving this is an exception for placeholders,
+    # not a general weakening.
+    metavariable_not_matches:
+      SECRET: "(?i)(test|example|placeholder|dummy|foo|changeme|your[-_]?key[-_]?here|local|xxx|0{8,}|1{8,})"
+    description: >
+      A provider API key is a literal in source rather than read from the
+      environment or a secret manager. It ships with every clone of the
+      repo, every log of the source, and every fork.
+    remediation: >
+      Load the key from an environment variable or secret manager
+      (process.env.OPENAI_API_KEY) and rotate the key that leaked into
+      history.
+
+  - id: BAS-ZT4-003
+    title: Raw user input folded directly into a template-literal system prompt (JS)
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM01, ZT4]
+    language: javascript
+    any:
+      - "const $SYS = `$$$A${$VAR}$$$B`"
+    metavariable_matches:
+      SYS: "(?i)(system|prompt|instruction|persona|template)"
+      VAR: "(?i)(user|request|query|input|raw|message)"
+    description: >
+      A system/instruction prompt is built by template-literal-interpolating
+      raw user input directly into the instruction text, with no delimiter
+      separating "what the model must do" from "what the user said." Any
+      user message can now rewrite the model's instructions.
+    remediation: >
+      Keep untrusted input out of the instruction channel. Pass it as a
+      separate user/tool message, or through a templating layer that keeps
+      it in a clearly delimited data slot the model is told to treat as
+      content, not as commands.
+
+  - id: BAS-LLM03-002
+    title: Unauthorized agent tool exposed without a confirmation guard (JS)
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM03]
+    language: javascript
+    # Matches the whole registration -- the binding *and* the tool({...})
+    # call -- rather than the execute handler in isolation: ast-grep's JS
+    # pattern matching parses a bare `execute: fn` snippet as a labeled
+    # statement, not an object property, so it cannot be matched on its own
+    # with plain Pattern::try_new (see engine.rs module docs for the
+    # analogous TypeScript/Tsx divergence -- this is the same class of
+    # surprise, a different grammar).
+    #
+    # Re-anchored on 2026-08-28. This rule used to require a `name: "..."`
+    # property inside the tool({...}) object and never fired on any of 65
+    # real third-party AI repositories. The reason is that the API it names
+    # has no such property: the Vercel AI SDK's `tool()` helper takes
+    # description/inputSchema/execute, and the tool's name comes from the
+    # binding it is assigned to -- `const shutdownServer = tool({...})`, or a
+    # property key in a tools object. Of the 122 `tool({` registrations in
+    # that corpus, 100 are property keys and none are `const` bindings, so
+    # the old pattern was not narrow, it was describing something that does
+    # not exist.
+    #
+    # Read that measurement honestly: the shape this rule can now express is
+    # the *minority* one, and the majority shape is the known gap below,
+    # which ast-grep cannot express without matching approximately. This
+    # re-anchor removes a requirement that could never be met; it does not
+    # yet reach most real registries.
+    #
+    # Known gap, same trade as BAS-LLM03-001's guard-shape enumeration above:
+    # `execute` must be the last property (no properties after it), and its
+    # value must be an arrow function with a block body -- a registration
+    # followed by more options (e.g. `timeout: ...`), or one whose execute is
+    # a wrapped call, is missed rather than matched approximately. The
+    # wrapped-call case is deliberate: a `requireConfirmation(...)` wrapper is
+    # a real guard, and clean/tools.ts exists to prove it is not flagged.
+    #
+    # The other binding shape -- a property key in a tools object,
+    # `purgeIncidentHistory: tool({...})` -- is a known gap, recorded in
+    # tests/corpus/expected.toml. It is the same labeled-statement problem
+    # described above and it cannot be worked around: `$NAME: tool({...})`
+    # compiles without error and matches nothing (measured directly against
+    # ast_grep_core), and the enclosing shapes that do match -- `return {
+    # $$$A, $NAME: tool(...), $$$B }` and one variant per enclosing
+    # construct -- report the enclosing statement's line rather than the
+    # tool's, and only one tool per object. That is an approximate match, and
+    # this file does not ship those.
+    any:
+      - "const $NAME = tool({ $$$PRE, execute: async ($$$P) => { $$$BODY } })"
+      - "const $NAME = tool({ $$$PRE, execute: ($$$P) => { $$$BODY } })"
+    none:
+      - "const $NAME = tool({ $$$PRE, execute: async ($$$P) => { if (!$COND) { $$$_ } $$$REST } })"
+      - "const $NAME = tool({ $$$PRE, execute: ($$$P) => { if (!$COND) { $$$_ } $$$REST } })"
+      - "const $NAME = tool({ $$$PRE, execute: async ($$$P) => { if (!$COND) throw $EXC; $$$REST } })"
+      - "const $NAME = tool({ $$$PRE, execute: ($$$P) => { if (!$COND) throw $EXC; $$$REST } })"
+      - "const $NAME = tool({ $$$PRE, execute: async ($$$P) => { if (!$COND) return $EARLY; $$$REST } })"
+      - "const $NAME = tool({ $$$PRE, execute: ($$$P) => { if (!$COND) return $EARLY; $$$REST } })"
+    # Widened 2026-08-28, in parity with BAS-LLM03-001's Python widening --
+    # see that rule's comment for the head-to-head benchmark measurement and
+    # for why "add"/"set"/"pay"/"book" are deliberately absent (bare-prefix
+    # collisions with address/settings/payload/bookmark).
+    metavariable_matches:
+      NAME: "(?i)^(delete|drop|remove|transfer|withdraw|wire|drain|revoke|terminate|shutdown|sell_all|liquidate|send_funds|execute_trade|purge|wipe|create|update|edit|modify|insert|cancel|approve|reject|install|uninstall|register|grant|subscribe|schedule|submit|publish|deploy|charge|refund|send)"
+    description: >
+      A tool registered with the agent SDK's tool() helper performs a
+      privileged or state-changing action (delete, transfer, create, update,
+      ...) and its execute handler has no guard clause at the top checking a
+      confirmation or authorization condition before acting. If the agent
+      decides to call it, it executes unconditionally.
+    remediation: >
+      Require explicit confirmation or an authorization check before the
+      tool acts: check a confirmed/approved flag (or re-verify authorization)
+      as the first thing execute() does, and throw or return early when it is
+      not satisfied.
+
+  # ---------------------------------------------------------------------
+  # LLM08 (JS/TS twin of BAS-LLM08-001). A secret baked into prompt text is
+  # language-agnostic, so this reuses the exact sk--shaped value gate from
+  # BAS-ZT1-003 rather than inventing a second definition of "looks like a
+  # secret" -- one regex, two rules.
+  #
+  # ast-grep matches a `const $VAR = ...` pattern against the
+  # `lexical_declaration` node inside an `export const ...` statement too
+  # (measured directly: the pattern is not anchored to the top of the tree,
+  # so `export` wrapping it does not defeat the match), which is the
+  # ordinary way a real TS/JS codebase names a module-level prompt.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM08-002
+    title: Secret embedded inside a prompt template (JS)
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM08]
+    language: javascript
+    any:
+      - "const $VAR = \"$CONTENT\""
+      - "const $VAR = '$CONTENT'"
+      - "const $VAR = `$CONTENT`"
+    metavariable_matches:
+      VAR: "(?i)(prompt|template|system|instruction|persona)"
+      CONTENT: "(?i)sk-[A-Za-z0-9_-]{16,}"
+    description: >
+      A credential-shaped secret is embedded in the text of a prompt or
+      system-message template. Once a secret is part of what the model reads,
+      it is part of what the model can be tricked into repeating -- a
+      "don't reveal this" instruction is not a control the model reliably
+      enforces.
+    remediation: >
+      Never put real secrets in prompt text, including as "internal only"
+      instructions. Keep credentials out of the context window entirely; if
+      the model needs to use a credential, do it via a tool call the
+      application executes server-side.
+
+  # ---------------------------------------------------------------------
+  # LLM06 (JS/TS twin of BAS-LLM06-001). Observation, not a defect, for the
+  # same reason as the Python rule: a gateway or SDK default elsewhere might
+  # already bound the call, and the source alone cannot say. Loading
+  # rejects a `kind: defect` on this context-dependent category outright,
+  # so it stays here even though the shape is otherwise as certain as
+  # BAS-ZT2-002 below.
+  #
+  # Three independent call shapes, one per SDK actually seen in 65 real
+  # third-party AI repositories on 2026-08-28, each with its own ceiling
+  # keyword: the Vercel AI SDK's generateText/streamText (maxOutputTokens),
+  # the OpenAI Node SDK's chat.completions.create (max_tokens), and
+  # LangChain.js's ChatOpenAI/ChatAnthropic constructors (maxTokens).
+  #
+  # No CLIENT/receiver name gate on the OpenAI-SDK shape, unlike the Python
+  # rule's CLIENT: "(?i)(client|llm|openai|gpt)". That gate was measured
+  # against this same corpus and would have missed a real call: a
+  # middleware-wrapped client bound to a variable named `ai`, not
+  # client/llm/openai/gpt-shaped. `.chat.completions.create` is already a
+  # three-level attribute chain distinctive enough that no other capture
+  # collided with it anywhere in the corpus, so the name gate bought
+  # nothing but a miss.
+  #
+  # Each `none:` exclusion is written three ways -- ceiling property first,
+  # last, and in the middle of the options object -- because ast-grep's
+  # pattern matcher cannot express "this property is present anywhere in
+  # the object" with a single `{ $$$A, prop: $V, $$$B }` pattern: when
+  # `prop` is the object's last property (nothing for $$$B to capture and no
+  # trailing comma for it to anchor on), that pattern silently fails to
+  # match (measured directly against ast_grep_core; the same reason
+  # BAS-LLM03-002 above requires `execute` to be the object's last
+  # property). All three real ceiling positions were seen in this corpus --
+  # last (this rule's own clean fixture), and the middle (two real repos,
+  # `llm-gateway.ts` and `aiSdk.ts`) -- so only shipping the "last" variant,
+  # the shape this file's own fixtures happened to use, would have missed
+  # the majority of real code.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM06-002
+    title: LLM call has no token ceiling (JS)
+    kind: observation
+    severity: low
+    confidence: medium
+    categories: [LLM06]
+    language: javascript
+    any:
+      - generateText($$$ARGS)
+      - streamText($$$ARGS)
+      - $CLIENT.chat.completions.create($$$ARGS)
+      - new ChatOpenAI($$$ARGS)
+      - new ChatAnthropic($$$ARGS)
+    none:
+      - "generateText({ maxOutputTokens: $MT, $$$B })"
+      - "generateText({ $$$A, maxOutputTokens: $MT })"
+      - "generateText({ $$$A, maxOutputTokens: $MT, $$$B })"
+      - "streamText({ maxOutputTokens: $MT, $$$B })"
+      - "streamText({ $$$A, maxOutputTokens: $MT })"
+      - "streamText({ $$$A, maxOutputTokens: $MT, $$$B })"
+      - "$CLIENT.chat.completions.create({ max_tokens: $MT, $$$B })"
+      - "$CLIENT.chat.completions.create({ $$$A, max_tokens: $MT })"
+      - "$CLIENT.chat.completions.create({ $$$A, max_tokens: $MT, $$$B })"
+      - "new ChatOpenAI({ maxTokens: $MT, $$$B })"
+      - "new ChatOpenAI({ $$$A, maxTokens: $MT })"
+      - "new ChatOpenAI({ $$$A, maxTokens: $MT, $$$B })"
+      - "new ChatAnthropic({ maxTokens: $MT, $$$B })"
+      - "new ChatAnthropic({ $$$A, maxTokens: $MT })"
+      - "new ChatAnthropic({ $$$A, maxTokens: $MT, $$$B })"
+    description: >
+      This completion/generation call sets no explicit token ceiling
+      (maxOutputTokens, max_tokens, or maxTokens depending on the SDK), so
+      nothing in the repository bounds a single call's cost or latency. A
+      gateway, proxy, or SDK default elsewhere may already cap this -- the
+      source alone cannot say -- which is why this is an observation rather
+      than a defect.
+    remediation: >
+      Set an explicit token ceiling on the call (or the provider's
+      equivalent), or confirm and document the upstream limiter that bounds
+      it.
+
+  # ---------------------------------------------------------------------
+  # ZT2 (JS/TS twin of BAS-ZT2-001). JS/TS has no keyword arguments, so
+  # `allowed_tools="*"` has no direct equivalent: the ordinary shape a real
+  # tool-scoping helper uses instead is a positional wildcard string, the
+  # last argument to a call whose name says what it does --
+  # `selectToolsForAgent(ALL_TOOLS, "*")` in this file's own vulnerable
+  # fixture.
+  #
+  # This rule has now failed precision twice on the same root cause, and
+  # the second failure is the one worth documenting in full because it
+  # survived a grep-based measurement:
+  #
+  # Attempt 1: `$FN($$$PRE, "*")` with no gate on FN at all. Ungated, that
+  # is not a wildcard-tool-grant pattern, it is "any call whose last
+  # argument is the string *" -- a CORS header
+  # (`res.header('Access-Control-Allow-Origin', '*')`), a glob, a route
+  # wildcard.
+  #
+  # Attempt 2 (this rule's first shipped version) gated FN on
+  # `(?i)(tool|agent)`, unanchored. That regex checks whether the
+  # substring "tool" or "agent" appears anywhere in FN's captured text --
+  # and FN, in ast-grep's pattern, captures the *entire* callee expression,
+  # not just a bare function name. For a chained call like
+  # `db.from("user_mcp_connector_tools").select("*")`, the callee is the
+  # whole `db.from("user_mcp_connector_tools").select` expression, and its
+  # text contains "tool" -- not from a function name, from a table-name
+  # string literal three calls upstream of the actual `.select("*")`.
+  # Measured directly against the 65-repo corpus after Attempt 2 shipped:
+  # 7 findings, 0 true positives, all Supabase/PostgREST
+  # `.from(TABLE).select("*")` chains where a table name happened to
+  # contain "tool" or "agent" as a substring. A prior grep-based check for
+  # this exact shape (matching a dotted identifier immediately before the
+  # call, comma-separated arguments only) reported zero hits and was
+  # wrong: it could not model ast-grep collapsing an entire multi-call
+  # chain's text -- string-literal arguments included -- into one
+  # metavariable, and it never tried the single-argument `$FN("*")` case
+  # (`$$$PRE` matching zero nodes) at all. Lesson: a grep proxy for an
+  # ast-grep pattern is not a measurement of that pattern; only running the
+  # compiled rule against real code is.
+  #
+  # The fix anchors FN's regex to the *entire* captured text
+  # (`^...$`, identifier characters only): a plain identifier callee like
+  # `selectToolsForAgent` satisfies it, but a member-expression chain like
+  # `db.from("user_mcp_connector_tools").select` never can, because it
+  # contains characters (`.`, `"`, `(`, `)`) no identifier does. That also
+  # narrows recall to bare-identifier calls only (no `sdk.selectTools(...)`
+  # namespaced form), which costs nothing measured: the corpus fixture this
+  # rule exists to catch is itself a bare identifier call, and there is
+  # still no real-world instance of any wildcard-tool-grant shape to have
+  # widened for.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT2-002
+    title: Wildcard tool grant in agent-construction code (JS)
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [ZT2]
+    language: javascript
+    any:
+      - '$FN($$$PRE, "*")'
+      - "$FN($$$PRE, '*')"
+    metavariable_matches:
+      FN: "(?i)^[a-z_$][a-z0-9_$]*(tool|agent)[a-z0-9_$]*$"
+    description: >
+      An agent is constructed with a wildcard tool grant, positionally
+      rather than as a named keyword argument -- the ordinary call shape in
+      TS/JS -- granting every tool registered on it, present and future,
+      rather than the specific handful the task actually needs. A new
+      destructive tool added later is trusted automatically, with no review
+      of this wiring.
+    remediation: >
+      Replace the wildcard with an explicit list of the tool names this
+      agent actually needs. Review that list whenever a new tool is added to
+      the pool it draws from.

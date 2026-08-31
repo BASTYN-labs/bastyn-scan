@@ -1,0 +1,8 @@
+# The batch worker. No USER instruction anywhere, which is what most
+# Dockerfiles in the wild look like -- an observation, never a defect.
+FROM python:3.12-slim
+WORKDIR /srv/worker
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "-m", "agent.worker"]

@@ -1,0 +1,10 @@
+# Agent/MCP client configuration, package manifests, and container isolation.
+#
+# Part of the built-in rule corpus, loaded alongside bastyn.yml and the other
+# rules/*.yml files by RuleSet::embedded(). The corpus is split by subject so
+# that unrelated rules can be authored without contending for one file; ids
+# are still globally unique across every file.
+#
+# Schema: see the header of bastyn.yml.
+
+rules: []

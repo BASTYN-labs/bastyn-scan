@@ -1,0 +1,465 @@
+# Agent-framework configuration flags and known-unsafe framework entry points.
+#
+# Part of the built-in rule corpus, loaded alongside bastyn.yml and the other
+# rules/*.yml files by RuleSet::embedded(). The corpus is split by subject so
+# that unrelated rules can be authored without contending for one file; ids
+# are still globally unique across every file.
+#
+# Schema: see the header of bastyn.yml.
+#
+# Every rule below is one of two shapes:
+#
+#   1. A documented "unsafe opt-in" keyword argument (allow_dangerous_*=True,
+#      pickle_fallback=True) on a specific, named framework call. The literal
+#      kwarg *is* the vulnerability -- these need a `$$$A, kw=True, $$$B`
+#      style `any:` (or `none:`, for the inverse "safe kwarg is missing"
+#      shape) with a variant per argument position, the same convention
+#      BAS-LLM06-001 in bastyn.yml established: ast-grep's `{ $$$A, prop:
+#      $V, $$$B }`-style pattern does not match when the property is first
+#      or last in the list (nothing for the empty side to capture), so each
+#      position is spelled out rather than assumed to be covered by one
+#      pattern.
+#
+#   2. Import or instantiation of a specific class with no safe production
+#      use (LLMMathChain, PALChain, PandasQueryEngine, ...) -- the class
+#      name itself is the finding, so these match both the `from $MOD import
+#      Name`  import shape (in each of the four list-position variants) and
+#      the direct-call shape (`Name(...)`, `Name.factory_method(...)`).
+#
+# Each rule id below was measured against the 65-repository calibration
+# corpus on 2026-08-28; see the per-rule comment for the finding/TP/FP
+# breakdown, or the drop reason for the one rule (BAS-LLM10-012) that did
+# not ship.
+
+rules:
+  # ---------------------------------------------------------------------
+  # LLM03 — Excessive Agency: the three documented "unsafe opt-in" kwargs
+  # that turn a bounded LangChain component into an arbitrary-code or
+  # arbitrary-Cypher/HTTP primitive. In every case the literal `True` is the
+  # entire vulnerability, independent of where the surrounding values came
+  # from -- there is no legitimate reason a shipped code path sets these
+  # rather than gating them behind an explicit, audited trust decision.
+  # ---------------------------------------------------------------------
+
+  # Measured 2026-08-28 on 65 real third-party AI repositories: 0 findings.
+  # No repository in the corpus calls create_pandas_dataframe_agent or
+  # create_csv_agent with allow_dangerous_code at all (with or without
+  # =True). The rule is unexercised, not proven wrong -- kept because the
+  # kwarg is the documented, CVE-linked opt-in (Langflow, CVE-2026-27966)
+  # for exactly this pattern, and the shape is unambiguous by construction:
+  # a literal `True` on this exact kwarg name has no safe reading.
+  - id: BAS-LLM03-010
+    title: allow_dangerous_code=True on a LangChain data-agent factory
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM03]
+    language: python
+    any:
+      - create_pandas_dataframe_agent(allow_dangerous_code=True)
+      - create_pandas_dataframe_agent(allow_dangerous_code=True, $$$B)
+      - create_pandas_dataframe_agent($$$A, allow_dangerous_code=True)
+      - create_pandas_dataframe_agent($$$A, allow_dangerous_code=True, $$$B)
+      - create_csv_agent(allow_dangerous_code=True)
+      - create_csv_agent(allow_dangerous_code=True, $$$B)
+      - create_csv_agent($$$A, allow_dangerous_code=True)
+      - create_csv_agent($$$A, allow_dangerous_code=True, $$$B)
+    description: >
+      A LangChain data-agent factory (create_pandas_dataframe_agent,
+      create_csv_agent) is called with allow_dangerous_code=True, the
+      documented opt-in that exposes a PythonAstREPLTool letting the LLM
+      run arbitrary Python against the process. This exact flag shipped
+      hardcoded in at least one real product (Langflow, CVE-2026-27966).
+    remediation: >
+      Remove allow_dangerous_code=True unless the deployment is fully
+      sandboxed (no filesystem/network access, no credentials in the
+      process) and that trust decision is explicit and reviewed. Prefer a
+      constrained, schema-validated query interface over LLM-generated
+      Python.
+
+  # Measured 2026-08-28: 1 finding, 1 true positive (100% precision) --
+  # FAISS.load_local(..., allow_dangerous_deserialization=True) in a real
+  # RAG pipeline, unconditionally reloading a persisted index with no
+  # provenance check on the index file. See GHSA-f2jm-rw3h-6phg
+  # (CVE-2024-5998): the kwarg opts into pickle.loads() on that file.
+  - id: BAS-LLM03-011
+    title: allow_dangerous_deserialization=True on a vectorstore loader
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM03]
+    language: python
+    # $STORE is a bare metavariable (any receiver), not anchored to the
+    # literal name `FAISS`: the kwarg name itself is distinctive enough
+    # that a receiver gate buys nothing but a miss on a subclass or an
+    # aliased import (`from langchain_community.vectorstores import FAISS
+    # as VectorIndex`).
+    any:
+      - $STORE.load_local(allow_dangerous_deserialization=True)
+      - $STORE.load_local(allow_dangerous_deserialization=True, $$$B)
+      - $STORE.load_local($$$A, allow_dangerous_deserialization=True)
+      - $STORE.load_local($$$A, allow_dangerous_deserialization=True, $$$B)
+    description: >
+      A vectorstore's load_local() call sets allow_dangerous_deserialization=True,
+      opting into pickle.loads() on the persisted index file. Anyone who can
+      place or replace that file (a shared cache, a downloaded index, a
+      writable volume) gets code execution the moment it is loaded.
+    remediation: >
+      Only set this flag when the index file's provenance is fully trusted
+      and integrity-checked (e.g. signed, or written exclusively by this
+      same process). Otherwise, rebuild the index from source documents
+      instead of deserializing a persisted one.
+
+  # Measured 2026-08-28: 0 findings. No repository in the corpus
+  # instantiates GraphCypherQAChain or the Requests* toolkit/tools with
+  # allow_dangerous_requests at all. Kept for the same reason as
+  # BAS-LLM03-010: the kwarg is the CVE-documented opt-in (GHSA-45pg-36p6-83v9,
+  # CVE-2024-8309; GHSA-h5gc-rm8j-5gpr, CVE-2025-2828) and a literal `True`
+  # on it has no safe reading.
+  - id: BAS-LLM03-012
+    title: allow_dangerous_requests=True on a LangChain graph/HTTP tool
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM03]
+    language: python
+    any:
+      - GraphCypherQAChain.from_llm(allow_dangerous_requests=True)
+      - GraphCypherQAChain.from_llm(allow_dangerous_requests=True, $$$B)
+      - GraphCypherQAChain.from_llm($$$A, allow_dangerous_requests=True)
+      - GraphCypherQAChain.from_llm($$$A, allow_dangerous_requests=True, $$$B)
+      - RequestsToolkit(allow_dangerous_requests=True)
+      - RequestsToolkit(allow_dangerous_requests=True, $$$B)
+      - RequestsToolkit($$$A, allow_dangerous_requests=True)
+      - RequestsToolkit($$$A, allow_dangerous_requests=True, $$$B)
+      - RequestsGetTool(allow_dangerous_requests=True)
+      - RequestsGetTool(allow_dangerous_requests=True, $$$B)
+      - RequestsGetTool($$$A, allow_dangerous_requests=True)
+      - RequestsGetTool($$$A, allow_dangerous_requests=True, $$$B)
+      - RequestsPostTool(allow_dangerous_requests=True)
+      - RequestsPostTool(allow_dangerous_requests=True, $$$B)
+      - RequestsPostTool($$$A, allow_dangerous_requests=True)
+      - RequestsPostTool($$$A, allow_dangerous_requests=True, $$$B)
+    description: >
+      A LangChain graph-QA chain or Requests tool/toolkit is constructed
+      with allow_dangerous_requests=True, letting LLM-generated Cypher run
+      directly against a graph database or letting the agent make
+      unrestricted outbound HTTP requests (including to cloud metadata
+      endpoints).
+    remediation: >
+      Remove allow_dangerous_requests=True. For graph QA, validate or
+      constrain generated Cypher before execution; for HTTP tools, put an
+      explicit host/scheme allowlist and a private-IP-range block in front
+      of the outbound request instead of disabling the built-in guard.
+
+  # ---------------------------------------------------------------------
+  # LLM10 — Improper Output Handling: framework entry points where the
+  # documented, ordinary way to call the API is itself the vulnerability
+  # (LLM10.3, LLM10.6), a known-unsafe "sandbox" composition (LLM10.12,
+  # dropped -- see its own comment), or a class whose only purpose is
+  # running LLM-generated code/expressions through an eval-equivalent
+  # engine (LLM10.13 through LLM10.16).
+  # ---------------------------------------------------------------------
+
+  # Measured 2026-08-28: 7 findings, 7 true positives (100% precision) --
+  # 2 in a trading-bot's model checkpoint loader, 5 in a LLaMA-weights
+  # conversion script and training-data cache loader. Every finding is a
+  # bare torch.load(path) with no weights_only kwarg at all, loading a
+  # local checkpoint or cache file -- the exact shape GHSA-53q9-r3pm-6pq6
+  # (CVE-2025-32434) documents as pickle-based RCE on a crafted checkpoint,
+  # and exactly the "trusted, internally-generated checkpoint" case the
+  # catalogue entry itself says is still worth flagging as defense-in-depth.
+  - id: BAS-LLM10-010
+    title: torch.load without weights_only=True
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - torch.load($$$A)
+    none:
+      - torch.load(weights_only=True)
+      - torch.load(weights_only=True, $$$B)
+      - torch.load($$$A, weights_only=True)
+      - torch.load($$$A, weights_only=True, $$$B)
+    description: >
+      torch.load() is called without weights_only=True. torch's default
+      unpickler can execute arbitrary code embedded in a crafted checkpoint
+      file, regardless of where the checkpoint path came from.
+    remediation: >
+      Add weights_only=True to every torch.load() call unless the
+      checkpoint genuinely contains non-tensor Python objects the app
+      needs, in which case restrict loading to checkpoints this same
+      pipeline produced and never an externally supplied path.
+
+  # Measured 2026-08-28, final rule (see the in-rule comment below for the
+  # first-draft precision failure this shape replaced): 0 findings. No
+  # bare-default yaml.load() call turned up anywhere else in the corpus;
+  # the only 11 yaml.load() call sites found were all the
+  # now-correctly-excluded custom-safe-loader case
+  # below. See BAS-LLM10-010's comment for why a rule this unambiguous is
+  # kept even without a positive true-positive count from this corpus.
+  - id: BAS-LLM10-011
+    title: yaml.load without a safe loader
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM10]
+    language: python
+    # Measured 2026-08-28, first draft (a bare `yaml.load($$$A)` any: with a
+    # `none:` list of only the literal `yaml.SafeLoader`/`SafeLoader`
+    # spellings): 11 findings, 0 true positives -- all 11 were
+    # `yaml.load(spec, Loader=YAMLNoDateSafeLoader)` in one real corpus
+    # repository, where `YAMLNoDateSafeLoader` is
+    # `class YAMLNoDateSafeLoader(yaml.SafeLoader)` two lines away in the
+    # same file -- a genuinely safe custom loader subclass, exactly the
+    # false-positive shape the catalogue entry itself predicts ("occasional
+    # false positives where a custom-but-safe Loader subclass is passed and
+    # the analyzer can't verify its safety").
+    #
+    # Fixed by capturing the Loader value into $L (four position variants,
+    # ordered before the bare fallback so they win the match whenever a
+    # Loader kwarg exists at all -- `Any`'s sub-matchers are tried in list
+    # order and the first success supplies the environment, so putting the
+    # capturing patterns first is what makes $L get bound instead of
+    # silently absorbed into the bare pattern's $$$A) and rejecting any
+    # value whose own name contains "safe" case-insensitively via
+    # `metavariable_not_matches`, rather than an exact-name allowlist. This
+    # generalizes past `yaml.SafeLoader`/`SafeLoader` to any project's own
+    # `*Safe*Loader` subclass -- exactly what a real custom safe loader is
+    # overwhelmingly named -- while a name-based heuristic still cannot
+    # verify an oddly-named safe subclass, which is a recall gap, not a
+    # precision one.
+    #
+    # That "contains safe" heuristic has its own trap: PyYAML's own
+    # `UnsafeLoader` contains the substring "safe" too, and this engine's
+    # regex backend has no lookaround to exclude "preceded by un" (see this
+    # file's header comment, and schema.rs's note on why
+    # metavariable_not_matches exists at all). Rather than a fragile
+    # prefix-counting regex, the eight `Loader=[yaml.]UnsafeLoader` literal
+    # patterns above are placed *before* the $L-capturing ones in `any:` --
+    # by the same first-match-wins ordering -- so an explicit UnsafeLoader
+    # call is flagged through a path that never binds $L at all, and only
+    # falls through to the $L/"safe"-heuristic path for every other Loader
+    # spelling.
+    #
+    # Re-measured after the fix: 0 findings on the same corpus (those
+    # custom-safe-loader calls are now correctly excluded; no other
+    # yaml.load() call in the corpus lacks a safe-named Loader). See
+    # BAS-LLM10-010's sibling comment for why an unexercised rule is kept
+    # rather than dropped: the pattern itself (yaml.load with the unsafe
+    # default) is unambiguous and CVE-documented independent of this
+    # corpus's specific contents.
+    any:
+      - yaml.load($$$A, Loader=yaml.UnsafeLoader, $$$B)
+      - yaml.load($$$A, Loader=yaml.UnsafeLoader)
+      - yaml.load(Loader=yaml.UnsafeLoader, $$$B)
+      - yaml.load(Loader=yaml.UnsafeLoader)
+      - yaml.load($$$A, Loader=UnsafeLoader, $$$B)
+      - yaml.load($$$A, Loader=UnsafeLoader)
+      - yaml.load(Loader=UnsafeLoader, $$$B)
+      - yaml.load(Loader=UnsafeLoader)
+      - yaml.load($$$A, Loader=$L, $$$B)
+      - yaml.load($$$A, Loader=$L)
+      - yaml.load(Loader=$L, $$$B)
+      - yaml.load(Loader=$L)
+      - yaml.load($$$A)
+    metavariable_not_matches:
+      L: "(?i)safe"
+    description: >
+      yaml.load() is called with the default (unsafe) loader instead of
+      yaml.safe_load() or an explicit Loader=yaml.SafeLoader. PyYAML's
+      unsafe loaders can invoke arbitrary Python callables via tags like
+      !python/object/apply at parse time, regardless of where the YAML
+      text came from.
+    remediation: >
+      Use yaml.safe_load() (or yaml.load(data, Loader=yaml.SafeLoader))
+      unless the YAML genuinely encodes Python objects the app must
+      reconstruct, in which case treat the input file as fully trusted and
+      say so in a comment.
+
+  # DROPPED: LLM10.12, "code-execution tool shells out via subprocess/
+  # child_process as its sandbox." Not shipped as BAS-LLM10-012.
+  #
+  # A draft rule was built and measured directly against the calibration
+  # corpus before being dropped, per this project's "measure before you
+  # drop" discipline -- the draft matched
+  # `subprocess.{run,call,Popen}($ARG, shell=True, ...)` with $ARG not a
+  # bare string literal, gated with `inside:` on the same `@tool`/
+  # `@mcp.tool()`-decorated-function shape BAS-LLM03-001 uses. Measured
+  # 2026-08-28: 0 findings. A direct grep for
+  # `subprocess\.(run|call|Popen)\(.*shell\s*=\s*True` across the whole
+  # 65-repository corpus turns up exactly 5 call sites, and every one is a
+  # dev-launch/setup script (a local-server bootstrapper, a
+  # frontend/backend dev-server launcher, a DeepSpeed chat driver) -- none
+  # inside an `@tool`-decorated function, so the `inside:`
+  # gate correctly stayed silent on all five. Zero matches means zero
+  # adjudicated true or false positives: this corpus cannot confirm or
+  # deny the rule's precision either way.
+  #
+  # Dropped rather than shipped unmeasured anyway, unlike the other
+  # zero-finding rules in this file (BAS-LLM03-010/012,
+  # BAS-LLM10-013/014/015/016): those all gate on a flag or class name with
+  # *no legitimate reading* -- allow_dangerous_code=True, PALChain, etc. --
+  # so an unexercised rule is still safe to keep on structural grounds
+  # alone. This rule's gate is different in kind: "shell=True on a
+  # non-literal argument inside an LLM-facing tool" is not unambiguous the
+  # same way. A `@tool`-decorated function that shells out with a
+  # non-literal but *validated* argument (an f-string built from an
+  # internal enum, a path already checked against an allowlist) is a
+  # plausible, real shape this rule cannot structurally distinguish from
+  # "raw model-generated command through the shell": the `none:` exclusion
+  # only rules out a bare string literal, not a constrained non-literal,
+  # and there is no way to see "validated" from the call site without the
+  # provenance tracing this engine does not have. The catalogue entry's own
+  # "Detectability: structural" claim holds for the sink shape
+  # (shell=True + non-literal) but the "this is specifically a
+  # code-execution tool, not just any tool that happens to shell out" part
+  # of the claim is closer to `semantic` than the entry allows for --
+  # exactly the ambiguity this rule was flagged as highest-risk for during
+  # authoring. BAS-LLM10-002/006 in bastyn.yml already ship the narrower,
+  # higher-precision "model output reaches shell=True/exec()" shape via the
+  # response/reply/...-name gate; this draft was the strictly broader "any
+  # non-literal argument, inside any tool" version of the same idea, and
+  # with no corpus evidence to confirm it and a real structural reason it
+  # could over-fire, broader was not worth shipping.
+
+  # Measured 2026-08-28: 0 findings. No repository in the corpus imports or
+  # instantiates LLMMathChain or LLMSymbolicMathChain -- consistent with the
+  # catalogue's own "low, declining" prevalence note. Kept for the same
+  # reason as BAS-LLM10-014/015/016 below: both chains route model output
+  # through an eval-equivalent engine with no safe production reading
+  # (GHSA-f73w-4m7g-ch9x, CVE-2023-39631; GHSA-p2qj-r53j-h3xj,
+  # CVE-2024-46946), so the class name alone is unambiguous regardless of
+  # whether this specific corpus happens to contain it.
+  - id: BAS-LLM10-013
+    title: Import/use of LLMMathChain or LLMSymbolicMathChain
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - "from $MOD import LLMMathChain"
+      - "from $MOD import $$$A, LLMMathChain"
+      - "from $MOD import LLMMathChain, $$$B"
+      - "from $MOD import $$$A, LLMMathChain, $$$B"
+      - "from $MOD import LLMSymbolicMathChain"
+      - "from $MOD import $$$A, LLMSymbolicMathChain"
+      - "from $MOD import LLMSymbolicMathChain, $$$B"
+      - "from $MOD import $$$A, LLMSymbolicMathChain, $$$B"
+      - LLMMathChain.from_llm($$$A)
+      - LLMMathChain($$$A)
+      - LLMSymbolicMathChain.from_llm($$$A)
+      - LLMSymbolicMathChain($$$A)
+    description: >
+      LLMMathChain or LLMSymbolicMathChain is imported or instantiated.
+      LLMMathChain routes LLM output through numexpr.evaluate() and
+      LLMSymbolicMathChain through sympy.sympify() (which internally calls
+      eval()) -- both are eval-equivalent remote-code-execution primitives
+      fed directly with model output (GHSA-f73w-4m7g-ch9x, CVE-2023-39631;
+      GHSA-p2qj-r53j-h3xj, CVE-2024-46946).
+    remediation: >
+      Remove the chain. If the agent needs arithmetic, give it a real
+      calculator tool that parses a constrained expression grammar (no
+      arbitrary Python/sympy evaluation) instead of routing model output
+      through an eval-equivalent engine.
+
+  # Measured 2026-08-28: 0 findings. No repository in the corpus imports or
+  # instantiates PandasQueryEngine or PandasAstREPLTool. Kept because the
+  # class runs LLM-generated pandas code through an eval-based filter that
+  # was bypassed twice (GHSA-r6gp-rff2-p3hf, CVE-2023-39662/2024-3271/
+  # 2024-3098) and has no safe production use per LlamaIndex's own
+  # "not for production" warning on the package it now ships in.
+  - id: BAS-LLM10-014
+    title: Import/use of PandasQueryEngine or PandasAstREPLTool
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - "from $MOD import PandasQueryEngine"
+      - "from $MOD import $$$A, PandasQueryEngine"
+      - "from $MOD import PandasQueryEngine, $$$B"
+      - "from $MOD import $$$A, PandasQueryEngine, $$$B"
+      - "from $MOD import PandasAstREPLTool"
+      - "from $MOD import $$$A, PandasAstREPLTool"
+      - "from $MOD import PandasAstREPLTool, $$$B"
+      - "from $MOD import $$$A, PandasAstREPLTool, $$$B"
+      - PandasQueryEngine($$$A)
+      - PandasAstREPLTool($$$A)
+    description: >
+      PandasQueryEngine or PandasAstREPLTool is imported or instantiated.
+      Both run LLM-generated pandas code through an eval/safe_eval filter
+      that has been bypassed twice via getattr/hasattr tricks
+      (GHSA-r6gp-rff2-p3hf), and LlamaIndex ships the package with an
+      explicit "not for production" warning.
+    remediation: >
+      Remove the query engine. Give the agent a constrained, schema-
+      validated query interface (a fixed set of aggregation/filter
+      operations) instead of running LLM-generated pandas code directly.
+
+  # Measured 2026-08-28: 0 findings. No repository in the corpus imports or
+  # instantiates PALChain -- consistent with the catalogue's own
+  # "rare/deprecated" prevalence note (removed from current LangChain docs).
+  # Kept because the class has literally no safe usage: .run() feeds model
+  # output straight into Python exec(), and four successive CVEs
+  # (GHSA-2qmj-7962-cjq8 and related, CVE-2023-36095/36188/44467) document
+  # that its sandboxing was never robust.
+  - id: BAS-LLM10-015
+    title: Import/use of PALChain
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - "from $MOD import PALChain"
+      - "from $MOD import $$$A, PALChain"
+      - "from $MOD import PALChain, $$$B"
+      - "from $MOD import $$$A, PALChain, $$$B"
+      - PALChain.from_math_prompt($$$A)
+      - PALChain.from_colored_object_prompt($$$A)
+      - PALChain($$$A)
+    description: >
+      PALChain is imported or instantiated. Its .run() feeds LLM output
+      straight into Python's exec(), and four successive CVEs over a year
+      show its sandbox mitigations were never robust. There is no
+      legitimate production use of this class.
+    remediation: >
+      Remove PALChain entirely. If the agent needs program-aided reasoning,
+      run any generated code in a real, network-isolated sandbox/container
+      the app controls, never in-process.
+
+  # Measured 2026-08-28: 0 findings. No repository in the corpus
+  # constructs JsonPlusSerializer with pickle_fallback at all. Kept because
+  # the explicit kwarg is unambiguous by construction -- a literal `True`
+  # here has no safe reading -- and it is the one variant of this bug class
+  # (GHSA-g48c-2wqr-h844, CVE-2025-64439 and related) that is visible from
+  # AST alone; the pre-4.0.0 implicit default this rule cannot see is a
+  # separate, version-lookup-dependent gap the catalogue entry itself
+  # documents.
+  - id: BAS-LLM10-016
+    title: LangGraph checkpoint/cache serializer with pickle_fallback=True
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - JsonPlusSerializer(pickle_fallback=True)
+      - JsonPlusSerializer(pickle_fallback=True, $$$B)
+      - JsonPlusSerializer($$$A, pickle_fallback=True)
+      - JsonPlusSerializer($$$A, pickle_fallback=True, $$$B)
+    description: >
+      A LangGraph JsonPlusSerializer is constructed with
+      pickle_fallback=True, enabling pickle-based deserialization (and
+      therefore RCE) on untrusted checkpoint or cache data
+      (GHSA-g48c-2wqr-h844, CVE-2025-64439, CVE-2026-27794, CVE-2026-28277).
+    remediation: >
+      Remove pickle_fallback=True unless every checkpoint/cache entry this
+      serializer will ever read was written by this same trusted process.
+      Prefer the default JSON-only serialization and migrate any data that
+      needs the pickle fallback instead of leaving it enabled.

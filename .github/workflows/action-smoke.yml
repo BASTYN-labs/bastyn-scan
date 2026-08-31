@@ -1,0 +1,49 @@
+name: Action smoke test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest      # Linux X64
+          - ubuntu-24.04-arm   # Linux ARM64 -- the case the old action got wrong
+          - macos-latest       # macOS ARM64
+          - macos-15-intel     # macOS X64  -- the other case it got wrong
+          - windows-latest     # Windows X64
+    steps:
+      - uses: actions/checkout@v7
+      - name: Report what runner this is
+        shell: bash
+        run: echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH"
+      # The action as it stands in this tree, not the last release -- so a
+      # broken action is caught before it ships, not after.
+      - name: Run Bastyn via the action in this tree
+        id: scan
+        uses: ./
+        continue-on-error: true
+        with:
+          path: tests/fixtures/vulnerable_agent
+          offline: "true"
+          fail-on: high
+      - name: Assert the action reported the planted defects
+        shell: bash
+        env:
+          CODE: ${{ steps.scan.outputs.exit-code }}
+          SARIF: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          echo "exit-code='$CODE'  sarif-file='$SARIF'"
+          # An empty exit-code means the action swallowed its own output --
+          # which is what a failing step inside a composite action does to
+          # the outputs it already wrote. Distinguish that from a wrong code.
+          [ -n "$CODE" ] \
+            || { echo "::error::exit-code output is empty; the action lost it"; exit 1; }
+          [ "$CODE" = "1" ] \
+            || { echo "::error::expected exit 1 on the vulnerable fixture, got $CODE"; exit 1; }
+          [ -s "$SARIF" ] \
+            || { echo "::error::no SARIF written to '$SARIF'"; exit 1; }

@@ -1,0 +1,425 @@
+# Conversation memory scoping, session isolation, and agent-loop bounds.
+#
+# Part of the built-in rule corpus, loaded alongside bastyn.yml and the other
+# rules/*.yml files by RuleSet::embedded(). The corpus is split by subject so
+# that unrelated rules can be authored without contending for one file; ids
+# are still globally unique across every file.
+#
+# Schema: see the header of bastyn.yml.
+#
+# ZT5, LLM06, and LLM09 are all context-dependent categories
+# (Category::is_context_dependent) -- loading rejects a `kind: defect` rule
+# that maps to any of them, because a missing control is never a defect on
+# its own; only a rule that observes the control's *presence* being
+# defeated (not merely absent) can claim one. Every ZT5/LLM06/LLM09 rule
+# below is `kind: observation` for that reason, even where the source
+# catalogue (docs/rule-catalogue.md) labels the same pattern `defect` --
+# that label describes the abstract pattern, not what this engine is
+# allowed to claim about it.
+
+rules:
+  # ---------------------------------------------------------------------
+  # ZT5 -- Memory and Context. Bastyn ships nothing here before this file.
+  # Rules 001/003/004 below share one `inside:` anchor: "this node sits
+  # inside a function decorated as a web-framework route handler"
+  # (FastAPI/Flask-shaped `@x.get/post/put/patch/delete/route(...)`). That
+  # ancestor constraint is what turns "mutable state referenced across
+  # calls" -- true of every cache, every module-level client, and
+  # therefore useless as a signal on its own -- into "mutable state shared
+  # across concurrent *requests*", which is the actual defect ZT5 names.
+  # A CLI script or a notebook with the exact same module-level object
+  # never matches, because there is no route decorator for `inside:` to
+  # find.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT5-001
+    title: Module-level chat history mutated inside a per-request handler
+    kind: observation
+    severity: high
+    confidence: medium
+    categories: [ZT5]
+    language: python
+    any:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.append($$$X)\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $NAME.append($$$X)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.append($$$X)\n    $$$REST"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $NAME.append($$$X)\n    $$$REST"
+    # Excludes the safe shape this rule would otherwise misfire on most
+    # often: the handler builds its own local accumulator (`chat_history =
+    # []`) before appending to it. That is a per-request list, not the
+    # module-level one -- the append is on a name this same function just
+    # bound, whatever else in the module happens to share its name.
+    none:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = $$$INIT\n    $$$MID\n    $NAME.append($$$X)\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $NAME = $$$INIT\n    $$$MID\n    $NAME.append($$$X)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = $$$INIT\n    $$$MID\n    $NAME.append($$$X)\n    $$$REST"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $NAME = $$$INIT\n    $$$MID\n    $NAME.append($$$X)\n    $$$REST"
+    inside: &route_handler
+      - "@$APP.get($$$R)\ndef $FN2($$$A):\n    $$$B"
+      - "@$APP.get($$$R)\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.get($$$R)\nasync def $FN2($$$A):\n    $$$B"
+      - "@$APP.get($$$R)\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.post($$$R)\ndef $FN2($$$A):\n    $$$B"
+      - "@$APP.post($$$R)\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.post($$$R)\nasync def $FN2($$$A):\n    $$$B"
+      - "@$APP.post($$$R)\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.put($$$R)\ndef $FN2($$$A):\n    $$$B"
+      - "@$APP.put($$$R)\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.put($$$R)\nasync def $FN2($$$A):\n    $$$B"
+      - "@$APP.put($$$R)\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.patch($$$R)\ndef $FN2($$$A):\n    $$$B"
+      - "@$APP.patch($$$R)\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.patch($$$R)\nasync def $FN2($$$A):\n    $$$B"
+      - "@$APP.patch($$$R)\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.delete($$$R)\ndef $FN2($$$A):\n    $$$B"
+      - "@$APP.delete($$$R)\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.delete($$$R)\nasync def $FN2($$$A):\n    $$$B"
+      - "@$APP.delete($$$R)\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.route($$$R)\ndef $FN2($$$A):\n    $$$B"
+      - "@$APP.route($$$R)\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$APP.route($$$R)\nasync def $FN2($$$A):\n    $$$B"
+      - "@$APP.route($$$R)\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+    metavariable_matches:
+      NAME: "(?i)(history|memory|chat|conversation|messages|context)"
+    # Rejects anything but a bare module-level name: `self.history` and
+    # `store[session_id]` both bind $NAME to the whole receiver expression,
+    # and both are a *different* bug (instance state, or already
+    # session-keyed) that this rule must not also claim.
+    metavariable_not_matches:
+      NAME: "[.\\[]"
+    description: >
+      A module-level list or dict with a chat-history-shaped name is
+      mutated by direct `.append()` inside a route handler, with no local
+      reconstruction of that name anywhere in the same function. FastAPI's
+      own maintainers warn against exactly this shape: a global mutable
+      object referenced from a handler is shared by every concurrent
+      request, so one user's conversation history leaks into another's.
+    remediation: >
+      Key the history by an authenticated session or user identifier (a
+      dict keyed by session_id, a per-session store, or a database row),
+      never a bare module-level list. If the deployment is genuinely
+      single-user (a personal CLI wrapped in a debug server), say so at the
+      call site rather than leaving it structurally indistinguishable from
+      the multi-tenant bug.
+
+  - id: BAS-ZT5-003
+    title: Singleton conversation memory referenced (not reconstructed) in a handler
+    kind: observation
+    severity: high
+    confidence: medium
+    categories: [ZT5]
+    language: python
+    # Anchors on the LangChain-specific memory/chain surface
+    # (`ConversationBufferMemory`'s own `save_context`/
+    # `load_memory_variables`, plus `.predict`/`.run`/`.invoke` gated by a
+    # memory/chain/conversation-shaped receiver name) rather than trying to
+    # prove the object was constructed at module scope: this engine cannot
+    # correlate a handler's local name back to a *different* top-level
+    # statement elsewhere in the file (no cross-statement dataflow), so
+    # "was it declared at module scope" is not a check this rule can make.
+    # What it can prove is the operationally equivalent fact: the handler
+    # uses the object but never constructs one of its own, so whatever
+    # instance it is using came from somewhere that outlives the request.
+    any:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.predict($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.predict($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.predict($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.predict($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.predict($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.run($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.run($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.run($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.run($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.run($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.save_context($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.save_context($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.save_context($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME.load_memory_variables($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.load_memory_variables($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.load_memory_variables($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.predict($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.predict($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.predict($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.predict($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.predict($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.run($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.run($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.run($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.run($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.run($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.save_context($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.save_context($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.save_context($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME.load_memory_variables($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $VAR = $NAME.load_memory_variables($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    return $NAME.load_memory_variables($$$MARGS)"
+    # Excludes the safe shape: the same handler constructs its own memory
+    # (fresh per request) before using it.
+    none:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.predict($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.predict($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.predict($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.predict($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.predict($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.run($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.run($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.run($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.run($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.run($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.save_context($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.save_context($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.save_context($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.load_memory_variables($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.load_memory_variables($$$MARGS)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.load_memory_variables($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.predict($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.predict($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.predict($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.predict($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.predict($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.run($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.run($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.run($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.run($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.run($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.save_context($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.save_context($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.save_context($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.save_context($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $NAME.load_memory_variables($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.load_memory_variables($$$MARGS)\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    $VAR = $NAME.load_memory_variables($$$MARGS)"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    $NAME = ConversationBufferMemory($$$INIT)\n    $$$MID\n    return $NAME.load_memory_variables($$$MARGS)"
+    inside: *route_handler
+    metavariable_matches:
+      NAME: "(?i)(memory|chain|conversation)"
+    metavariable_not_matches:
+      NAME: "[.\\[]"
+    description: >
+      A route handler calls a LangChain memory/chain object
+      (`.predict`/`.run`/`.save_context`/`.load_memory_variables`) without
+      constructing that object itself. LangChain deprecated its in-process
+      memory classes citing exactly this failure mode: a
+      `ConversationBufferMemory` built once and reused holds every user's
+      conversation in one buffer, because nothing about the object itself
+      is scoped per user.
+    remediation: >
+      Construct memory per session (keyed by an authenticated session id,
+      e.g. via `RunnableWithMessageHistory` or a per-session store), not
+      once at import time or in a shared singleton referenced by every
+      request.
+
+  - id: BAS-ZT5-004
+    title: LangGraph graph invoked with a hardcoded literal thread_id
+    kind: observation
+    severity: medium
+    confidence: medium
+    categories: [ZT5]
+    language: python
+    any:
+      - '$GRAPH.invoke($$$ARGS, config={"configurable": {"thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.invoke($$$ARGS, config={"configurable": {$$$PRE, "thread_id": "$TID"}})'
+      - '$GRAPH.invoke($$$ARGS, config={"configurable": {$$$PRE, "thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.invoke($$$ARGS, config={"configurable": {"thread_id": "$TID"}})'
+      - '$GRAPH.invoke($$$ARGS, {"configurable": {"thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.invoke($$$ARGS, {"configurable": {$$$PRE, "thread_id": "$TID"}})'
+      - '$GRAPH.invoke($$$ARGS, {"configurable": {$$$PRE, "thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.invoke($$$ARGS, {"configurable": {"thread_id": "$TID"}})'
+      - "$GRAPH.invoke($$$ARGS, config={'configurable': {'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.invoke($$$ARGS, config={'configurable': {$$$PRE, 'thread_id': '$TID'}})"
+      - "$GRAPH.invoke($$$ARGS, config={'configurable': {$$$PRE, 'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.invoke($$$ARGS, config={'configurable': {'thread_id': '$TID'}})"
+      - "$GRAPH.invoke($$$ARGS, {'configurable': {'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.invoke($$$ARGS, {'configurable': {$$$PRE, 'thread_id': '$TID'}})"
+      - "$GRAPH.invoke($$$ARGS, {'configurable': {$$$PRE, 'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.invoke($$$ARGS, {'configurable': {'thread_id': '$TID'}})"
+      - '$GRAPH.ainvoke($$$ARGS, config={"configurable": {"thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.ainvoke($$$ARGS, config={"configurable": {$$$PRE, "thread_id": "$TID"}})'
+      - '$GRAPH.ainvoke($$$ARGS, config={"configurable": {$$$PRE, "thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.ainvoke($$$ARGS, config={"configurable": {"thread_id": "$TID"}})'
+      - '$GRAPH.ainvoke($$$ARGS, {"configurable": {"thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.ainvoke($$$ARGS, {"configurable": {$$$PRE, "thread_id": "$TID"}})'
+      - '$GRAPH.ainvoke($$$ARGS, {"configurable": {$$$PRE, "thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.ainvoke($$$ARGS, {"configurable": {"thread_id": "$TID"}})'
+      - "$GRAPH.ainvoke($$$ARGS, config={'configurable': {'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.ainvoke($$$ARGS, config={'configurable': {$$$PRE, 'thread_id': '$TID'}})"
+      - "$GRAPH.ainvoke($$$ARGS, config={'configurable': {$$$PRE, 'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.ainvoke($$$ARGS, config={'configurable': {'thread_id': '$TID'}})"
+      - "$GRAPH.ainvoke($$$ARGS, {'configurable': {'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.ainvoke($$$ARGS, {'configurable': {$$$PRE, 'thread_id': '$TID'}})"
+      - "$GRAPH.ainvoke($$$ARGS, {'configurable': {$$$PRE, 'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.ainvoke($$$ARGS, {'configurable': {'thread_id': '$TID'}})"
+      - '$GRAPH.stream($$$ARGS, config={"configurable": {"thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.stream($$$ARGS, config={"configurable": {$$$PRE, "thread_id": "$TID"}})'
+      - '$GRAPH.stream($$$ARGS, config={"configurable": {$$$PRE, "thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.stream($$$ARGS, config={"configurable": {"thread_id": "$TID"}})'
+      - '$GRAPH.stream($$$ARGS, {"configurable": {"thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.stream($$$ARGS, {"configurable": {$$$PRE, "thread_id": "$TID"}})'
+      - '$GRAPH.stream($$$ARGS, {"configurable": {$$$PRE, "thread_id": "$TID", $$$MORE}})'
+      - '$GRAPH.stream($$$ARGS, {"configurable": {"thread_id": "$TID"}})'
+      - "$GRAPH.stream($$$ARGS, config={'configurable': {'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.stream($$$ARGS, config={'configurable': {$$$PRE, 'thread_id': '$TID'}})"
+      - "$GRAPH.stream($$$ARGS, config={'configurable': {$$$PRE, 'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.stream($$$ARGS, config={'configurable': {'thread_id': '$TID'}})"
+      - "$GRAPH.stream($$$ARGS, {'configurable': {'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.stream($$$ARGS, {'configurable': {$$$PRE, 'thread_id': '$TID'}})"
+      - "$GRAPH.stream($$$ARGS, {'configurable': {$$$PRE, 'thread_id': '$TID', $$$MORE}})"
+      - "$GRAPH.stream($$$ARGS, {'configurable': {'thread_id': '$TID'}})"
+    description: >
+      A LangGraph invocation passes a literal string as thread_id inside
+      config.configurable, instead of a value derived from the current
+      request. Every caller collapses onto the same checkpoint thread, so
+      one user's conversation state (and tool-call history) becomes
+      readable and continuable by the next.
+    remediation: >
+      Derive thread_id from the authenticated session or conversation id
+      for this request (e.g. `str(session.id)`), never a fixed literal.
+      Fixed threads are legitimate for admin/debug tooling and scheduled
+      jobs that intentionally reuse one thread -- if that is the case here,
+      the value should still not be a bare literal at the call site;
+      isolate it in a clearly named constant so it reads as deliberate.
+
+  # ---------------------------------------------------------------------
+  # ZT2 -- Least Agency and Access.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-ZT2-010
+    title: ShellToolMiddleware instantiated with no execution policy
+    kind: observation
+    severity: medium
+    confidence: medium
+    categories: [ZT2]
+    language: python
+    any:
+      - "ShellToolMiddleware()"
+      - "$$$MOD.ShellToolMiddleware()"
+    description: >
+      LangChain's ShellToolMiddleware() is instantiated with no arguments,
+      which defaults to HostExecutionPolicy -- full host shell access
+      exposed directly to the agent, with no sandbox or command allowlist
+      in front of it.
+    remediation: >
+      Pass an explicit ExecutionPolicy (a sandboxed or allowlisted policy)
+      to ShellToolMiddleware. If the whole process already runs inside a
+      locked-down container with no other tenants, document that at the
+      call site rather than leaving the default silently in place.
+
+  # ---------------------------------------------------------------------
+  # LLM03 -- Excessive Agency.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM03-030
+    title: MCP tool declared destructive is invoked with no confirmation guard
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM03]
+    language: python
+    any:
+      - "def $FN($$$ARGS):\n    $$$BODY"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$BODY"
+      - "async def $FN($$$ARGS):\n    $$$BODY"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$BODY"
+    # Same guard-shape exclusions BAS-LLM03-001 uses: enumerating every
+    # possible guard shape is structurally incomplete (a guard can live in
+    # a decorator or in middleware this rule can't see), which is why
+    # confidence stays medium rather than high.
+    none:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    if not $COND:\n        raise $EXC\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    if not $COND:\n        return $EARLY\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    if not $COND:\n        raise $EXC\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    if not $COND:\n        return $EARLY\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    assert $COND, $MSG\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    assert $COND\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    assert $COND, $MSG\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    assert $COND\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    if not $COND:\n        raise $EXC\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    if not $COND:\n        return $EARLY\n    $$$REST"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    if not $COND:\n        raise $EXC\n    $$$REST"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    if not $COND:\n        return $EARLY\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    assert $COND, $MSG\n    $$$REST"
+      - "async def $FN($$$ARGS):\n    $$$PRE\n    assert $COND\n    $$$REST"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    assert $COND, $MSG\n    $$$REST"
+      - "async def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    assert $COND\n    $$$REST"
+    # Anchors on the tool's own declared MCP annotation, not a guess at
+    # intent from its name: `destructiveHint=True` is the SDK's own field
+    # for exactly this.
+    inside:
+      - "@$MCP.tool(annotations=ToolAnnotations(destructiveHint=True))\ndef $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations(destructiveHint=True))\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations(destructiveHint=True))\nasync def $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations(destructiveHint=True))\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations($$$PRE, destructiveHint=True))\ndef $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations($$$PRE, destructiveHint=True))\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations($$$PRE, destructiveHint=True))\nasync def $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations=ToolAnnotations($$$PRE, destructiveHint=True))\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations={\"destructiveHint\": True})\ndef $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations={\"destructiveHint\": True})\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations={\"destructiveHint\": True})\nasync def $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations={\"destructiveHint\": True})\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations={$$$PRE, \"destructiveHint\": True})\ndef $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations={$$$PRE, \"destructiveHint\": True})\ndef $FN2($$$A) -> $RET2:\n    $$$B"
+      - "@$MCP.tool(annotations={$$$PRE, \"destructiveHint\": True})\nasync def $FN2($$$A):\n    $$$B"
+      - "@$MCP.tool(annotations={$$$PRE, \"destructiveHint\": True})\nasync def $FN2($$$A) -> $RET2:\n    $$$B"
+    description: >
+      A tool's own MCP annotation declares it destructive
+      (destructiveHint=True), but its handler runs unconditionally: there
+      is no guard clause checking a confirmation or authorization condition
+      before it acts. Unlike a name-based guess at intent, this grounds on
+      metadata the tool author already declared.
+    remediation: >
+      Require explicit confirmation or an authorization check at the top of
+      the handler before a destructive tool executes. If approval is
+      enforced by an out-of-repo policy engine, document that at the call
+      site.
+
+  # ---------------------------------------------------------------------
+  # LLM06 (Unbounded Consumption) and LLM09 (Vector and Embedding
+  # Weaknesses) were both attempted here and dropped after measurement on
+  # the 65-repo calibration corpus (2026-08-28), not before:
+  #
+  # - LLM06.1 (unbounded while-True agent loop, plus AgentExecutor with no
+  #   max_iterations): 5 real findings, 0 true positives. The while-True
+  #   variant collided with `asyncio.run(...)` (a completely unrelated
+  #   stdlib idiom that happens to match `$AGENT.run($$$A)`), missed a
+  #   break hidden in an `if/else` branch's `else:` arm (a real gap in the
+  #   `none:` exclusion list), and flagged a human-paced CLI REPL loop
+  #   (`while True: input(...); graph.invoke(...)`) that cannot run away
+  #   unattended the way the rule's own threat model assumes. The
+  #   AgentExecutor variant flagged a same-named class the target repo
+  #   defined itself (`from marketbot.agent.executor import
+  #   AgentExecutor`), not LangChain's -- distinguishing the two needs
+  #   import-tracing this engine's any/none/inside primitives cannot do.
+  # - LLM09.1 (vector-DB query missing a namespace/tenant/filter kwarg,
+  #   all three vendor shapes: Pinecone, Qdrant, Chroma): 17 real findings,
+  #   0 true positives. `top_k=`/`vector=`/`query_embeddings=` turned out
+  #   to be far weaker anchors than they looked in isolation -- every
+  #   third-party AI repo in this corpus that uses a vector store is a
+  #   single-user or self-hosted tool (a personal research assistant, a
+  #   local RAG app), so "no namespace" is the correct, unremarkable shape
+  #   rather than a defect. This is exactly the false-positive risk the
+  #   catalogue itself named for this entry, just more total than
+  #   expected. The one real Qdrant call in the corpus (BAS-LLM09-002's
+  #   target shape) was already correctly scoped, so that variant never
+  #   fired at all -- but it rests on the identical "assume multi-tenancy"
+  #   premise that failed for its two siblings, and nothing in this corpus
+  #   supports it either, so it is dropped along with them rather than
+  #   kept on no evidence.
+  #
+  # Full adjudication (each finding read at its actual source line, not
+  # from this rule's own description) is in the PR/commit history for this
+  # change, not reproduced here.

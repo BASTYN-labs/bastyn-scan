@@ -1,0 +1,12 @@
+{
+  "name": "opsbot-legacy-ingest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Legacy ticket-ingestion sidecar for OpsBot's Node service -- not part of the main service's install, still deployed as a separate cron job, still pinned to whatever was current when it was last touched.",
+  "dependencies": {
+    "axios": "0.21.0",
+    "lodash": "4.17.15",
+    "minimist": "1.2.5",
+    "node-fetch": "2.6.0"
+  }
+}

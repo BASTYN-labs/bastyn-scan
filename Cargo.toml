@@ -1,0 +1,73 @@
+[workspace]
+members = ["crates/bastyn-cli", "crates/bastyn-core"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Bastyn Labs <oss@bastyn.ai>"]
+repository = "https://github.com/BASTYN-labs/bastyn-scan"
+homepage = "https://bastyn.ai"
+readme = "README.md"
+keywords = ["security", "sast", "static-analysis", "scanner", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[workspace.dependencies]
+bastyn-core = { path = "crates/bastyn-core", version = "0.1.0" }
+
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+ignore = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+# Rule matching. `default-features = false` keeps every tree-sitter grammar we
+# do not use out of the binary. Python, TypeScript (which also covers Tsx --
+# see crates/bastyn-core/src/rules/engine.rs module docs) and JavaScript
+# (which also covers its own Jsx dialect) are the only grammars enabled.
+ast-grep-core = "0.45"
+ast-grep-language = { version = "0.45", default-features = false, features = ["tree-sitter-python", "tree-sitter-typescript", "tree-sitter-javascript"] }
+serde_yaml_ng = "0.10"
+toml = "1.1"
+# Data parallelism for the per-file analysis pass. `par_iter().collect()` over
+# a slice is an *indexed* parallel iterator, so results come back in file order
+# whatever order the threads finished in: the report stays byte-identical
+# across runs without a sort bolted on after the fact. See
+# crates/bastyn-core/src/scan.rs.
+rayon = "1.11"
+# Blocking HTTP for the OSV lookup. `ureq` over `reqwest` to avoid pulling an
+# async runtime into a CLI that has nothing to do concurrently.
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
+
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
+
+# Shared lint policy. Inherited by every crate via `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# A security scanner must never abort on malformed input.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+# Noise from `pedantic` that fights readability more than it helps.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+# Release binaries are the distribution unit: optimise for size and speed,
+# and keep a single self-contained artifact.
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"

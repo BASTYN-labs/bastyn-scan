@@ -1,0 +1,19 @@
+services:
+  runbook-agent:
+    build: .
+    privileged: true
+    network_mode: host
+    volumes:
+      - ./workspace:/srv/agent/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - AGENT_ROLE=operator
+      - MYSQL_PASSWORD=password
+      - SERVICE_TOKEN=svc_4f8a1c62d90b47e3a5216fbc8de07394
+    restart: unless-stopped
+
+  runbook-db:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: 'aa123456'
+      MYSQL_DATABASE: runbook

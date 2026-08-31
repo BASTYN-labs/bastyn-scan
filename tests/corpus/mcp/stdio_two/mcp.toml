@@ -1,0 +1,7 @@
+[mcpServers.opsbot-logs]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/"]
+
+[mcpServers.opsbot-runbooks]
+command = "uvx"
+args = ["opsbot-runbook-server", "--root", "/srv/opsbot/runbooks"]

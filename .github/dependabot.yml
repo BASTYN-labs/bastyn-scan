@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # One pull request for routine patch and minor bumps; majors stay
+      # separate so they get read properly.
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci"
+    ignore:
+      # The MSRV job pins this action to the *declared* minimum supported
+      # Rust version, not the latest one. A bump here would silently stop
+      # the job testing the floor in Cargo.toml's `rust-version`, which is
+      # the only thing it exists to check. Raise both by hand, together.
+      - dependency-name: dtolnay/rust-toolchain
+    groups:
+      github-actions:
+        patterns: ["*"]

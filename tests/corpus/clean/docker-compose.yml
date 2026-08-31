@@ -1,0 +1,29 @@
+services:
+  agent:
+    build: .
+    read_only: true
+    privileged: false
+    network_mode: bridge
+    volumes:
+      - ./workspace:/srv/agent/workspace
+      - agent_state:/srv/agent/state
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MYSQL_PASSWORD=$MYSQL_PASSWORD
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp_creds.json
+      - MYSQL_ALLOW_EMPTY_PASSWORD=yes
+    networks:
+      - agent-net
+
+  db:
+    image: mysql:8
+    environment:
+      MYSQL_PASSWORD: ""
+      MYSQL_ROOT_PASSWORD: changeme
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  agent_state:

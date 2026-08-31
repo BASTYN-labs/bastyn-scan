@@ -1,0 +1,12 @@
+{
+  "name": "opsbot-legacy-ingest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpsBot's legacy ticket-ingestion sidecar (safe): current, non-vulnerable pins.",
+  "dependencies": {
+    "axios": "1.7.7",
+    "lodash": "4.17.21",
+    "minimist": "1.2.8",
+    "node-fetch": "3.3.2"
+  }
+}

@@ -1,0 +1,1079 @@
+//! Compiling loaded rules into matchers, and running them over source.
+//!
+//! # Multi-language dispatch
+//!
+//! `ast_grep_core`'s [`Pattern`] and [`RegexMatcher`] are both language-erased
+//! *once compiled*: neither type carries a `Language` type parameter, so
+//! nothing at the type level stops a `Pattern` compiled against one grammar
+//! from being handed to [`ast_grep_core::matcher::MatcherExt::find_all`] on a
+//! tree parsed with a *different* grammar. A `Pattern`'s internal node-kind
+//! ids are meaningful only relative to the grammar it was compiled with;
+//! comparing them against another grammar's tree would silently compare
+//! unrelated numbers; not a compile error, not a panic, just wrong answers.
+//!
+//! [`RuleSet`] therefore keeps one compiled bucket of [`CompiledRule`] per
+//! grammar (`python`, `javascript`, `typescript`, `tsx`) and [`scan_source`]
+//! picks the bucket that matches the file's grammar *before* handing any
+//! pattern to a tree. A rule is never even tried against a file whose
+//! grammar it was not compiled for.
+//!
+//! The actual matching logic ([`scan_with`]) is written once, generic over
+//! `L: LanguageExt + Copy`, rather than duplicated per language: `Pattern`,
+//! `RegexMatcher`, `Any<Pattern>`, and `Node::{find_all,matches,inside}` are
+//! all already generic over the document type, so the only place a concrete
+//! language actually has to be named is where a [`Pattern`] or an
+//! [`AstGrep`] tree is constructed.
+//!
+//! ## Why TypeScript rules compile twice
+//!
+//! `ast-grep-language` ships TypeScript and Tsx as two distinct
+//! `tree-sitter` grammars (`tree-sitter-typescript`'s `LANGUAGE_TYPESCRIPT`
+//! and `LANGUAGE_TSX`), each with its own node-kind table. They are close
+//! enough that most everyday code parses identically under both, but they
+//! are not guaranteed to agree, and in at least one case they concretely do
+//! not: TypeScript's angle-bracket type assertion (`<Foo>bar`) parses to a
+//! `type_assertion` node under the TypeScript grammar and to an `ERROR` node
+//! under the Tsx grammar (JSX's `<Foo>` opening-tag syntax wins the
+//! ambiguity). A `Pattern` compiled once against TypeScript and reused
+//! against a Tsx tree would be trusting that every node-kind id it captured
+//! happens to line up in a grammar it was never compiled against -- exactly
+//! the class of silent mismatch this module exists to avoid.
+//!
+//! So a `language: typescript` rule in `bastyn.yml` is compiled twice, once
+//! per grammar, in [`RuleSet::from_yaml`]: once against
+//! [`ast_grep_language::TypeScript`] for `.ts`/`.cts`/`.mts` files, and once
+//! against [`ast_grep_language::Tsx`] for `.tsx` files. Both compiles must
+//! succeed for the rule to load -- if a pattern only parses under one
+//! grammar, that is a real authoring bug the rule author needs to fix, not a
+//! gap to paper over silently. There is deliberately no `RuleLanguage::Tsx`
+//! variant in the schema: a rule author writes `language: typescript` once,
+//! and covering `.tsx` is this module's job, not theirs. `RuleSet::len`
+//! counts such a rule once, not twice; see its doc comment.
+//!
+//! ## Why JavaScript rules compile three times
+//!
+//! The same argument runs one step further, in one direction only.
+//! JavaScript is a syntactic subset of TypeScript: every construct a
+//! `language: javascript` pattern can describe is equally valid in a `.ts`
+//! or `.tsx` file, so such a rule is compiled against all three grammars and
+//! lands in all three buckets.
+//!
+//! Routing it to the JavaScript bucket alone was a silent coverage hole:
+//! `eval($ARG)` written as a JavaScript rule scanned `.js` and skipped the
+//! byte-identical `.ts` file beside it, with no error, no warning, and
+//! nothing in the report to say one file had been scanned by fewer rules
+//! than its neighbour. That is precisely the class of quiet mismatch this
+//! per-grammar dispatch exists to prevent, so it is now pinned by
+//! `a_javascript_rule_also_fires_on_typescript_and_tsx_files`.
+//!
+//! The subset relationship does not run the other way, and the dispatch must
+//! not pretend it does. TypeScript-only syntax (`x satisfies T`, `interface`,
+//! a type annotation) is not valid JavaScript, so a `language: typescript`
+//! rule stays out of the JavaScript bucket -- pinned by
+//! `a_typescript_rule_does_not_fire_on_javascript_files`.
+//!
+//! `RegexMatcher` (used for `metavariable_matches`) needs none of this: it
+//! matches on a captured node's *text*, not its structure, so one compiled
+//! regex is reused across every language a rule targets.
+//!
+//! # One traversal per file, not one per rule
+//!
+//! [`Node::find_all`] is `dfs().filter_map(..)`: calling it once per rule
+//! walks the whole tree once per rule. With 21 Python rules loaded, plus the
+//! separate `dfs()` that looks for parse errors, a Python file used to be
+//! walked 22 times. Measured on a 250k-line repository, tree-cursor movement
+//! (`ts_tree_cursor_*`) was 64% of the process's samples against 27% for
+//! tree-sitter parsing itself — the scanner spent more than twice as long
+//! re-walking trees as it did building them.
+//!
+//! [`scan_with`] therefore drives one [`Node::dfs`] itself and offers each
+//! node to every rule, folding the parse-error check into the same pass. The
+//! per-node work is unchanged: [`Node::find_all`]'s kind pre-filter is
+//! reproduced by [`CompiledRule::can_match_kind`], and the matcher it calls
+//! for a surviving node is the same [`ast_grep_core::matcher::MatcherExt::match_node`]
+//! on the same [`Any`], so the same nodes match in the same order.
+
+use std::cmp::Reverse;
+use std::collections::HashSet;
+use std::path::Path;
+
+use ast_grep_core::matcher::{Matcher, MatcherExt, Pattern, RegexMatcher};
+use ast_grep_core::meta_var::MetaVarEnv;
+use ast_grep_core::ops::Any;
+use ast_grep_core::tree_sitter::StrDoc;
+use ast_grep_core::{AstGrep, Doc, Node};
+use ast_grep_language::{JavaScript, LanguageExt, Python, Tsx, TypeScript};
+
+use crate::category::Category;
+use crate::finding::{Confidence, Finding, Kind, Location, Severity};
+use crate::flow::graph::{callee_path as flow_graph_callee_path, contains_sink_call};
+use crate::flow::{FlowGraph, FlowLanguage, SinkKind, SourceKind, guards};
+use crate::test_path::is_test_path;
+
+use super::error::{Result, RuleError};
+use super::schema::{RuleDef, RuleFile, RuleLanguage, TestPathPolicy};
+
+/// A grammar the engine can parse and match rules against, guessed from a
+/// file's extension.
+///
+/// This is the file-extension dispatch: a file whose extension maps to
+/// `None` has no grammar in this binary and is skipped cleanly by
+/// [`scan_source`] rather than being parsed as something it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceLanguage {
+    Python,
+    Javascript,
+    Typescript,
+    /// `.tsx` specifically -- see this module's docs for why it is not just
+    /// `Typescript`.
+    Tsx,
+}
+
+impl SourceLanguage {
+    /// Guess a file's language from its extension.
+    #[must_use]
+    pub(crate) fn from_path(path: &Path) -> Option<Self> {
+        match path.extension().and_then(|ext| ext.to_str())? {
+            "py" => Some(Self::Python),
+            "js" | "mjs" | "cjs" | "jsx" => Some(Self::Javascript),
+            "ts" | "mts" | "cts" => Some(Self::Typescript),
+            "tsx" => Some(Self::Tsx),
+            _ => None,
+        }
+    }
+}
+
+/// A rule, compiled once so its patterns and regexes need not be rebuilt on
+/// every file.
+///
+/// Deliberately not generic over a language: neither [`Pattern`] nor
+/// [`RegexMatcher`] carry a language type parameter (see this module's
+/// docs), so the same struct shape serves a rule compiled against any
+/// grammar. What varies per grammar is which bucket in [`RuleSet`] a given
+/// `CompiledRule` lives in, decided once at load time in
+/// [`RuleSet::from_yaml`].
+struct CompiledRule {
+    id: String,
+    title: String,
+    kind: Kind,
+    severity: Severity,
+    confidence: Confidence,
+    categories: Vec<Category>,
+    description: String,
+    remediation: String,
+    in_test_paths: TestPathPolicy,
+    any: Any<Pattern>,
+    /// Node kinds `any` could possibly match, indexed by tree-sitter kind id,
+    /// or `None` when it could match any kind at all.
+    ///
+    /// This is [`Any::potential_kinds`] flattened into a lookup table once at
+    /// compile time. [`Node::find_all`] asks the matcher for the same bitset
+    /// on every call and uses it to skip nodes before constructing a
+    /// `MetaVarEnv`; [`scan_with`] drives the traversal itself, so it has to
+    /// apply that filter itself to keep the per-node cost the same. A `Vec`
+    /// rather than the `bit_set::BitSet` the matcher returns because
+    /// `ast-grep-core` does not re-export that type, and because kind ids are
+    /// dense and small enough that one byte each is cheaper to probe than a
+    /// word-and-mask.
+    any_kinds: Option<Vec<bool>>,
+    none: Vec<Pattern>,
+    inside: Vec<Pattern>,
+    metavariable_matches: Vec<(String, RegexMatcher)>,
+    metavariable_not_matches: Vec<(String, RegexMatcher)>,
+    flow: Option<CompiledFlow>,
+}
+
+/// A rule's `flow:` clause, validated at load time.
+///
+/// The provenance gate. Everything above it in [`CompiledRule`] decides
+/// whether a piece of code has the *shape* of a defect; this decides whether
+/// the value flowing through that shape actually came from somewhere
+/// untrusted. See [`crate::flow`] for why that distinction is the whole point
+/// of this tier.
+struct CompiledFlow {
+    /// Which captured metavariable to test.
+    variable: String,
+    /// The source kinds that satisfy the gate. Non-empty, enforced at load.
+    sources: Vec<SourceKind>,
+    /// Whether a guard dominating the sink suppresses the match.
+    unguarded: bool,
+    /// When set, calls to a local function forwarding the value into a sink of
+    /// this kind are reported too, at the call site.
+    sink: Option<SinkKind>,
+}
+
+impl CompiledFlow {
+    /// Whether `node_id`'s value satisfies this clause in `graph`.
+    fn satisfied_by(&self, graph: &FlowGraph, node_id: usize) -> bool {
+        if !graph
+            .source_kind_of(node_id)
+            .is_some_and(|kind| self.sources.contains(&kind))
+        {
+            return false;
+        }
+        !(self.unguarded && guards::is_guarded(graph, node_id))
+    }
+}
+
+impl CompiledRule {
+    /// Compile `def` against `lang`. `grammar` is a human-readable name for
+    /// that grammar (e.g. `"typescript"`, `"tsx"`) used only to make a
+    /// pattern-compile error say which of a rule's (possibly several)
+    /// target grammars actually failed.
+    fn compile<L: LanguageExt + Copy>(
+        def: RuleDef,
+        grammar: &'static str,
+        lang: L,
+    ) -> Result<Self> {
+        if def.any.is_empty() {
+            return Err(RuleError::EmptyAny { id: def.id });
+        }
+        if def.categories.is_empty() {
+            return Err(RuleError::EmptyCategories { id: def.id });
+        }
+        if def.kind == Kind::Defect
+            && let Some(category) = def
+                .categories
+                .iter()
+                .find(|category| category.is_context_dependent())
+        {
+            return Err(RuleError::ContextDependentDefect {
+                id: def.id,
+                category: category.id().to_string(),
+            });
+        }
+
+        // The dataflow graph is Python-only (see `crate::flow`), so a `flow:`
+        // clause anywhere else would compile into a matcher that can never
+        // fire. Rejecting it here is the same contract `RuleLanguage` itself
+        // keeps: a rule we cannot honour fails to load rather than silently
+        // never matching.
+        let flow = match def.flow {
+            None => None,
+            Some(_) if def.language != RuleLanguage::Python => {
+                return Err(RuleError::FlowUnsupportedLanguage {
+                    id: def.id,
+                    language: format!("{:?}", def.language).to_lowercase(),
+                });
+            }
+            Some(flow) => {
+                let sources = flow.source.kinds();
+                if sources.is_empty() {
+                    return Err(RuleError::EmptyFlowSources { id: def.id });
+                }
+                Some(CompiledFlow {
+                    variable: flow.variable,
+                    sources,
+                    unguarded: flow.unguarded,
+                    sink: flow.sink,
+                })
+            }
+        };
+
+        let any = compile_patterns(&def.id, grammar, &def.any, lang)?;
+        let none = compile_patterns(&def.id, grammar, &def.none, lang)?;
+        let inside = compile_patterns(&def.id, grammar, &def.inside, lang)?;
+
+        let mut metavariable_matches = Vec::with_capacity(def.metavariable_matches.len());
+        for (var, regex_src) in def.metavariable_matches {
+            let regex =
+                RegexMatcher::try_new(&regex_src).map_err(|source| RuleError::InvalidRegex {
+                    id: def.id.clone(),
+                    var: var.clone(),
+                    source,
+                })?;
+            metavariable_matches.push((var, regex));
+        }
+
+        let mut metavariable_not_matches = Vec::with_capacity(def.metavariable_not_matches.len());
+        for (var, regex_src) in def.metavariable_not_matches {
+            let regex =
+                RegexMatcher::try_new(&regex_src).map_err(|source| RuleError::InvalidNotRegex {
+                    id: def.id.clone(),
+                    var: var.clone(),
+                    source,
+                })?;
+            metavariable_not_matches.push((var, regex));
+        }
+
+        let any = Any::new(any);
+        let any_kinds = any.potential_kinds().map(|kinds| {
+            let mut table = vec![false; kinds.iter().max().map_or(0, |max| max + 1)];
+            for kind in &kinds {
+                table[kind] = true;
+            }
+            table
+        });
+
+        Ok(Self {
+            id: def.id,
+            title: def.title,
+            kind: def.kind,
+            severity: def.severity,
+            confidence: def.confidence,
+            categories: def.categories,
+            description: def.description,
+            remediation: def.remediation,
+            in_test_paths: def.in_test_paths,
+            any,
+            any_kinds,
+            none,
+            inside,
+            metavariable_matches,
+            metavariable_not_matches,
+            flow,
+        })
+    }
+
+    /// Whether a node of kind id `kind` is worth offering to [`Self::any`].
+    ///
+    /// Exactly the test [`Node::find_all`] applies before calling the
+    /// matcher: a rule whose patterns all pin a concrete node kind can reject
+    /// most of a tree on one indexed load. A rule that could match any kind
+    /// (`any_kinds` is `None`) is always offered the node, as `find_all`
+    /// would.
+    fn can_match_kind(&self, kind: usize) -> bool {
+        self.any_kinds
+            .as_ref()
+            .is_none_or(|kinds| kinds.get(kind).copied().unwrap_or(false))
+    }
+
+    /// Whether every `metavariable_matches` constraint is satisfied by the
+    /// captures in `env`. A constraint on a variable that this particular
+    /// match did not capture fails closed: no evidence, no match.
+    ///
+    /// Generic over the document type rather than fixed to one language,
+    /// same reasoning as [`scan_with`]: `RegexMatcher` only ever looks at a
+    /// captured node's text, so this logic is identical for every grammar
+    /// and does not need writing more than once.
+    fn metavariables_satisfied<D: Doc>(&self, env: &MetaVarEnv<'_, D>) -> bool {
+        self.metavariable_matches.iter().all(|(var, regex)| {
+            env.get_match(var)
+                .is_some_and(|node| regex.match_node(node.clone()).is_some())
+        })
+    }
+
+    /// Whether every `metavariable_not_matches` constraint is clear of the
+    /// captures in `env`.
+    ///
+    /// The mirror image of [`Self::metavariables_satisfied`], and
+    /// deliberately the *opposite* default on missing evidence: a variable
+    /// this particular `any` pattern never bound has nothing to exclude, so
+    /// it passes. That difference matters whenever a rule's `any` list mixes
+    /// patterns that bind a variable with patterns that do not (e.g. a
+    /// receiver-qualified call alongside a bare one) -- failing closed here
+    /// the way the positive gate does would silently kill every match from
+    /// the patterns that have no receiver to judge at all.
+    fn metavariable_exclusions_clear<D: Doc>(&self, env: &MetaVarEnv<'_, D>) -> bool {
+        self.metavariable_not_matches.iter().all(|(var, regex)| {
+            env.get_match(var)
+                .is_none_or(|node| regex.match_node(node.clone()).is_none())
+        })
+    }
+}
+
+fn compile_patterns<L: LanguageExt + Copy>(
+    id: &str,
+    grammar: &'static str,
+    patterns: &[String],
+    lang: L,
+) -> Result<Vec<Pattern>> {
+    patterns
+        .iter()
+        .map(|pattern| {
+            Pattern::try_new(pattern, lang).map_err(|source| RuleError::InvalidPattern {
+                id: id.to_string(),
+                language: grammar.to_string(),
+                pattern: pattern.clone(),
+                source,
+            })
+        })
+        .collect()
+}
+
+/// A loaded, compiled set of rules ready to scan source with.
+///
+/// One bucket per grammar (see this module's docs for why `typescript` and
+/// `tsx` are separate buckets fed by the same `language: typescript` rules).
+pub struct RuleSet {
+    python: Vec<CompiledRule>,
+    javascript: Vec<CompiledRule>,
+    typescript: Vec<CompiledRule>,
+    tsx: Vec<CompiledRule>,
+    /// Distinct rule ids loaded. A `language: typescript` rule compiles into
+    /// both the `typescript` and `tsx` buckets, but is one rule as far as
+    /// anyone asking "how many rules are loaded" is concerned -- this is
+    /// tracked separately rather than derived from summing bucket lengths so
+    /// that fact stays true regardless of how many grammars a language ends
+    /// up compiling against.
+    rule_count: usize,
+}
+
+impl std::fmt::Debug for RuleSet {
+    /// Lists loaded rule ids. The compiled matchers behind them do not
+    /// implement `Debug`, so this cannot show more than that.
+    ///
+    /// `tsx` and `rule_count` are deliberately not shown:
+    /// `tsx`'s ids are always exactly the `typescript` bucket's ids (see this
+    /// module's docs), so listing it too would only print every TypeScript
+    /// rule id twice; `rule_count` is just `ids.len()` restated.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ids = self
+            .python
+            .iter()
+            .chain(&self.javascript)
+            .chain(&self.typescript)
+            .map(|rule| &rule.id)
+            .collect::<Vec<_>>();
+        f.debug_struct("RuleSet")
+            .field("rules", &ids)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RuleSet {
+    /// Load a rule set from YAML text.
+    ///
+    /// # Errors
+    /// Returns [`RuleError`] if the YAML is malformed, uses an unknown field,
+    /// repeats a rule id, declares a `kind: defect` rule against a
+    /// context-dependent category, or contains a pattern or
+    /// `metavariable_matches` regex that fails to compile against the
+    /// grammar(s) its `language` implies.
+    pub fn from_yaml(yaml: &str) -> Result<Self> {
+        Self::from_yaml_sources(std::slice::from_ref(&yaml))
+    }
+
+    /// Load one rule set from several YAML documents, merged into one corpus.
+    ///
+    /// The built-in corpus is split across files by subject -- see
+    /// [`Self::embedded`] -- so that rules on unrelated subjects can be
+    /// authored without every author editing the same file. The split is
+    /// organisational only: the merged corpus behaves exactly as if the
+    /// documents had been concatenated, and an id repeated across *any* two
+    /// of them is still a [`RuleError::DuplicateId`], not a silent
+    /// last-one-wins.
+    ///
+    /// # Errors
+    /// As [`Self::from_yaml`].
+    pub fn from_yaml_sources(sources: &[&str]) -> Result<Self> {
+        let mut defs = Vec::new();
+        for source in sources {
+            let file: RuleFile = serde_yaml_ng::from_str(source)?;
+            defs.extend(file.rules);
+        }
+
+        let mut seen_ids = HashSet::with_capacity(defs.len());
+        let mut python = Vec::new();
+        let mut javascript = Vec::new();
+        let mut typescript = Vec::new();
+        let mut tsx = Vec::new();
+        let mut rule_count = 0;
+
+        for def in defs {
+            if !seen_ids.insert(def.id.clone()) {
+                return Err(RuleError::DuplicateId { id: def.id });
+            }
+            rule_count += 1;
+
+            // Exhaustive on purpose: adding a `RuleLanguage` variant without
+            // routing it to a bucket here is a compile error, not a rule
+            // that silently never matches.
+            match def.language {
+                RuleLanguage::Python => python.push(CompiledRule::compile(def, "python", Python)?),
+                RuleLanguage::Javascript => {
+                    javascript.push(CompiledRule::compile(
+                        def.clone(),
+                        "javascript",
+                        JavaScript,
+                    )?);
+                    typescript.push(CompiledRule::compile(
+                        def.clone(),
+                        "typescript",
+                        TypeScript,
+                    )?);
+                    tsx.push(CompiledRule::compile(def, "tsx", Tsx)?);
+                }
+                RuleLanguage::Typescript => {
+                    typescript.push(CompiledRule::compile(
+                        def.clone(),
+                        "typescript",
+                        TypeScript,
+                    )?);
+                    tsx.push(CompiledRule::compile(def, "tsx", Tsx)?);
+                }
+            }
+        }
+
+        Ok(Self {
+            python,
+            javascript,
+            typescript,
+            tsx,
+            rule_count,
+        })
+    }
+
+    /// The rules built into the binary.
+    ///
+    /// # Errors
+    /// Returns [`RuleError`] under the same conditions as [`Self::from_yaml`]
+    /// — the embedded rule file is validated exactly like a user-supplied
+    /// one.
+    pub fn embedded() -> Result<Self> {
+        Self::from_yaml_sources(&[
+            include_str!("../../rules/bastyn.yml"),
+            include_str!("../../rules/frameworks.yml"),
+            include_str!("../../rules/secrets.yml"),
+            include_str!("../../rules/config.yml"),
+            include_str!("../../rules/memory.yml"),
+        ])
+    }
+
+    /// How many distinct rules are loaded.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rule_count
+    }
+
+    /// Whether no rules are loaded.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rule_count == 0
+    }
+}
+
+/// What attempting to run every applicable rule over one file's source
+/// produced.
+///
+/// A bare `Vec<Finding>` cannot say why it is empty: a clean file that
+/// parsed fine and a file the parser could not make sense of both look
+/// identical to a caller that only sees the findings. That distinction
+/// matters to `scan::analyse`, which reports how much of the tree it
+/// actually covered -- counting a file it never really analysed as
+/// "scanned" would claim coverage the scan does not have. See
+/// [`scan_source_checked`].
+#[derive(Debug, Clone)]
+pub enum ScanOutcome {
+    /// The file's extension mapped to a known grammar, and the parsed tree
+    /// contained no syntax error anywhere in it. Every applicable rule ran;
+    /// the `Vec` can still be empty if none of them matched, which is a
+    /// clean result, not a skipped one.
+    Scanned(Vec<Finding>),
+    /// Either the file's extension has no grammar this engine knows, or the
+    /// grammar parsed the content into a tree tree-sitter itself flags as
+    /// broken (a syntax-error node, or a node it inserted to recover from a
+    /// missing token, anywhere in the tree) -- invalid syntax, a truncated
+    /// file, or a file whose real format does not match its extension. No
+    /// rule ran; the caller should count this file as skipped, not scanned.
+    Unparseable,
+}
+
+/// Run every applicable rule in `ruleset` over one file's source, dispatching
+/// on the file's extension to the grammar (and rule bucket) it implies.
+///
+/// The source is parsed exactly once and the tree is shared across every
+/// rule in the matching bucket. Findings are deduplicated within this scan
+/// and sorted by location.
+///
+/// Prefer this over [`scan_source`] whenever the caller reports scan
+/// coverage (files scanned vs. skipped): `scan_source` collapses "parsed
+/// clean, nothing matched" and "could not parse" into the same empty `Vec`,
+/// which is exactly the ambiguity that let an unparseable file get counted
+/// as scanned in `scan::analyse` before this function existed.
+#[must_use]
+pub fn scan_source_checked(ruleset: &RuleSet, relative_path: &Path, source: &str) -> ScanOutcome {
+    match SourceLanguage::from_path(relative_path) {
+        Some(SourceLanguage::Python) => scan_with(&ruleset.python, Python, relative_path, source),
+        Some(SourceLanguage::Javascript) => {
+            scan_with(&ruleset.javascript, JavaScript, relative_path, source)
+        }
+        Some(SourceLanguage::Typescript) => {
+            scan_with(&ruleset.typescript, TypeScript, relative_path, source)
+        }
+        Some(SourceLanguage::Tsx) => scan_with(&ruleset.tsx, Tsx, relative_path, source),
+        None => ScanOutcome::Unparseable,
+    }
+}
+
+/// Run every applicable rule in `ruleset` over one file's source, discarding
+/// the parsed-vs-unparseable distinction [`scan_source_checked`] makes.
+///
+/// Kept for callers that only want "what did the rules find" and do not
+/// report scan coverage -- most of this crate's own rule tests, which only
+/// ever assert on finding content. A file whose extension the engine has no
+/// grammar for, and source the matching parser cannot handle, both produce
+/// an empty `Vec` here; a caller that needs to tell those apart from a
+/// clean scan must use [`scan_source_checked`] instead.
+#[must_use]
+pub fn scan_source(ruleset: &RuleSet, relative_path: &Path, source: &str) -> Vec<Finding> {
+    match scan_source_checked(ruleset, relative_path, source) {
+        ScanOutcome::Scanned(findings) => findings,
+        ScanOutcome::Unparseable => Vec::new(),
+    }
+}
+
+/// The actual matching loop, written once and shared by every grammar via
+/// generics rather than copy-pasted per language. See this module's docs for
+/// why that is possible: every type this function touches (`Pattern`,
+/// `RegexMatcher`, `Any<Pattern>`, `Node::{find_all,matches,inside}`) is
+/// already generic over the document type upstream, so `L` only has to be
+/// named where a tree gets parsed.
+fn scan_with<L: LanguageExt + Copy>(
+    rules: &[CompiledRule],
+    lang: L,
+    relative_path: &Path,
+    source: &str,
+) -> ScanOutcome {
+    let Ok(root) = AstGrep::<StrDoc<L>>::try_new(source, lang) else {
+        return ScanOutcome::Unparseable;
+    };
+    let node = root.root();
+
+    let mut findings = Vec::new();
+    let mut seen = HashSet::new();
+    // Tier 2 is built at most once per file, and only when a rule that needs
+    // it has already found a structural candidate. A file with no `eval`,
+    // `exec` or other flow-gated shape in it never pays for the graph at all.
+    let mut graph: Option<FlowGraph> = None;
+
+    // One walk, shared by the parse-error check and every rule -- see this
+    // module's docs. Both jobs want the same pre-order sequence of nodes, and
+    // `find_all` would start a fresh walk for each of them.
+    for current in node.dfs() {
+        // `try_new` only fails when tree-sitter cannot produce a tree at all
+        // (cancellation, or no language set) -- it does not fail on invalid
+        // syntax. Tree-sitter's error recovery instead parses garbage input
+        // into a tree that *has* a root, just with an ERROR node (content it
+        // could not fit into the grammar) or a MISSING node (a token it
+        // inserted to recover from one it expected but never found)
+        // somewhere in it. Walking is ast-grep-core's only way to reach the
+        // raw tree-sitter node flags recursively -- the crate exposes
+        // neither the underlying `tree_sitter::Tree` nor a
+        // `has_error()`-equivalent on its own `Node`.
+        //
+        // Findings collected from nodes before this one are discarded with
+        // the rest of the file, exactly as they were when this check ran as
+        // its own pass ahead of the rules.
+        if current.is_error() || current.is_missing() {
+            return ScanOutcome::Unparseable;
+        }
+
+        let kind = usize::from(current.kind_id());
+        for rule in rules {
+            if !rule.can_match_kind(kind) {
+                continue;
+            }
+            let Some(candidate) = rule.any.match_node(current.clone()) else {
+                continue;
+            };
+            let matched = candidate.get_node();
+
+            if rule.none.iter().any(|pattern| matched.matches(pattern)) {
+                continue;
+            }
+            if !rule.inside.is_empty() && !rule.inside.iter().any(|pattern| matched.inside(pattern))
+            {
+                continue;
+            }
+            if !rule.metavariables_satisfied(candidate.get_env()) {
+                continue;
+            }
+            if !rule.metavariable_exclusions_clear(candidate.get_env()) {
+                continue;
+            }
+            if let Some(flow) = &rule.flow {
+                // Fails closed on a metavariable this pattern never bound,
+                // the same way `metavariable_matches` does: no evidence, no
+                // match.
+                let Some(captured) = candidate.get_env().get_match(&flow.variable) else {
+                    continue;
+                };
+                let graph =
+                    graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
+                if !flow.satisfied_by(graph, captured.node_id()) {
+                    continue;
+                }
+            }
+
+            let finding = build_finding(rule, relative_path, source, matched);
+            push_unique(&mut findings, &mut seen, finding);
+        }
+    }
+
+    // The wrapper-sink pass is per rule and per *file*, not per node: it asks
+    // whether this file defines a function that forwards into a catalogued
+    // sink, which is a property of the whole tree. It therefore runs once
+    // after the traversal above rather than inside it -- running it per node
+    // would repeat the same whole-file analysis for every node in the file.
+    for rule in rules {
+        // A sink one call away is the same defect, and no `any:` pattern can
+        // describe it: the call site names a local function, not `eval`. Only
+        // a rule that asked for this with `flow.sink` gets it.
+        //
+        // `contains_sink_call` is the cost guard, and it is exact rather than
+        // a heuristic: a wrapper is a function whose body calls a catalogued
+        // sink, so a file with no such call cannot hold one. It answers with a
+        // single tree walk instead of a whole dataflow analysis. Without it the
+        // graph was built for every Python file in the repository whether or
+        // not it could possibly contain a wrapper -- measured on the
+        // 65-repository corpus, that alone cost +64% of scan time outside the
+        // one outlier repository.
+        if let Some(flow) = &rule.flow
+            && let Some(sink) = flow.sink
+            && mentions_sink_name(source, sink)
+            && contains_sink_call(&node, sink)
+        {
+            let graph = graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
+            for call in wrapper_sink_calls(&node, graph, sink, flow) {
+                let finding = build_finding(rule, relative_path, source, &call);
+                push_unique(&mut findings, &mut seen, finding);
+            }
+        }
+    }
+
+    // `findings` is now in node-then-rule order rather than rule-then-node
+    // order, which changes nothing a caller can see: `seen` keys on
+    // (rule id, location) and a rule still meets its own matches in
+    // pre-order, so the same match of each pair survives; and
+    // `merge_same_location` sorts on (location, rule id), which those keys
+    // make a total order.
+    ScanOutcome::Scanned(merge_same_location(findings))
+}
+
+/// Whether the file's text contains, as a whole identifier, any name a
+/// `sink`-kind API ends in.
+///
+/// A cost guard in front of the structural walk, and nothing else. No finding
+/// is ever derived from it: everything it lets through is then matched
+/// structurally, and everything it rejects provably had nothing to match. A
+/// callee's name appears in the source as a whole identifier token, so a file
+/// whose text contains no such token contains no such call.
+///
+/// It earns its place because the walk it guards visits every node of every
+/// Python file scanned. The whole-identifier part is most of the value:
+/// plain substring search matches `exec` inside `execute` and `compile`
+/// inside `re.compile`, which on one 685-file corpus repository was 383 files
+/// to walk rather than 44.
+fn mentions_sink_name(source: &str, sink: SinkKind) -> bool {
+    crate::flow::catalogue::sink_leaf_names(sink).any(|name| contains_identifier(source, name))
+}
+
+/// Whether `needle` occurs in `haystack` bounded by non-identifier characters
+/// on both sides.
+fn contains_identifier(haystack: &str, needle: &str) -> bool {
+    let is_identifier_char = |c: char| c.is_alphanumeric() || c == '_';
+    haystack.match_indices(needle).any(|(start, _)| {
+        let before = haystack[..start].chars().next_back();
+        let after = haystack[start + needle.len()..].chars().next();
+        !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+    })
+}
+
+/// Record `finding` unless one with the same dedupe key is already recorded.
+fn push_unique(
+    findings: &mut Vec<Finding>,
+    seen: &mut HashSet<(String, std::path::PathBuf, usize, usize)>,
+    finding: Finding,
+) {
+    let key = finding.dedupe_key();
+    let dedupe_key = (key.0.to_string(), key.1.clone(), key.2, key.3);
+    if seen.insert(dedupe_key) {
+        findings.push(finding);
+    }
+}
+
+/// Calls, in this file, to a local function that forwards the argument into a
+/// `sink`-kind sink, where that argument satisfies `flow`.
+///
+/// This is the caller-side half of the depth-one wrapper relation
+/// [`crate::flow::graph`] computes. Keyword arguments are deliberately not
+/// matched to parameter positions: doing so needs the callee's full signature
+/// including defaults, and a wrong position would report the wrong value.
+fn wrapper_sink_calls<'r, D: Doc>(
+    root: &Node<'r, D>,
+    graph: &FlowGraph,
+    sink: SinkKind,
+    flow: &CompiledFlow,
+) -> Vec<Node<'r, D>> {
+    let mut calls = Vec::new();
+    for call in root.dfs().filter(|node| node.kind() == "call") {
+        let Some(callee) = call.field("function") else {
+            continue;
+        };
+        let path = flow_graph_callee_path(&callee);
+        let local = path.rsplit('.').next().unwrap_or(path.as_str());
+        let parameters = graph.wrapper_sink_parameters(local, sink);
+        if parameters.is_empty() {
+            continue;
+        }
+        let Some(arguments) = call.field("arguments") else {
+            continue;
+        };
+        let positional: Vec<Node<'r, D>> = arguments
+            .named_children()
+            .filter(|argument| argument.kind() != "keyword_argument")
+            .collect();
+        if parameters.iter().any(|index| {
+            positional
+                .get(*index)
+                .is_some_and(|argument| flow.satisfied_by(graph, argument.node_id()))
+        }) {
+            calls.push(call);
+        }
+    }
+    calls
+}
+
+fn build_finding<D: Doc>(
+    rule: &CompiledRule,
+    relative_path: &Path,
+    source: &str,
+    matched: &Node<'_, D>,
+) -> Finding {
+    let start = matched.start_pos();
+    let line = start.line() + 1;
+    let column = start.column(matched) + 1;
+
+    let snippet = source
+        .lines()
+        .nth(start.line())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    // A credential invented so a test can reach a throwaway container is not
+    // a credential. Measured on 65 real repositories, 23 of this rule set's
+    // 32 hardcoded-credential findings were exactly that -- so a match in a
+    // test path becomes an observation, out of the default report but still
+    // there under --show-observations. Suppressing it outright would be
+    // the one way to hide a genuinely leaked secret that happens to sit in a
+    // fixture; a rule that cannot afford even that says `in_test_paths:
+    // report`.
+    let kind = if rule.in_test_paths == TestPathPolicy::Downgrade && is_test_path(relative_path) {
+        Kind::Observation
+    } else {
+        rule.kind
+    };
+
+    Finding {
+        rule_id: rule.id.clone(),
+        title: rule.title.clone(),
+        kind,
+        severity: rule.severity,
+        confidence: rule.confidence,
+        categories: rule.categories.clone(),
+        location: Location {
+            file: relative_path.to_path_buf(),
+            line,
+            column,
+        },
+        snippet,
+        description: rule.description.clone(),
+        remediation: rule.remediation.clone(),
+        secondary_rule_ids: Vec::new(),
+        references: Vec::new(),
+    }
+}
+
+/// Collapse findings that share a location into one, keeping the defect over
+/// the observation, then the highest-severity, then highest-confidence, then
+/// lowest rule id, as the primary and recording the rest in
+/// `secondary_rule_ids`.
+fn merge_same_location(mut findings: Vec<Finding>) -> Vec<Finding> {
+    findings.sort_by(|a, b| {
+        a.location
+            .cmp(&b.location)
+            .then_with(|| a.rule_id.cmp(&b.rule_id))
+    });
+
+    let mut merged: Vec<Finding> = Vec::with_capacity(findings.len());
+    for finding in findings {
+        if let Some(last) = merged.last_mut()
+            && last.location == finding.location
+        {
+            // Kind leads, and leads inverted (`Defect` sorts before
+            // `Observation`, so the *smaller* kind wins): a test-path
+            // downgrade on one rule must not demote another rule's defect at
+            // the same location just because the observation happens to
+            // carry a higher severity.
+            let promote = (Reverse(finding.kind), finding.severity, finding.confidence)
+                > (Reverse(last.kind), last.severity, last.confidence);
+            if promote {
+                let mut promoted = finding;
+                promoted.secondary_rule_ids = std::mem::take(&mut last.secondary_rule_ids);
+                promoted.secondary_rule_ids.push(last.rule_id.clone());
+                *last = promoted;
+            } else {
+                last.secondary_rule_ids.push(finding.rule_id);
+            }
+            last.secondary_rule_ids.sort_unstable();
+            last.secondary_rule_ids.dedup();
+            continue;
+        }
+        merged.push(finding);
+    }
+    merged
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "a failed assumption in a test should fail the test"
+)]
+mod traversal_tests {
+    //! What the one-walk-per-file traversal has to keep true.
+    //!
+    //! [`scan_with`] folds the parse-error check into the same walk that runs
+    //! the rules, so both of the things that used to be guaranteed by
+    //! *ordering* between two separate passes now have to be guaranteed
+    //! inside one: an error late in a file must still suppress a rule match
+    //! early in it, and two rules meeting the same node must still merge the
+    //! same way now that they meet it back to back rather than a whole tree
+    //! apart.
+
+    use super::*;
+
+    fn ruleset(rules: &str) -> RuleSet {
+        RuleSet::from_yaml(rules).unwrap()
+    }
+
+    const EVAL_RULE: &str = r"
+rules:
+  - id: BAS-TEST-001
+    title: eval on untrusted input
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM01]
+    language: python
+    any:
+      - eval($ARG)
+    description: test rule
+    remediation: test remediation
+";
+
+    /// The error check used to be a whole pass that finished before any rule
+    /// ran, so a syntax error anywhere in a file suppressed every match in
+    /// it. Fused into the rule walk, that only stays true if a match found
+    /// before the error node is thrown away with the file rather than
+    /// returned.
+    #[test]
+    fn a_match_before_a_later_syntax_error_is_still_discarded() {
+        let rules = ruleset(EVAL_RULE);
+
+        let clean = scan_source_checked(&rules, Path::new("a.py"), "eval(payload)\n");
+        let ScanOutcome::Scanned(findings) = clean else {
+            panic!("valid Python must scan: {clean:?}");
+        };
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+
+        // Same match, on the same first line, followed by content the Python
+        // grammar cannot fit.
+        let broken = scan_source_checked(
+            &rules,
+            Path::new("a.py"),
+            "eval(payload)\ndef(:::: not python at all @#$%^&*(\n",
+        );
+        assert!(
+            matches!(broken, ScanOutcome::Unparseable),
+            "a syntax error after a match must still make the file unparseable: {broken:?}"
+        );
+    }
+
+    /// Two rules that match the same node used to be a whole tree-walk
+    /// apart; they now meet it one after the other. The merge that picks a
+    /// primary and records the rest in `secondary_rule_ids` must not depend
+    /// on which of those it was.
+    #[test]
+    fn two_rules_on_one_node_merge_into_one_finding() {
+        // Declared low-severity-first, so the promotion path in
+        // `merge_same_location` runs rather than the append path.
+        let rules = ruleset(
+            r"
+rules:
+  - id: BAS-TEST-001
+    title: quiet
+    kind: defect
+    severity: low
+    confidence: low
+    categories: [LLM01]
+    language: python
+    any:
+      - eval($ARG)
+    description: test rule
+    remediation: test remediation
+  - id: BAS-TEST-002
+    title: loud
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM01]
+    language: python
+    any:
+      - eval($ARG)
+    description: test rule
+    remediation: test remediation
+",
+        );
+
+        let outcome = scan_source_checked(&rules, Path::new("a.py"), "eval(payload)\n");
+        let ScanOutcome::Scanned(findings) = outcome else {
+            panic!("valid Python must scan: {outcome:?}");
+        };
+
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].rule_id, "BAS-TEST-002");
+        assert_eq!(findings[0].severity, Severity::Critical);
+        assert_eq!(findings[0].secondary_rule_ids, ["BAS-TEST-001"]);
+    }
+
+    /// A rule whose `any` patterns all pin one node kind is skipped on every
+    /// other kind by [`CompiledRule::can_match_kind`], which stands in for
+    /// the filter [`Node::find_all`] used to apply. A rule that could match
+    /// any kind has to keep being offered every node.
+    #[test]
+    fn the_kind_filter_never_hides_a_rule_that_could_match_any_kind() {
+        // A bare metavariable binds whatever node it lands on, so
+        // `potential_kinds` cannot narrow it and `any_kinds` must be `None`.
+        let rules = ruleset(
+            r"
+rules:
+  - id: BAS-TEST-003
+    title: anything
+    kind: defect
+    severity: low
+    confidence: low
+    categories: [LLM01]
+    language: python
+    any:
+      - $ANY
+    description: test rule
+    remediation: test remediation
+",
+        );
+        assert!(
+            rules.python[0].any_kinds.is_none(),
+            "a bare metavariable must not be narrowed to a kind set"
+        );
+        assert!(
+            rules.python[0].can_match_kind(0) && rules.python[0].can_match_kind(usize::MAX),
+            "an unnarrowed rule must be offered every node kind"
+        );
+
+        // And the narrowed case: `eval($ARG)` is a call, so most kinds are
+        // rejected without ever building a `MetaVarEnv`.
+        let narrowed = ruleset(EVAL_RULE);
+        let kinds = narrowed.python[0]
+            .any_kinds
+            .as_ref()
+            .expect("a concrete call pattern must narrow to a kind set");
+        assert_eq!(
+            kinds.iter().filter(|matched| **matched).count(),
+            1,
+            "eval($ARG) matches exactly one node kind"
+        );
+    }
+}

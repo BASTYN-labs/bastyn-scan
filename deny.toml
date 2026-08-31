@@ -1,0 +1,57 @@
+# Supply-chain policy, enforced in CI on every pull request.
+# Run locally with: cargo deny check
+
+[graph]
+# The targets Bastyn ships binaries for.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# A security tool has no business shipping known-vulnerable dependencies.
+yanked = "deny"
+unmaintained = "workspace"
+unsound = "all"
+ignore = []
+
+[licenses]
+# High confidence required when a license is inferred from text rather than
+# declared in metadata.
+confidence-threshold = 0.93
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "Unicode-3.0",
+  "Unlicense",
+  # rustls-webpki, and one half of ring's dual grant.
+  "ISC",
+  # webpki-roots. Permissive, data-only (the Mozilla CA bundle).
+  "CDLA-Permissive-2.0",
+  # subtle, via rustls. Permissive, no copyleft obligation.
+  "BSD-3-Clause",
+]
+exceptions = []
+
+[bans]
+# Duplicate versions are a size and audit-surface cost, but they usually live
+# in transitive dependencies we do not control. Surface them, do not block on
+# them.
+multiple-versions = "warn"
+# A wildcard version in our own manifests is our own mistake.
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+  { crate = "openssl", use-instead = "rustls", reason = "avoid a C toolchain dependency; it breaks the single-static-binary promise" },
+  { crate = "openssl-sys", use-instead = "rustls", reason = "avoid a C toolchain dependency; it breaks the single-static-binary promise" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

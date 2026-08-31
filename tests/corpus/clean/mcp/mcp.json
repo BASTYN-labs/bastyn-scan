@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "opsbot-runbooks": {
+      "command": "uvx",
+      "args": ["opsbot-runbook-server@2.4.1", "--root", "/srv/opsbot/runbooks"]
+    },
+    "opsbot-metrics": {
+      "url": "https://metrics.internal.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${OPSBOT_METRICS_TOKEN}"
+      },
+      "allowedTools": ["get_latency", "get_error_rate"]
+    }
+  }
+}
