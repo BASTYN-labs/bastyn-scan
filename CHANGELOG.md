@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Action stopped publishing to the GitHub Marketplace.** `action.yml`'s `description` had
+  grown to 188 characters, past an undocumented 125-character limit GitHub enforces before it will
+  publish an action's Marketplace listing. Publishing failed silently on every release since: the
+  Marketplace page showed no error, it just stopped picking up the new name, description, and
+  version, and kept showing whatever the last release under the limit had left there. Shortened the
+  description to fit, and added a CI check (`action-metadata` in `ci.yml`, mirrored in
+  `release.yml`) so a description that grows past 125 characters again fails the build instead of
+  failing silently on the Marketplace.
+
 ## [0.1.3] - 2026-09-03
 
 ### Added

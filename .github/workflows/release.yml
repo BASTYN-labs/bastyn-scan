@@ -54,6 +54,20 @@ jobs:
             echo "::error::action.yml installs ${default} but this release is ${TAG}; update the default"
             exit 1
           fi
+      - name: Check action.yml's description fits the Marketplace limit
+        run: |
+          # Undocumented, found only by hitting it: the release-edit page's
+          # "Publish this Action to the GitHub Marketplace" checkbox silently
+          # fails to publish -- with no error surfaced anywhere this job would
+          # see -- when `description` is 125 characters or longer. v0.1.2 and
+          # v0.1.3 both shipped past this limit, so the Marketplace listing sat
+          # frozen on stale text through two releases before anyone noticed.
+          desc="$(awk '/^description:/{sub(/^description: /, ""); print; exit}' action.yml)"
+          len="${#desc}"
+          if [ "$len" -ge 125 ]; then
+            echo "::error::action.yml description is ${len} characters (limit 125), so this release will silently fail to publish to the GitHub Marketplace: ${desc}"
+            exit 1
+          fi
 
   create-release:
     name: create release
