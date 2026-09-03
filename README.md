@@ -1,8 +1,11 @@
-<h1 align="center">Bastyn</h1>
+<h1 align="center">BASTYN Community</h1>
 
 <p align="center">
-  <strong>A single-binary security scanner for AI and agent code.</strong><br>
-  Written in Rust. One executable, with no runtime, no JVM and no Python environment to install alongside it.
+  <strong>Pre-deployment single-binary security assurance for autonomous AI and agent code.</strong><br>
+  Know what could let your AI agent act outside its intended controls before you deploy it.
+
+  BASTYN analyses AI agent, MCP and tool-enabled applications for unsafe action paths, risky permissions and missing control signals that conventional code scanners are not designed to understand.
+  <strong>Local-first · One executable, with no runtime · No account ·No LLM/API key · GitHub-native · SARIF-ready.</strong><br>
 </p>
 
 <p align="center">
@@ -18,14 +21,21 @@
 
 > **Status: alpha.** `bastyn scan` finds real issues today: 43 AST rules over Python, TypeScript and JavaScript across the OWASP GenAI and Anthropic Zero Trust categories, plus MCP manifest inspection, Dockerfile and Docker Compose inspection, a hidden-Unicode scan of agent instruction files, and CVE matching against OSV. The embedded prompt-injection classifier is not built yet. See [Measured coverage](#measured-coverage) for what the test corpus does and does not prove, and [Roadmap](#roadmap) for what is missing.
 
-## Why Bastyn
+## Why BASTYN
 
-Scanners get dropped from a developer's loop for two reasons: installing one is its own project, and the report is mostly things that are not wrong. Bastyn is built against both.
+BASTYN separates **provable defects from observations**. Your build only fails on problems BASTYN can substantiate, rather than assumptions about controls that may exist elsewhere in your architecture.
 
 - **One static binary.** `cargo build --release` produces a self-contained executable. No interpreter, no `node_modules`, no container.
 - **Defects and observations are separate.** A control the repository merely lacks is not filed as a bug and cannot fail your build. See [Defects and observations](#defects-and-observations).
 - **Deterministic offline.** Sorted relative paths and a stable JSON contract, so `--offline` reports diff cleanly across runs and CI jobs. A default online run can differ as OSV's advisory data changes, even over unchanged code.
 - **Fails loudly.** An unreadable directory is an error, not a quietly smaller result set. A security tool that under-reports is worse than one that stops.
+
+## What BASTYN checks
+- **Unsafe autonomous actions** — dangerous paths from model-controlled input into consequential operations.
+- **Agent and MCP tool controls** — excessive grants, wildcard access and unsafe tool configuration.
+- **Missing control signals** — destructive or sensitive actions without detectable safeguards.
+- **Execution trust boundaries** — privileged containers, exposed Docker sockets and unsafe runtime configuration.
+- **AI-specific security defects** — prompt, secret, injection and dependency risks relevant to agent applications.
 
 No wall-clock benchmark has been published, so this README does not claim one.
 
