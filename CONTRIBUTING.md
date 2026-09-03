@@ -106,7 +106,9 @@ This contract is asserted by the self-scan step in `ci.yml`, mirrored in `action
 
 ## Releasing
 
-Only maintainers cut releases. Pushing a tag is the only thing that publishes anything: [`release.yml`](.github/workflows/release.yml) triggers on tags matching `v[0-9]+.[0-9]+.[0-9]+*` and on nothing else, so merging to `main` never produces a release. Creating that tag needs push access to the repository, which is what limits releasing to maintainers.
+Only maintainers cut releases. Pushing a tag is the only thing that publishes anything: [`release.yml`](.github/workflows/release.yml) triggers on tags matching `v[0-9]+.[0-9]+.[0-9]+*` and on nothing else, so merging to `main` never produces a release.
+
+A repository ruleset named "release tags" enforces who may do that. Creating, updating or deleting any tag matching `v*.*.*` is restricted to repository admins and the release bot, so write access to the repository is not by itself enough to publish a release. The pattern deliberately stops short of the bare `vMAJOR` alias tag, because `major-alias` force-moves that one as `github-actions[bot]` and a rule covering it would block the workflow's own last step.
 
 Four version numbers have to agree before a tag will build. Three of them are checked, and a mismatch fails the release rather than publishing something inconsistent.
 
