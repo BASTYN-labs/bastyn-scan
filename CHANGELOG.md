@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **`exclude` input on the GitHub Action.** The `bastyn` CLI already had a repeatable
+  `--exclude <GLOB>` flag; the Action had no way to reach it. One gitignore-style glob per line,
+  each becoming its own `--exclude` on both the log-format scan and the SARIF one, so a caller can
+  suppress specific paths without patching `.bastynignore` into the checked-out tree. Excluded
+  paths still show up under the scan's "Coverage gaps" section.
+
 ## [0.1.2] - 2026-09-03
 
 Precision fixes. Four false positives found by scanning real third-party repositories, and the three

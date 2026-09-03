@@ -11,6 +11,14 @@ inputs:
     description: Directory to scan, relative to the workspace.
     required: false
     default: "."
+  exclude:
+    description: >
+      Paths to skip, one gitignore-style glob per line. Repeatable: each
+      non-empty line becomes its own --exclude GLOB. Every excluded path
+      still appears under the scan's "Coverage gaps" section, so the
+      suppression stays visible instead of silent.
+    required: false
+    default: ""
   version:
     description: >
       Bastyn version to install. Defaults to the release this action was
@@ -109,6 +117,7 @@ runs:
         FAIL_ON: ${{ inputs.fail-on }}
         SHOW_OBSERVATIONS: ${{ inputs.show-observations }}
         OFFLINE: ${{ inputs.offline }}
+        EXCLUDE: ${{ inputs.exclude }}
       run: |
         # GitHub runs composite `shell: bash` steps as `bash -e -o pipefail`,
         # and `set -uo pipefail` does not turn `-e` off. Every command whose
@@ -116,7 +125,18 @@ runs:
         # abort the script -- see the `if` around the scan below.
         set -uo pipefail
 
+        # One --exclude per non-empty line, shared between the log-format
+        # scan and the SARIF one below so the two never drift apart. The
+        # `(( ${#exclude_args[@]} )) &&` guard matters: macOS runners resolve
+        # `bash` to the system's bash 3.2, where `"${exclude_args[@]}"` on a
+        # still-empty array is an unbound-variable error under `set -u`.
+        exclude_args=()
+        while IFS= read -r glob; do
+          [ -n "$glob" ] && exclude_args+=(--exclude "$glob")
+        done <<< "$EXCLUDE"
+
         args=(scan "$SCAN_PATH" --format "$SCAN_FORMAT" --fail-on "$FAIL_ON")
+        (( ${#exclude_args[@]} )) && args+=("${exclude_args[@]}")
         [ "$SHOW_OBSERVATIONS" = "true" ] && args+=(--show-observations)
         [ "$OFFLINE" = "true" ] && args+=(--offline)
 
@@ -125,6 +145,7 @@ runs:
         # report are not mutually exclusive.
         if [ -n "$SARIF_FILE" ]; then
           sarif_args=(scan "$SCAN_PATH" --format sarif)
+          (( ${#exclude_args[@]} )) && sarif_args+=("${exclude_args[@]}")
           [ "$SHOW_OBSERVATIONS" = "true" ] && sarif_args+=(--show-observations)
           [ "$OFFLINE" = "true" ] && sarif_args+=(--offline)
           bastyn "${sarif_args[@]}" > "$SARIF_FILE" || true
