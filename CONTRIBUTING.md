@@ -104,6 +104,67 @@ The distinction that matters is `1` versus `2`. `1` is an answer: the tool worke
 
 This contract is asserted by the self-scan step in `ci.yml`, mirrored in `action.yml`, and documented in the README. Do not repurpose a code without changing all of them together.
 
+## Releasing
+
+Only maintainers cut releases. Pushing a tag is the only thing that publishes anything: [`release.yml`](.github/workflows/release.yml) triggers on tags matching `v[0-9]+.[0-9]+.[0-9]+*` and on nothing else, so merging to `main` never produces a release.
+
+A repository ruleset named "release tags" enforces who may do that. Creating, updating or deleting any tag matching `v*.*.*` is restricted to repository admins and the release bot, so write access to the repository is not by itself enough to publish a release. The pattern deliberately stops short of the bare `vMAJOR` alias tag, because `major-alias` force-moves that one as `github-actions[bot]` and a rule covering it would block the workflow's own last step.
+
+Four version numbers have to agree before a tag will build. Three of them are checked, and a mismatch fails the release rather than publishing something inconsistent.
+
+| Number | Where | What checks it |
+| --- | --- | --- |
+| Crate version | `version` under `[workspace.package]` in `Cargo.toml` | `verify` compares it to the tag |
+| Lockfile | the `bastyn-cli` and `bastyn-core` entries in `Cargo.lock` | every build runs `--locked` |
+| Action default | `default:` on the `version` input in `action.yml` | `verify` compares it to the tag |
+| Changelog heading | the version heading in `CHANGELOG.md` | nothing. Get it right by hand |
+
+The `action.yml` default is the one people forget. It decides which binary a caller downloads when they do not name a version, so if it lags the tag, `uses: BASTYN-labs/bastyn-scan@v0.1.2` installs some other release's binary and pinning stops meaning anything. That happened once already; the check exists so it cannot happen twice.
+
+### Cutting a release
+
+1. Open a pull request against `main` that does the release bump and nothing else:
+   - Set `version` in `Cargo.toml` to the new number.
+   - Run `cargo build` and commit the updated `Cargo.lock`.
+   - Set the `version` input's `default:` in `action.yml` to the tag, with the leading `v`.
+   - In `CHANGELOG.md`, retitle `## [Unreleased]` as `## [X.Y.Z] - YYYY-MM-DD`, put a fresh empty `## [Unreleased]` above it, and update the link definitions at the bottom of the file.
+2. Merge it. `main` requires a pull request and a passing `ci` run, so this is not a direct push.
+3. Tag the merge commit and push the tag:
+
+   ```console
+   git switch main && git pull
+   git tag -a v0.1.2 -m "bastyn v0.1.2"
+   git push origin v0.1.2
+   ```
+
+Tag a commit that is already on `main`. A tag is not a promise that the code works, so `verify` runs the full test suite against the tagged commit before anything is published.
+
+### What the tag triggers
+
+| Job | What it does |
+| --- | --- |
+| `verify` | `cargo test --workspace --all-features --locked`, then the two version checks above |
+| `create-release` | Creates the GitHub release with generated notes, or reuses one that already exists |
+| `upload-assets` | Builds `bastyn` for five targets, attaching each as an archive with a SHA-256 checksum |
+| `major-alias` | Force-moves the `vMAJOR` tag onto the released commit |
+
+The five targets are `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. The Linux builds use musl so they are fully static: no host glibc version to match.
+
+`major-alias` is what makes `uses: BASTYN-labs/bastyn-scan@v0` resolve to the newest 0.x release. It runs last and only after every target has uploaded, because a release missing the Windows archive is not one the alias should advertise. It also moves only for an exact `vMAJOR.MINOR.PATCH` on a release that is neither a draft nor a prerelease, so tagging `v0.2.0-rc.1` leaves `v0` pointing where it was.
+
+### When a release fails
+
+`verify` failing has published nothing. Delete the tag, fix the mismatch on `main`, and tag again:
+
+```console
+git push --delete origin v0.1.2
+git tag --delete v0.1.2
+```
+
+If a single target fails after the release object exists, use "Re-run failed jobs" on that workflow run. Re-running the whole workflow through `workflow_dispatch` with the same tag also works; `create-release` adds assets to the existing release rather than replacing it.
+
+Do not delete or move a tag that has already published assets. People pin to it.
+
 ## Licensing
 
 Contributions are accepted under the [Apache License, Version 2.0](LICENSE), per section 5 of that license. By opening a pull request you confirm you have the right to submit the work under those terms.
