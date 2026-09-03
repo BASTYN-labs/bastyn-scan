@@ -47,3 +47,26 @@ jobs:
             || { echo "::error::expected exit 1 on the vulnerable fixture, got $CODE"; exit 1; }
           [ -s "$SARIF" ] \
             || { echo "::error::no SARIF written to '$SARIF'"; exit 1; }
+      # Every fixture file is Python, so excluding *.py should leave nothing
+      # to flag. This also exercises the composite script's array handling
+      # on the runner's actual `bash` -- macOS resolves that to the system's
+      # bash 3.2, where an empty array under `set -u` has bitten this step
+      # before.
+      - name: Run Bastyn via the action, excluding every file in the fixture
+        id: scan-excluded
+        uses: ./
+        continue-on-error: true
+        with:
+          path: tests/fixtures/vulnerable_agent
+          exclude: "*.py"
+          offline: "true"
+          fail-on: high
+          sarif-file: bastyn-excluded.sarif
+      - name: Assert the exclude input suppressed every planted defect
+        shell: bash
+        env:
+          CODE: ${{ steps.scan-excluded.outputs.exit-code }}
+        run: |
+          echo "exit-code='$CODE'"
+          [ "$CODE" = "0" ] \
+            || { echo "::error::expected exit 0 with every file excluded, got $CODE"; exit 1; }
