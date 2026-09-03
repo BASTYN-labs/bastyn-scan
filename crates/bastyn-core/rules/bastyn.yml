@@ -123,17 +123,49 @@ rules:
   #    query object, not a SQL string -- a `message`/`response`-named value
   #    passed to `.values()` becomes a bound parameter, never query text.
   #
-  # The `none:` entries below exclude shape 1 for every quote style actually
-  # seen, plus 2-5 adjacent literals (the corpus example needed 4); an
-  # f-string structurally differs from a plain string node (it carries
-  # interpolation children) so `"$LIT"` does not accidentally swallow it --
-  # verified directly against the vulnerable_agent/llm10_eval_on_model_reply
-  # fixtures, both of which stay caught. `metavariable_not_matches` excludes
-  # shape 2 by requiring ARG not *start* with one of the three builder calls
-  # -- anchored so it cannot misfire on an identifier like `select_summary`.
-  # None of `none:`'s alternate-shape matching can express "starts with X"
-  # across an arbitrary method chain (`update(t).where(...).values(...)`),
-  # which is why this rule alone needs both mechanisms.
+  # The `none:` entries below exclude shape 1's triple-quoted and
+  # `$FN(...)`-wrapped forms; an f-string structurally differs from a plain
+  # string node (it carries interpolation children) so `"$LIT"` does not
+  # accidentally swallow it -- verified directly against the
+  # vulnerable_agent/llm10_eval_on_model_reply fixtures, both of which stay
+  # caught. `metavariable_not_matches` excludes shape 2 by requiring ARG not
+  # *start* with one of the three builder calls -- anchored so it cannot
+  # misfire on an identifier like `select_summary`. None of `none:`'s
+  # alternate-shape matching can express "starts with X" across an
+  # arbitrary method chain (`update(t).where(...).values(...)`), which is
+  # why this rule alone needs both mechanisms.
+  #
+  # The single- and double-quoted plain-literal forms of shape 1, including
+  # any number of adjacent literals Python concatenates implicitly, are
+  # excluded through `metavariable_not_matches` instead of enumerated
+  # `none:` shapes. First shipped as `none:` entries capped at 2-5 adjacent
+  # literals (the corpus example at the time needed 4), which is exactly
+  # the boundary a second corpus run (2026-08-31) fell outside: a
+  # `LiteLLM_SpendLogs` audit query split across more than 5 line-wrapped
+  # literals, one of which contains the column name `completion_tokens` --
+  # "completion" being an ARG trigger word for an entirely unrelated
+  # reason, and whose last segment switches from double to single quotes
+  # to hold a double-quoted identifier without escaping it. The
+  # replacement regex anchors end-to-end ("the whole argument is nothing
+  # but one or more quoted-literal segments, each independently either
+  # single- or double-quoted") so it holds for any count and any mix of
+  # quote styles, not just the ones a corpus run happened to produce.
+  #
+  # Two alternatives were tried and rejected, both refuted by a scan
+  # against `rules::tests::bas_llm10_003_still_flags_percent_interpolation`
+  # /`_still_flags_a_format_call` before shipping:
+  #   - An ast-grep `$$$` ellipsis `none:` pattern (`$CUR.execute("$A"
+  #     $$$REST)`) does generalize to any literal count, but does not
+  #     scope cleanly to sibling literal-string nodes: it also absorbed
+  #     `"...%s..." % response`, silently suppressing a real percent-
+  #     interpolation SQL injection.
+  #   - Migrating to `flow: source: model_output` (as BAS-LLM10-001
+  #     already did for eval/exec) correctly stays silent on the literal-
+  #     concatenation false positive, but the flow graph's `call` node
+  #     resolution only tracks a call's own return provenance, not its
+  #     arguments' -- so it cannot see model output reaching
+  #     `"...".format(response)`, a real vulnerability shape this rule
+  #     must keep catching.
   - id: BAS-LLM10-003
     title: Model output concatenated into a SQL query
     kind: defect
@@ -144,23 +176,17 @@ rules:
     any:
       - $CUR.execute($ARG)
     none:
-      - $CUR.execute("$LIT")
-      - $CUR.execute('$LIT')
       - $CUR.execute("""$LIT""")
       - $CUR.execute('''$LIT''')
       - $CUR.execute($FN("$LIT"))
       - $CUR.execute($FN('$LIT'))
       - $CUR.execute($FN("""$LIT"""))
       - $CUR.execute($FN('''$LIT'''))
-      - $CUR.execute("$A" "$B")
-      - $CUR.execute("$A" "$B" "$C")
-      - $CUR.execute("$A" "$B" "$C" "$D")
-      - $CUR.execute("$A" "$B" "$C" "$D" "$E")
     metavariable_matches:
       CUR: "(?i)(cursor|cur|db|conn|connection)"
       ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     metavariable_not_matches:
-      ARG: '^\s*(select|insert|update)\('
+      ARG: '^\s*(select|insert|update)\(|^\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*$'
     description: >
       A database cursor executes a query built from model output. Since the
       model's reply is attacker-influenceable (via prompt injection from any

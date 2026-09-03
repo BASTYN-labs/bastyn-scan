@@ -36,3 +36,35 @@ def safe_query(cursor, incident_id: str) -> None:
     literal, and the untrusted value is a bind parameter, never
     interpolated into the SQL string itself."""
     cursor.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,))
+
+
+# A live-looking "Bearer <token>" that is actually unexpanded template
+# syntax, substituted by the application's own templating layer at
+# execution time -- no secret is embedded. Measured 2026-08-31 against a
+# real DAST tool's request executor.
+dast_auth_headers = {"Authorization": "Bearer {{env.DAST_AUTH_TOKEN}}"}
+
+# A value scrubbed *before* being persisted, not a leaked one. Measured
+# 2026-08-31 against a real repository-intake pipeline.
+private_repo = {}
+private_repo["accessToken"] = "[REDACTED]"
+
+
+def log_spend(cur) -> None:
+    """A fully static audit query split across more literal segments than
+    BAS-LLM10-003's `none:` exclusion used to cover (previously capped at
+    5), where one segment -- `completion_tokens`, a real LiteLLM_SpendLogs
+    column -- happens to contain an ARG trigger word for a reason that has
+    nothing to do with model output. The last segment switches to single
+    quotes (to hold the double-quoted table name without escaping), which
+    the original report's own shape also did -- the exclusion regex has to
+    cover a mix of quote styles across adjacent segments, not just one
+    style repeated. Measured 2026-08-31."""
+    cur.execute(
+        "SELECT model, "
+        "prompt_tokens, "
+        "completion_tokens, "
+        "startTime, "
+        "endTime "
+        'FROM "LiteLLM_SpendLogs"'
+    )

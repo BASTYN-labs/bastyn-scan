@@ -128,6 +128,31 @@ fn bas_llm02_004_ignores_a_placeholder_bearer_token() {
 }
 
 #[test]
+fn bas_llm02_004_ignores_a_mustache_template_placeholder_bearer_token() {
+    // Measured 2026-08-31: a *plain* string literal (not an f-string) whose
+    // content is itself unexpanded template syntax, substituted by the
+    // application's own templating layer at execution time -- no secret is
+    // embedded. Same judgment `credential::is_hardcoded_credential_value`
+    // already applies to a leading `{{`.
+    let ruleset = ruleset();
+    let source = "headers = {\"Authorization\": \"Bearer {{env.DAST_AUTH_TOKEN}}\"}\n";
+
+    let findings = scan_source(&ruleset, Path::new("skill.py"), source);
+
+    assert!(!ids(&findings).contains(&"BAS-LLM02-004"), "{findings:?}");
+}
+
+#[test]
+fn bas_llm02_004_ignores_a_shell_style_variable_placeholder_bearer_token() {
+    let ruleset = ruleset();
+    let source = "headers = {\"Authorization\": \"Bearer ${DAST_AUTH_TOKEN}\"}\n";
+
+    let findings = scan_source(&ruleset, Path::new("skill.py"), source);
+
+    assert!(!ids(&findings).contains(&"BAS-LLM02-004"), "{findings:?}");
+}
+
+#[test]
 fn bas_llm02_005_flags_a_hardcoded_bearer_token_js() {
     let ruleset = ruleset();
     let source =
@@ -142,6 +167,16 @@ fn bas_llm02_005_flags_a_hardcoded_bearer_token_js() {
 fn bas_llm02_005_ignores_an_interpolated_bearer_token_js() {
     let ruleset = ruleset();
     let source = "const headers = { Authorization: `Bearer ${token}` };\n";
+
+    let findings = scan_source(&ruleset, Path::new("skill.ts"), source);
+
+    assert!(!ids(&findings).contains(&"BAS-LLM02-005"), "{findings:?}");
+}
+
+#[test]
+fn bas_llm02_005_ignores_a_mustache_template_placeholder_bearer_token_js() {
+    let ruleset = ruleset();
+    let source = "const headers = { Authorization: \"Bearer {{env.DAST_AUTH_TOKEN}}\" };\n";
 
     let findings = scan_source(&ruleset, Path::new("skill.ts"), source);
 
@@ -251,6 +286,22 @@ fn bas_zt1_010_ignores_a_smoke_test_fixture_secret() {
     let source = "secret = \"acme-smoke-secret-v1\"\n";
 
     let findings = scan_source(&ruleset, Path::new("orchestrator.py"), source);
+
+    assert!(!ids(&findings).contains(&"BAS-ZT1-010"), "{findings:?}");
+}
+
+#[test]
+fn bas_zt1_010_ignores_a_value_scrubbed_before_persisting() {
+    // Measured 2026-08-31: private_repo["accessToken"] = "[REDACTED]" is a
+    // redaction routine scrubbing a secret before writing it out, the
+    // opposite of a leaked credential. $KEY binds the whole subscript
+    // expression (its text contains "Token"), and "[REDACTED]" clears the
+    // 8+ character length gate, so only the placeholder-word exclusion can
+    // stop this from firing.
+    let ruleset = ruleset();
+    let source = "private_repo[\"accessToken\"] = \"[REDACTED]\"\n";
+
+    let findings = scan_source(&ruleset, Path::new("intake_engine.py"), source);
 
     assert!(!ids(&findings).contains(&"BAS-ZT1-010"), "{findings:?}");
 }
@@ -453,6 +504,7 @@ fn generic_credential_rule_agrees_with_credential_module_on_placeholders() {
         "REPLACE_WITH_YOUR_TOKEN",
         "xxx",
         "OPENAI_API_KEY",
+        "[REDACTED]",
     ];
     for value in placeholders {
         assert!(

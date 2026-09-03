@@ -66,6 +66,13 @@ const PLACEHOLDER_MARKERS: &[&str] = &[
     "todo",
     "fixme",
     "example.com",
+    // A value scrubbed *before* being written out (a log line, a persisted
+    // copy of upstream API data) rather than a leaked secret -- the opposite
+    // of what this check exists to catch. Measured 2026-08-31:
+    // `private_repo["accessToken"] = "[REDACTED]"` in a redaction routine.
+    "redacted",
+    "scrubbed",
+    "masked",
     // Calibration turned up two false positives of the same shape, both a
     // project's own documented local-demo secret -- and both spell out a
     // length *requirement* rather than holding secret content:
