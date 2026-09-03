@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-03
+
 ### Added
 
 - **`exclude` input on the GitHub Action.** The `bastyn` CLI already had a repeatable
@@ -307,7 +309,8 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.3
 [0.1.2]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.0
