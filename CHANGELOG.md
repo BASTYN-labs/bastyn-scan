@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-03
+
+Precision fixes. Four false positives found by scanning real third-party repositories, and the three
+rules that produced them. No change to what the scanner detects as a genuine defect.
+
+### Fixed
+
+- **A `Bearer` token that was template syntax, not a secret.** `BAS-LLM02-004` and `BAS-LLM02-005`
+  reported `"Bearer {{env.DAST_AUTH_TOKEN}}"` and `"Bearer ${VAR}"` as hardcoded credentials. Each is a
+  plain string literal whose contents the application substitutes at execution time. `credential.rs`
+  already read a leading `{{` or `$` as a placeholder for other rules; these two never got the guard.
+- **A credential flagged after it had been scrubbed.** `BAS-ZT1-010` and `BAS-ZT1-011` reported
+  `private_repo["accessToken"] = "[REDACTED]"`, which is a redaction routine doing its job rather than a
+  leaked secret. `redacted`, `scrubbed` and `masked` were missing from the placeholder word list that
+  `credential.rs` and the YAML rules both read from.
+- **A fully static SQL query with a model-shaped column name.** `BAS-LLM10-003` reported a literal
+  audit query because its column list contains `completion_tokens`. The rule excluded plain-literal
+  arguments by enumerating up to five adjacent concatenated literals, and this query had six across
+  mixed quote styles. The enumeration is now an end-to-end regex, so the exclusion holds for any
+  number of segments rather than the number a corpus run happened to produce.
+
+All four are now `[[expect_none]]` entries in `tests/corpus/clean/near_misses.py` and
+`near_misses.ts`, so the corpus gate fails if any of them comes back. The two remaining known false
+positives are unchanged and still ratcheted at two.
+
+### Changed
+
+- The README and the Action's Marketplace listing now present the project as BASTYN Community, and
+  describe what it checks. No behaviour change.
+- `CONTRIBUTING.md` documents how a release is cut: the tag trigger, the version numbers that must
+  agree before a tag will build, and what each release job does.
+- The JSON example in the README reports `bastyn_version` as `0.1.2`, matching the binary this
+  release publishes. It had drifted to `0.1.0` again, the same mismatch 0.1.1 corrected.
+
 ## [0.1.1] - 2026-08-31
 
 Action and documentation fixes. The scanner binary is unchanged from 0.1.0.
@@ -265,6 +299,7 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.2
 [0.1.1]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.1
 [0.1.0]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.0

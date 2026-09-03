@@ -239,7 +239,7 @@ With no connection, Bastyn skips CVEs and says so under "Coverage gaps", with th
 
 ```json
 {
-  "bastyn_version": "0.1.0",
+  "bastyn_version": "0.1.2",
   "root": ".",
   "summary": {
     "files_scanned": 3, "files_skipped": 0,
