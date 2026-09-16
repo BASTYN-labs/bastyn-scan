@@ -192,3 +192,20 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag --force --annotate "$major" "$sha" -m "Major-version alias, currently $TAG"
           git push --force origin "refs/tags/$major"
+
+  release-gate:
+    name: check final release tag
+    runs-on: ubuntu-latest
+    outputs:
+      is-final-release: ${{ steps.check.outputs.is-final-release }}
+    steps:
+      - id: check
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is-final-release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$TAG is not a final release tag (vMAJOR.MINOR.PATCH, no suffix); crates.io and the Homebrew tap are only updated for final releases"
+            echo "is-final-release=false" >> "$GITHUB_OUTPUT"
+          fi
