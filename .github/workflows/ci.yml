@@ -171,9 +171,15 @@ jobs:
     container: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v7
-      - name: Install curl and tar (alpine only)
+      - name: Install curl and tar (alpine)
         if: matrix.image == 'alpine:latest'
         run: apk add --no-cache curl tar
+      - name: Install curl and tar (ubuntu)
+        # The ubuntu:24.04 *container image* is a bare Debian-derived base
+        # image, not the ubuntu-latest GitHub-hosted VM runner -- it does not
+        # ship curl (or tar) by default.
+        if: matrix.image == 'ubuntu:24.04'
+        run: apt-get update && apt-get install -y --no-install-recommends curl tar ca-certificates
       - name: Run install.sh against the latest published release
         run: |
           set -eu
