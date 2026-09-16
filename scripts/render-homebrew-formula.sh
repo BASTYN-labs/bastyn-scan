@@ -18,7 +18,7 @@ repo="BASTYN-labs/bastyn-scan"
 
 sha_for() {
     target="$1"
-    file="$checksums_dir/bastyn-${tag}-${target}.tar.gz.sha256"
+    file="$checksums_dir/bastyn-${tag}-${target}.sha256"
     if [ ! -f "$file" ]; then
         echo "missing checksum file: $file" >&2
         exit 1

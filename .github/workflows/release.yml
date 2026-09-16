@@ -261,7 +261,7 @@ jobs:
           for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
             gh release download "$TAG" \
               --repo "${{ github.repository }}" \
-              --pattern "bastyn-${TAG}-${target}.tar.gz.sha256" \
+              --pattern "bastyn-${TAG}-${target}.sha256" \
               --dir checksums
           done
       - name: Render the formula
