@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **`cargo install bastyn`, `brew install bastyn-labs/tap/bastyn`, and a `curl | sh` installer**,
+  alongside the existing GitHub Action and GitHub Release binaries. The crates.io package (formerly
+  `bastyn-cli`) is renamed to `bastyn` to match; `bastyn-cli` itself is republished as a tiny
+  pointer crate so the old name can't be squatted. crates.io publishing uses Trusted Publishing
+  (no long-lived token in CI); the Homebrew tap update runs in a separate job from the one that
+  executes the downloaded binary, so a GitHub App signing key is never in scope alongside it;
+  `install.sh` verifies a checksum before extracting anything and is structured so a truncated
+  download can't execute a partial script. See `CONTRIBUTING.md`'s "Releasing" section for what a
+  release now touches.
+
 ## [0.1.4] - 2026-09-03
 
 ### Fixed
