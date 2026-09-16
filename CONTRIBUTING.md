@@ -115,7 +115,7 @@ Four version numbers have to agree before a tag will build. Three of them are ch
 | Number | Where | What checks it |
 | --- | --- | --- |
 | Crate version | `version` under `[workspace.package]` in `Cargo.toml` | `verify` compares it to the tag |
-| Lockfile | the `bastyn-cli` and `bastyn-core` entries in `Cargo.lock` | every build runs `--locked` |
+| Lockfile | the `bastyn` and `bastyn-core` entries in `Cargo.lock` | every build runs `--locked` |
 | Action default | `default:` on the `version` input in `action.yml` | `verify` compares it to the tag |
 | Changelog heading | the version heading in `CHANGELOG.md` | nothing. Get it right by hand |
 

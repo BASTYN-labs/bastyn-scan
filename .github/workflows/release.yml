@@ -34,7 +34,7 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version="$(cargo metadata --format-version 1 --no-deps \
-            | jq -r '.packages[] | select(.name == "bastyn-cli") | .version')"
+            | jq -r '.packages[] | select(.name == "bastyn") | .version')"
           if [ "$TAG" != "v${version}" ]; then
             echo "::error::tag ${TAG} does not match crate version ${version}"
             exit 1
