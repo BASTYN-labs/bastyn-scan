@@ -13,7 +13,6 @@ fi
 tag="$1"
 checksums_dir="$2"
 output_path="$3"
-version="${tag#v}"
 repo="BASTYN-labs/bastyn-scan"
 
 sha_for() {
@@ -35,7 +34,6 @@ cat > "$output_path" <<EOF
 class Bastyn < Formula
   desc "Single-binary static analysis for AI and agent code"
   homepage "https://bastyn.ai"
-  version "${version}"
   license "Apache-2.0"
 
   on_macos do

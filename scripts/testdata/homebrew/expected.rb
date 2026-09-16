@@ -1,7 +1,6 @@
 class Bastyn < Formula
   desc "Single-binary static analysis for AI and agent code"
   homepage "https://bastyn.ai"
-  version "9.9.9"
   license "Apache-2.0"
 
   on_macos do

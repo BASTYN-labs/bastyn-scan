@@ -198,6 +198,7 @@ jobs:
   release-gate:
     name: check final release tag
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       is-final-release: ${{ steps.check.outputs.is-final-release }}
     steps:
@@ -233,6 +234,15 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --workspace --locked
 
+  # Split into two jobs so the GitHub App signing key in push-tap is never
+  # present alongside a freshly-downloaded, freshly-executed release binary:
+  # render-and-verify-tap has no secrets and is the job that runs
+  # brew install/brew test against the real binary; push-tap has the key
+  # and does nothing but download the already-verified artifact and push.
+  # push-tap double-gates on release-gate explicitly (belt-and-braces)
+  # rather than relying only on the implicit skip-propagation from its
+  # needs: dependency, so a future refactor of push-tap's needs: list
+  # can't silently remove the release-candidate guard.
   render-and-verify-tap:
     name: render and verify homebrew formula (${{ matrix.os }})
     needs: [upload-assets, release-gate]
@@ -268,10 +278,19 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: ./scripts/render-homebrew-formula.sh "$TAG" checksums bastyn.rb
+      - name: Set up a local tap for audit/install
+        run: |
+          set -euo pipefail
+          tap_dir="$(brew --repository)/Library/Taps/bastyn-labs/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
+          cp bastyn.rb "$tap_dir/Formula/bastyn.rb"
+          git -C "$tap_dir" init -q
+          git -C "$tap_dir" -c user.email="ci@localhost" -c user.name="ci" add -A
+          git -C "$tap_dir" -c user.email="ci@localhost" -c user.name="ci" commit -q -m "local tap for CI verification"
       - name: brew audit
-        run: brew audit --strict --new --formula ./bastyn.rb
+        run: brew audit --strict --new bastyn-labs/tap/bastyn
       - name: brew install
-        run: brew install --formula ./bastyn.rb
+        run: brew install bastyn-labs/tap/bastyn
       - name: brew test
         run: brew test bastyn
       - name: Upload the verified formula
@@ -284,7 +303,8 @@ jobs:
 
   push-tap:
     name: push homebrew formula
-    needs: [render-and-verify-tap]
+    needs: [render-and-verify-tap, release-gate]
+    if: needs.release-gate.outputs.is-final-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -149,10 +149,23 @@ Tag a commit that is already on `main`. A tag is not a promise that the code wor
 | `create-release` | Creates the GitHub release with generated notes, or reuses one that already exists |
 | `upload-assets` | Builds `bastyn` for five targets, attaching each as an archive with a SHA-256 checksum |
 | `major-alias` | Force-moves the `vMAJOR` tag onto the released commit |
+| `release-gate` | Checks whether the tag is a final release (`vMAJOR.MINOR.PATCH`, no suffix) — crates.io and the Homebrew tap are only updated for final releases |
+| `publish-crates` | Publishes `bastyn-core` and `bastyn` to crates.io via Trusted Publishing (no long-lived token); final releases only |
+| `render-and-verify-tap` | Renders the Homebrew formula, then verifies it with `brew audit`/`brew install`/`brew test` before anything is pushed; final releases only |
+| `push-tap` | Pushes the verified formula to `BASTYN-labs/homebrew-tap`, using a GitHub App token scoped to that repo only; final releases only |
 
 The five targets are `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. The Linux builds use musl so they are fully static: no host glibc version to match.
 
 `major-alias` is what makes `uses: BASTYN-labs/bastyn-scan@v0` resolve to the newest 0.x release. It runs last and only after every target has uploaded, because a release missing the Windows archive is not one the alias should advertise. It also moves only for an exact `vMAJOR.MINOR.PATCH` on a release that is neither a draft nor a prerelease, so tagging `v0.2.0-rc.1` leaves `v0` pointing where it was.
+
+### One-time infrastructure setup
+
+Before the first release that publishes to crates.io or updates the Homebrew tap, a maintainer must do the following (none of this is automated, and none of it repeats on later releases):
+
+1. **crates.io Trusted Publishing.** `bastyn-core` must be claimed on crates.io first (its name is currently unclaimed, so `publish-crates`'s Trusted Publishing config can't be created for a crate that doesn't exist yet) — publish it once manually with `cargo publish -p bastyn-core --locked` using a maintainer's own crates.io login. Then, on crates.io, register `bastyn-scan`'s `publish-crates` job as a Trusted Publisher for both `bastyn-core` and `bastyn` (crates.io → each crate's settings → Trusted Publishing → GitHub Actions, repository `BASTYN-labs/bastyn-scan`, workflow file `release.yml`, job `publish-crates`).
+2. **Homebrew tap repository.** Create `BASTYN-labs/homebrew-tap` and give it at least one initial commit (an empty repository with zero commits cannot be checked out by `actions/checkout` in the `push-tap` job — it must not be left completely empty).
+3. **GitHub App for the tap push.** Register a small GitHub App, generate a private key for it, and install it **only** on `BASTYN-labs/homebrew-tap` with Contents: Read and write — never install it on any other repository, since its private key mints tokens for every repository it's installed on. Store its numeric App ID as the `bastyn-scan` repo secret `HOMEBREW_TAP_APP_ID`, and its private key (full `.pem` contents) as `HOMEBREW_TAP_APP_PRIVATE_KEY`.
+4. **`bastyn-cli` tombstone crate.** Publish the placeholder crate at `crates/bastyn-cli-placeholder/` once, manually, with `cargo publish --locked` run from inside that directory — this claims the old `bastyn-cli` name on crates.io before someone else can, and only needs to happen once (crates.io versions are immutable, so there's nothing to re-publish on later releases).
 
 ### When a release fails
 
@@ -163,7 +176,9 @@ git push --delete origin v0.1.2
 git tag --delete v0.1.2
 ```
 
-If a single target fails after the release object exists, use "Re-run failed jobs" on that workflow run. Re-running the whole workflow through `workflow_dispatch` with the same tag also works; `create-release` adds assets to the existing release rather than replacing it.
+If a single target fails after the release object exists, use "Re-run failed jobs" on that workflow run — this is always safe and is the preferred recovery. Re-running the *whole* workflow through `workflow_dispatch` with the same tag is only safe if `publish-crates` has not yet succeeded for that tag: crates.io rejects re-publishing an already-published version, so a full re-run after a successful `publish-crates` will fail on that job specifically, even though `create-release`/`upload-assets` remain safe to repeat (create-release reuses the existing release rather than replacing it).
+
+Because `publish-crates`, `render-and-verify-tap`, and `push-tap` all run in parallel with `major-alias` rather than after it, a release can end up "partially complete" — a public GitHub Release and a moved `vMAJOR` alias, but crates.io or the Homebrew tap not yet updated because one of those jobs failed. This is an expected possible state given the pipeline's additive design, not necessarily a sign something is broken elsewhere; use "Re-run failed jobs" to finish the incomplete piece.
 
 Do not delete or move a tag that has already published assets. People pin to it.
 

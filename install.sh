@@ -36,10 +36,10 @@ detect_target() {
 
 resolve_version() {
     if [ -n "${BASTYN_VERSION:-}" ]; then
-        case "$BASTYN_VERSION" in
-            v[0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$BASTYN_VERSION"; return ;;
-            *) fail "BASTYN_VERSION must look like vX.Y.Z, got: $BASTYN_VERSION" ;;
-        esac
+        validated=$(printf '%s\n' "$BASTYN_VERSION" | sed -n 's/^\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
+        [ -n "$validated" ] || fail "BASTYN_VERSION must look like vX.Y.Z, got: $BASTYN_VERSION"
+        printf '%s\n' "$validated"
+        return
     fi
 
     location=$(curl -fsSI --proto '=https' --proto-redir '=https' \
@@ -105,7 +105,8 @@ main() {
 
     mkdir -p "$install_dir"
     chmod +x "$workdir/$BIN_NAME"
-    mv "$workdir/$BIN_NAME" "$install_dir/$BIN_NAME"
+    cp "$workdir/$BIN_NAME" "$install_dir/.$BIN_NAME.tmp.$$"
+    mv "$install_dir/.$BIN_NAME.tmp.$$" "$install_dir/$BIN_NAME"
 
     log "Installed $BIN_NAME $version to $install_dir/$BIN_NAME"
 
