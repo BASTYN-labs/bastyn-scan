@@ -110,6 +110,8 @@ Only maintainers cut releases. Pushing a tag is the only thing that publishes an
 
 A repository ruleset named "release tags" enforces who may do that. Creating, updating or deleting any tag matching `v*.*.*` is restricted to repository admins and the release bot, so write access to the repository is not by itself enough to publish a release. The pattern deliberately stops short of the bare `vMAJOR` alias tag, because `major-alias` force-moves that one as `github-actions[bot]` and a rule covering it would block the workflow's own last step.
 
+A release now updates four places, not just this repository: the GitHub Release itself, the `bastyn` and `bastyn-core` crates on crates.io, the `BASTYN-labs/homebrew-tap` formula, and (indirectly — no per-release action needed) the `install.sh` one-liner, which always resolves whatever the latest tag is. The crates.io and Homebrew updates only happen for a final `vMAJOR.MINOR.PATCH` tag, same as the `major-alias` job — a release candidate updates GitHub Releases only.
+
 Four version numbers have to agree before a tag will build. Three of them are checked, and a mismatch fails the release rather than publishing something inconsistent.
 
 | Number | Where | What checks it |
