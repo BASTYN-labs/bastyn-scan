@@ -50,7 +50,13 @@ cargo build --release
 ./target/release/bastyn --version
 ```
 
-`cargo install --path crates/bastyn-cli` puts it on your `PATH`. Tagged releases also publish binaries for Linux, macOS and Windows on the [releases page](https://github.com/BASTYN-labs/bastyn-scan/releases).
+`cargo install --path crates/bastyn-cli` puts it on your `PATH` from a local checkout. Tagged releases also publish binaries for Linux, macOS and Windows on the [releases page](https://github.com/BASTYN-labs/bastyn-scan/releases), and can be installed without cloning the repo:
+
+```console
+cargo install bastyn
+brew install bastyn-labs/tap/bastyn
+curl -fsSL https://raw.githubusercontent.com/BASTYN-labs/bastyn-scan/main/install.sh | sh
+```
 
 ## Usage
 

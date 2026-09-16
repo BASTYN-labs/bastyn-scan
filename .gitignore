@@ -1,5 +1,7 @@
 # Rust build artifacts
-/target/
+# Unanchored (not /target/) so it also matches nested crates that are
+# their own standalone workspace, e.g. crates/bastyn-cli-placeholder/target/.
+target/
 **/*.rs.bk
 *.pdb
 

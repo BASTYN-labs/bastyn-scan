@@ -1,5 +1,5 @@
 [package]
-name = "bastyn-cli"
+name = "bastyn"
 description = "Single-binary static analysis for AI and agent code."
 default-run = "bastyn"
 version.workspace = true

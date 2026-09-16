@@ -1,0 +1,20 @@
+# Empty workspace table makes this crate the root of its own one-crate
+# workspace, so it does NOT get swept into the parent bastyn-scan
+# workspace (which would break `cargo publish --workspace` on every
+# future release, since crates.io rejects re-publishing an unchanged
+# version).
+[workspace]
+
+[package]
+name = "bastyn-cli"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["Bastyn Labs <oss@bastyn.ai>"]
+description = "Renamed to `bastyn`. Run `cargo install bastyn` instead."
+repository = "https://github.com/BASTYN-labs/bastyn-scan"
+homepage = "https://bastyn.ai"
+readme = "README.md"
+
+[lib]
+doc = false

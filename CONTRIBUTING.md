@@ -110,12 +110,14 @@ Only maintainers cut releases. Pushing a tag is the only thing that publishes an
 
 A repository ruleset named "release tags" enforces who may do that. Creating, updating or deleting any tag matching `v*.*.*` is restricted to repository admins and the release bot, so write access to the repository is not by itself enough to publish a release. The pattern deliberately stops short of the bare `vMAJOR` alias tag, because `major-alias` force-moves that one as `github-actions[bot]` and a rule covering it would block the workflow's own last step.
 
+A release now updates four places, not just this repository: the GitHub Release itself, the `bastyn` and `bastyn-core` crates on crates.io, the `BASTYN-labs/homebrew-tap` formula, and (indirectly — no per-release action needed) the `install.sh` one-liner, which always resolves whatever the latest tag is. The crates.io and Homebrew updates only happen for a final `vMAJOR.MINOR.PATCH` tag, same as the `major-alias` job — a release candidate updates GitHub Releases only.
+
 Four version numbers have to agree before a tag will build. Three of them are checked, and a mismatch fails the release rather than publishing something inconsistent.
 
 | Number | Where | What checks it |
 | --- | --- | --- |
 | Crate version | `version` under `[workspace.package]` in `Cargo.toml` | `verify` compares it to the tag |
-| Lockfile | the `bastyn-cli` and `bastyn-core` entries in `Cargo.lock` | every build runs `--locked` |
+| Lockfile | the `bastyn` and `bastyn-core` entries in `Cargo.lock` | every build runs `--locked` |
 | Action default | `default:` on the `version` input in `action.yml` | `verify` compares it to the tag |
 | Changelog heading | the version heading in `CHANGELOG.md` | nothing. Get it right by hand |
 
@@ -147,10 +149,23 @@ Tag a commit that is already on `main`. A tag is not a promise that the code wor
 | `create-release` | Creates the GitHub release with generated notes, or reuses one that already exists |
 | `upload-assets` | Builds `bastyn` for five targets, attaching each as an archive with a SHA-256 checksum |
 | `major-alias` | Force-moves the `vMAJOR` tag onto the released commit |
+| `release-gate` | Checks whether the tag is a final release (`vMAJOR.MINOR.PATCH`, no suffix) — crates.io and the Homebrew tap are only updated for final releases |
+| `publish-crates` | Publishes `bastyn-core` and `bastyn` to crates.io via Trusted Publishing (no long-lived token); final releases only |
+| `render-and-verify-tap` | Renders the Homebrew formula, then verifies it with `brew audit`/`brew install`/`brew test` before anything is pushed; final releases only |
+| `push-tap` | Pushes the verified formula to `BASTYN-labs/homebrew-tap`, using a GitHub App token scoped to that repo only; final releases only |
 
 The five targets are `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`. The Linux builds use musl so they are fully static: no host glibc version to match.
 
 `major-alias` is what makes `uses: BASTYN-labs/bastyn-scan@v0` resolve to the newest 0.x release. It runs last and only after every target has uploaded, because a release missing the Windows archive is not one the alias should advertise. It also moves only for an exact `vMAJOR.MINOR.PATCH` on a release that is neither a draft nor a prerelease, so tagging `v0.2.0-rc.1` leaves `v0` pointing where it was.
+
+### One-time infrastructure setup
+
+None of this is automated, and none of it repeats on later releases.
+
+1. **crates.io Trusted Publishing.** Done: `bastyn-core` and `bastyn` are published (`0.1.4`), and `bastyn-scan`'s `publish-crates` job is registered as a Trusted Publisher for both (crates.io → each crate's settings → Trusted Publishing → GitHub Actions, repository `BASTYN-labs/bastyn-scan`, workflow file `release.yml`). Both crates also have "Require trusted publishing for all new versions" enabled, so a plain API token can no longer publish a new version even if one leaked.
+2. **Homebrew tap repository.** Done: `BASTYN-labs/homebrew-tap` exists with an initial commit.
+3. **GitHub App for the tap push.** Done: the `bastyn-tap-publisher` GitHub App is registered under `BASTYN-labs`, installed only on `BASTYN-labs/homebrew-tap` (Contents: Read and write, no other repository), and its App ID and private key are stored as the `bastyn-scan` repo secrets `HOMEBREW_TAP_APP_ID` and `HOMEBREW_TAP_APP_PRIVATE_KEY`.
+4. **`bastyn-cli` tombstone crate.** Done: published once (`0.1.0`) to claim the old name before this rename could be squatted. Nothing to re-publish on later releases — crates.io versions are immutable.
 
 ### When a release fails
 
@@ -161,7 +176,9 @@ git push --delete origin v0.1.2
 git tag --delete v0.1.2
 ```
 
-If a single target fails after the release object exists, use "Re-run failed jobs" on that workflow run. Re-running the whole workflow through `workflow_dispatch` with the same tag also works; `create-release` adds assets to the existing release rather than replacing it.
+If a single target fails after the release object exists, use "Re-run failed jobs" on that workflow run — this is always safe and is the preferred recovery. Re-running the *whole* workflow through `workflow_dispatch` with the same tag is only safe if `publish-crates` has not yet succeeded for that tag: crates.io rejects re-publishing an already-published version, so a full re-run after a successful `publish-crates` will fail on that job specifically, even though `create-release`/`upload-assets` remain safe to repeat (create-release reuses the existing release rather than replacing it).
+
+Because `publish-crates`, `render-and-verify-tap`, and `push-tap` all run in parallel with `major-alias` rather than after it, a release can end up "partially complete" — a public GitHub Release and a moved `vMAJOR` alias, but crates.io or the Homebrew tap not yet updated because one of those jobs failed. This is an expected possible state given the pipeline's additive design, not necessarily a sign something is broken elsewhere; use "Re-run failed jobs" to finish the incomplete piece.
 
 Do not delete or move a tag that has already published assets. People pin to it.
 
