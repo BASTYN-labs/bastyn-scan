@@ -160,12 +160,12 @@ The five targets are `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, 
 
 ### One-time infrastructure setup
 
-Before the first release that publishes to crates.io or updates the Homebrew tap, a maintainer must do the following (none of this is automated, and none of it repeats on later releases):
+None of this is automated, and none of it repeats on later releases.
 
-1. **crates.io Trusted Publishing.** `bastyn-core` must be claimed on crates.io first (its name is currently unclaimed, so `publish-crates`'s Trusted Publishing config can't be created for a crate that doesn't exist yet) — publish it once manually with `cargo publish -p bastyn-core --locked` using a maintainer's own crates.io login. Then, on crates.io, register `bastyn-scan`'s `publish-crates` job as a Trusted Publisher for both `bastyn-core` and `bastyn` (crates.io → each crate's settings → Trusted Publishing → GitHub Actions, repository `BASTYN-labs/bastyn-scan`, workflow file `release.yml`, job `publish-crates`).
-2. **Homebrew tap repository.** Create `BASTYN-labs/homebrew-tap` and give it at least one initial commit (an empty repository with zero commits cannot be checked out by `actions/checkout` in the `push-tap` job — it must not be left completely empty).
-3. **GitHub App for the tap push.** Register a small GitHub App, generate a private key for it, and install it **only** on `BASTYN-labs/homebrew-tap` with Contents: Read and write — never install it on any other repository, since its private key mints tokens for every repository it's installed on. Store its numeric App ID as the `bastyn-scan` repo secret `HOMEBREW_TAP_APP_ID`, and its private key (full `.pem` contents) as `HOMEBREW_TAP_APP_PRIVATE_KEY`.
-4. **`bastyn-cli` tombstone crate.** Publish the placeholder crate at `crates/bastyn-cli-placeholder/` once, manually, with `cargo publish --locked` run from inside that directory — this claims the old `bastyn-cli` name on crates.io before someone else can, and only needs to happen once (crates.io versions are immutable, so there's nothing to re-publish on later releases).
+1. **crates.io Trusted Publishing.** Done: `bastyn-core` and `bastyn` are published (`0.1.4`), and `bastyn-scan`'s `publish-crates` job is registered as a Trusted Publisher for both (crates.io → each crate's settings → Trusted Publishing → GitHub Actions, repository `BASTYN-labs/bastyn-scan`, workflow file `release.yml`). Both crates also have "Require trusted publishing for all new versions" enabled, so a plain API token can no longer publish a new version even if one leaked.
+2. **Homebrew tap repository.** Done: `BASTYN-labs/homebrew-tap` exists with an initial commit.
+3. **GitHub App for the tap push.** Outstanding. Register a small GitHub App, generate a private key for it, and install it **only** on `BASTYN-labs/homebrew-tap` with Contents: Read and write — never install it on any other repository, since its private key mints tokens for every repository it's installed on. Store its numeric App ID as the `bastyn-scan` repo secret `HOMEBREW_TAP_APP_ID`, and its private key (full `.pem` contents) as `HOMEBREW_TAP_APP_PRIVATE_KEY`. Until this is done, `push-tap` will fail on the first real release tag (`render-and-verify-tap` will still succeed, since it needs no secrets).
+4. **`bastyn-cli` tombstone crate.** Done: published once (`0.1.0`) to claim the old name before this rename could be squatted. Nothing to re-publish on later releases — crates.io versions are immutable.
 
 ### When a release fails
 
