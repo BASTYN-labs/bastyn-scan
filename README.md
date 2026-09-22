@@ -19,7 +19,7 @@
 
 ---
 
-> **Status: alpha.** `bastyn scan` finds real issues today: 43 AST rules over Python, TypeScript and JavaScript across the OWASP GenAI and Anthropic Zero Trust categories, plus MCP manifest inspection, Dockerfile and Docker Compose inspection, a hidden-Unicode scan of agent instruction files, and CVE matching against OSV. The embedded prompt-injection classifier is not built yet. See [Measured coverage](#measured-coverage) for what the test corpus does and does not prove, and [Roadmap](#roadmap) for what is missing.
+> **Status: alpha.** `bastyn scan` finds real issues today: 44 AST rules over Python, TypeScript and JavaScript across the OWASP GenAI and Anthropic Zero Trust categories, plus MCP manifest inspection, Dockerfile and Docker Compose inspection, a hidden-Unicode scan of agent instruction files, `SKILL.md` manifest scanning, and CVE matching against OSV. The embedded prompt-injection classifier is not built yet. See [Measured coverage](#measured-coverage) for what the test corpus does and does not prove, and [Roadmap](#roadmap) for what is missing.
 
 ## Why BASTYN
 
@@ -68,7 +68,7 @@ Bastyn scan: .
 Mode: online
 
 [ok] Discovered source tree
-[ok] Analysed 3 files with 43 rules
+[ok] Analysed 3 files with 44 rules
 [ok] Parsed 3 dependencies
 [ok] OSV vulnerability lookup - 3 dependencies checked
 
@@ -184,7 +184,7 @@ Test code is held to the same rules and reported differently. A password invente
 | `--no-color` | No ANSI escapes. `NO_COLOR` is honoured too |
 | `--exclude <GLOB>` | Do not scan paths matching `GLOB`, in `.gitignore` syntax. Repeatable. Every path it drops is listed under "Coverage gaps" |
 | `--no-ignore` | Ignore `.gitignore`, `.ignore`, `.bastynignore` and Git excludes. `.git/` and `node_modules/` are skipped regardless, since neither holds code the repository's authors wrote |
-| `--hidden` | Include dot-files and dot-directories |
+| `--hidden` | Include dot-files and dot-directories. A fixed set of security-relevant dot-paths (`.env`/`.env.*`, a dot-prefixed MCP manifest, `.claude/`, `.github/workflows/`) is always scanned regardless of this flag &mdash; see [What it checks](#what-it-checks) |
 | `--follow-symlinks` | Follow symbolic links |
 | `--max-depth <N>` | Stop descending after `N` directory levels |
 
@@ -200,11 +200,11 @@ An execution error outranks findings, so a scan that could not run never returns
 
 ### What it checks
 
-**43 rule ids** over the Python, TypeScript and JavaScript ASTs, via [`ast-grep`](https://ast-grep.github.io), loaded from `crates/bastyn-core/rules/*.yml`. A rule written for JavaScript is compiled against the JavaScript, TypeScript and TSX grammars alike, which is what "JS/TS" means below. Each rule's severity, description and remediation text live in those files, which are the reference this table summarises.
+**44 rule ids** over the Python, TypeScript and JavaScript ASTs, via [`ast-grep`](https://ast-grep.github.io), loaded from `crates/bastyn-core/rules/*.yml`. A rule written for JavaScript is compiled against the JavaScript, TypeScript and TSX grammars alike, which is what "JS/TS" means below. Each rule's severity, description and remediation text live in those files, which are the reference this table summarises.
 
 | Rule ids | What they match | Languages |
 | --- | --- | --- |
-| `BAS-LLM10-001` to `-007` | Model output reaching `eval`/`exec`, a shell command, or a SQL string; `eval`/`exec`/`new Function` on any non-literal expression | Python, JS/TS |
+| `BAS-LLM10-001` to `-008` | Model output reaching `eval`/`exec`, a shell command, or a SQL string, including through one local variable; `eval`/`exec`/`new Function` on any non-literal expression | Python, JS/TS |
 | `BAS-LLM10-010`, `-011`, `-013` to `-016`, `BAS-LLM03-010` to `-012` | Named unsafe library APIs: `allow_dangerous_code`, `allow_dangerous_deserialization`, `allow_dangerous_requests`, `torch.load` without `weights_only`, `yaml.load` without a safe loader, `LLMMathChain`, `PandasQueryEngine`, `PALChain`, a LangGraph serializer with `pickle_fallback` | Python |
 | `BAS-ZT1-001` to `-003` and `-010` to `-013`, `BAS-LLM02-001`, `-002`, `-004`, `-005`, `BAS-LLM08-001`, `-002` | Credential literals: provider API keys, a key handed to a client constructor, a bearer token in tool or skill code, a secret inside a prompt template, a default admin password seeded by a setup script | Python, JS/TS |
 | `BAS-ZT4-001` to `-003` | Raw user input, or a caller-supplied override, folded into a system prompt | Python, JS/TS |
@@ -216,10 +216,11 @@ Not every rule fires equally well in every language yet, and several of the know
 
 **One rule does not run on shape alone.** `BAS-LLM10-001` claims a value came out of a model, and a pattern over the call site cannot know that. So a structural match on `eval($ARG)`/`exec($ARG)` is handed to a second tier, `crates/bastyn-core/src/flow/`, which builds a per-file dataflow graph and drops the match unless `$ARG` traces back to a model call or to a local function that returns one. The graph is Python-only, single-file, and follows local calls one level deep. Where it cannot prove a single origin it answers "unknown", which never satisfies the gate, so an unresolvable value produces silence rather than a guess. `crates/bastyn-core/tests/brittleness_gate.rs` measures what that bought over the identifier-name gate it replaced: 0 of 10 realistic renamings of the identical bug survived the name gate, 10 of 10 survive the provenance gate, and the eight innocent `json.load`-sourced samples the rule must not fire on stay rejected. Thirteen name gates on other rules have not been migrated.
 
-Four more checks are built into the engine rather than written as rules:
+Five more checks are built into the engine rather than written as rules:
 
 - **MCP manifests** (`BAS-MCP-000` to `-005`, `BAS-LLM03-020`). `mcp.json`, `.mcp.json`, `claude_desktop_config.json` and the YAML and TOML equivalents, all parsed into one model so a check cannot differ by file type. A manifest that does not parse, root or broad filesystem grants, unauthenticated plaintext HTTP, wildcard tool grants, credentials in a server's environment, an `autoApprove`/`alwaysAllow` wildcard, and a server launched from a registry with no version pin. `npx -y @scope/server-x` resolves to whatever the registry serves when the agent starts, so code inside the trust boundary can change with no change to your repository; a pinned server (`npx -y @scope/server@1.2.3`, `uvx server@1.2.3`) is resolved and queried against OSV like any other dependency, though it appears in no `package.json`. Bastyn does not inspect a server's own source.
 - **Agent instruction files** (`BAS-LLM01-001`). A byte-level scan of `SKILL.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `*.prompt` and every MCP file above, for codepoints that render as nothing: the zero-width characters, the five bidi override and embedding controls, and the Unicode tag block. A human reviewing the diff sees only the visible text while the model reads the hidden payload too. Ordinary non-ASCII text is never flagged, and a `U+FEFF` at the very first byte is read as a byte-order mark.
+- **`SKILL.md` manifests** (`BAS-SKILL-001` to `-003`). Any file named `SKILL.md`, anywhere in the tree, checked three ways: incomplete frontmatter (missing `name`, `description`, `version`, or `permissions`); classic instruction-override phrasing ("ignore all previous instructions" and similar) embedded in the file's own text, which a skill-discovery mechanism reads directly; and language telling the agent not to pause for confirmation before a chain of consequential actions. A `SKILL.md` is both a manifest a host trusts and a text file a model reads, so it fails in ways `AGENTS.md`'s hidden-Unicode scan does not cover.
 - **Container configuration** (`BAS-INFRA-001` to `-006`, `-010`). Dockerfiles and Compose files: `USER root` as the effective final user, a provider key or password in `ENV`/`ARG` or a Compose `environment:`, a `/var/run/docker.sock` mount, `privileged: true`, `network_mode: host`, `pid: host`. ZT3, meaning no sandbox boundary, is close to undetectable in application source because the boundary is not expressed there. It is expressed mechanically here. `BAS-INFRA-001` files an explicit root user as a defect and a missing `USER` instruction as an observation: 35 of the 57 Dockerfiles in the calibration corpus carry no `USER` at all, so filing each as a defect would drown the one case that is unambiguous.
 - **Dependencies** (`BAS-CVE-001`, `BAS-LLM04-001`). `requirements.txt`, `pyproject.toml`, `package.json` and `Cargo.toml`, matched against [OSV.dev](https://osv.dev) with no API key and no account. One finding per vulnerable dependency rather than per advisory, since a package with eleven advisories is still one upgrade to make; every CVE and GHSA id is kept in the report's `references` field and in the SARIF result properties. An unpinned range is reported as unchecked rather than guessed at. `BAS-LLM04-001` is a separate low-severity observation and the one dependency check that needs no network: an agent framework, the MCP SDK or a model-provider SDK pinned to a genuine wildcard or to a range with no upper bound. A caret or tilde range is the bounded default of `npm install` and Poetry, and is not this finding.
 
@@ -312,13 +313,13 @@ jobs:
 A corpus under [`tests/corpus/`](tests/corpus/) specifies what should and should not be found, and a gate measures the engine against it on every push. Its output, verbatim, from `cargo test -p bastyn-core --test corpus_gate -- --nocapture`:
 
 ```
-corpus: 47/47 planted defects found   (found 100%)
+corpus: 53/53 planted defects found   (found 100%)
         0 unexpected findings             (precision 100%)
-        12 known gaps (+8 reachable only with a network connection)
+        13 known gaps (+8 reachable only with a network connection)
         2 known false positives (precision debt -- tracked separately from known gaps, see MAX_KNOWN_FALSE_POSITIVES)
 ```
 
-Every fixture in that corpus is one we wrote, so "47/47" is a regression alarm and not a coverage figure: the engine finds 47 of 47 defects *we planted*, and real-world recall is unmeasured. A more honest single number folds the known gaps back in, at 47/(47+12) ≈ 80% of planted defects, excluding the 8 gaps that are unreachable only because CI runs `--offline`.
+Every fixture in that corpus is one we wrote, so "53/53" is a regression alarm and not a coverage figure: the engine finds 53 of 53 defects *we planted*, and real-world recall is unmeasured. A more honest single number folds the known gaps back in, at 53/(53+13) ≈ 80% of planted defects, excluding the 8 gaps that are unreachable only because CI runs `--offline`.
 
 The gaps are published rather than hidden. Each one names the code shape we miss and why, in [`tests/corpus/expected.toml`](tests/corpus/expected.toml), and the count fails the build if it grows. The two known false positives are ratcheted on a separate line, because a recall gap and a precision gap are not the same problem.
 

@@ -12,6 +12,11 @@ import os
 # BAS-LLM10-001 quiet.
 literal_result = eval("2 + 2")
 
+# exec() on a literal with an explicit globals dict: the 2-arg `none:`
+# exclusion added for BAS-LLM10-004's globals/locals widening must keep this
+# quiet too, exactly as the single-arg literal case above does.
+literal_exec_result = exec("2 + 2", {})
+
 # Variable names that look secret-ish or token-ish by substring alone.
 approx_tokens = 1500
 token_count = 0
@@ -29,6 +34,22 @@ def build_greeting(name: str) -> str:
     metavariable regexes both need to match, and neither does here."""
     greeting = f"Hello, {name}! How can OpsBot help today?"
     return greeting
+
+
+# Self-concatenation, but the LHS/RHS variable name is not prompt-shaped --
+# BAS-ZT4-002's SYS metavariable-match regex needs the same name on both
+# sides of the `+` to also look like a system/prompt/instruction/persona/
+# template variable, and `unrelated_var` doesn't.
+unrelated_var = "base value"
+unrelated_var = unrelated_var + "something"
+
+# Self-concatenation onto a prompt-shaped variable, but the appended value's
+# name isn't override-shaped -- BAS-ZT4-002's OVERRIDE metavariable-match
+# regex needs "override", "overridden", "custom_instructions", or
+# "force_prompt" in the name, and "user_note" doesn't qualify.
+system_prompt = "You are OpsBot."
+user_note = "please be concise"
+system_prompt = system_prompt + user_note
 
 
 def safe_query(cursor, incident_id: str) -> None:
@@ -68,3 +89,27 @@ def log_spend(cur) -> None:
         "endTime "
         'FROM "LiteLLM_SpendLogs"'
     )
+
+
+def literal_sql_through_local_variable(cursor) -> None:
+    """BAS-LLM10-008's flow gate resolves this local variable back to a
+    plain string literal, not a model call -- Origin::Literal is not
+    source: model_output, so this must not fire even though the shape
+    (assign to a local, then execute()) matches BAS-LLM10-008's
+    structural pattern exactly."""
+    sql = "SELECT id, title, body FROM kb_articles WHERE title = 'widget'"
+    cursor.execute(sql)
+
+
+def plain_parameter_sql_through_local_variable(cursor, query: str) -> None:
+    """A local variable built from an ordinary, non-tool function
+    parameter -- not a model call -- interpolated into SQL and executed.
+    BAS-LLM10-008 must stay silent here exactly as it does on the
+    known_gap fixture (real_misses/sql_from_tool_parameter.py): a bare
+    parameter resolves to Origin::Parameter in the flow graph, never
+    Origin::Call{...}, so it cannot classify as model_output regardless
+    of whether the enclosing function happens to be a decorated tool.
+    This case confirms the rule doesn't over-fire on *any* parameter --
+    only that it is currently blind to the tool-decorated case too."""
+    sql = f"SELECT id, title, body FROM kb_articles WHERE title LIKE '%{query}%'"
+    cursor.execute(sql)

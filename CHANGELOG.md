@@ -6,6 +6,58 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **`SKILL.md` manifest scanning (`BAS-SKILL-001` to `-003`).** Bastyn had no `SKILL.md`-specific
+  checks at all. Any file named `SKILL.md`, anywhere in the tree, is now checked for: incomplete
+  frontmatter (missing `name`, `description`, `version`, or `permissions`); classic
+  instruction-override phrasing embedded in the file's own text (a skill's description and body are
+  read directly by a host's skill-discovery mechanism, so this is a live prompt-injection surface,
+  not documentation); and language telling the agent not to pause for confirmation before a chain of
+  consequential actions. Found missing via an external security-gap report benchmarking Bastyn
+  against five competitor tools that all had some form of this coverage already.
+- **`BAS-LLM10-008`: model output reaching SQL through a local variable.** `BAS-LLM10-003` is a
+  structural pattern gated by `metavariable_matches` on the receiver's and argument's own *text*, so
+  it never sees a case like `sql = f"...{response}..."; cursor.execute(sql)` — the tainted value's
+  own captured text is just the local variable's name, with no trigger word in it. This new,
+  complementary, flow-based rule asks the same dataflow graph `BAS-LLM10-001` already uses for
+  eval/exec whether the value passed to `.execute()` traces back to a model call, catching the case
+  `BAS-LLM10-003`'s name-gate structurally cannot see. `BAS-LLM10-003` is unchanged and keeps
+  catching everything it already did; the two overlap on the direct single-line case and report as
+  one merged finding there. Does not yet catch the value arriving as a bare function parameter (for
+  example, an MCP tool's own incoming argument) with no traceable in-file call to a model — that's a
+  known, documented gap, not an oversight; see `tests/corpus/vulnerable/real_misses/
+  sql_from_tool_parameter.py`.
+
+### Fixed
+
+- **Security-relevant dot-files were silently unscanned by default.** `bastyn scan` with no flags —
+  the documented default usage — never looked at `.env`, `.env.*`, a dot-prefixed MCP manifest
+  (`.mcp.json` and friends), `.claude/`, or `.github/workflows/`, because the walker excludes
+  dot-files by default and none of those conventions is discoverable without already knowing to pass
+  `--hidden`. These four are exactly where the most sensitive material in a modern AI-agent
+  repository lives — credentials, MCP server trust boundaries, agent configuration, CI/CD pipeline
+  definitions — so the previous default silently missed the files most worth checking. These four
+  root-level conventions are now always scanned regardless of `--hidden`; every other dot-file and
+  dot-directory keeps the previous default-excluded behavior, and an explicit `--exclude` or a
+  respected `.gitignore`/`.bastynignore` still suppresses any of them exactly as before.
+- **`exec()`/`eval()` calls with an explicit `globals`/`locals` dict argument.** `BAS-LLM10-004`'s
+  `any:` patterns matched only the single-argument shapes `eval($ARG)`/`exec($ARG)`. Python's
+  `exec()` and `eval()` both accept optional positional `globals`/`locals` dict arguments — an
+  ordinary idiom, often used to sandbox the call — and a call using it, such as
+  `exec(manifest["setup_code"], {})`, was silently missed purely because of the extra argument, not
+  because of anything about the first argument's own shape. Found via an external security-gap
+  report run against a benchmark repo. Now matches the 2- and 3-argument forms of both `eval()` and
+  `exec()`, with matching literal-source exclusions so a call with a fixed-literal first argument
+  still doesn't fire.
+- **A caller-supplied header appended directly onto the system prompt.** `BAS-ZT4-002` matched a
+  caller-supplied override only when it was f-string-interpolated or used as an `or` fallback, so
+  `system_prompt = system_prompt + x_agent_goal_override` went undetected regardless of whether the
+  header was read via `request.headers.get(...)` or FastAPI's `Header(...)` parameter injection —
+  the rule has never inspected how the value was sourced, only the shape of the assignment
+  statement it lands in. Now also matches the self-concatenation shape (`$SYS = $SYS + $OVERRIDE`)
+  and its augmented-assignment form (`$SYS += $OVERRIDE`).
+
 ## [0.1.5] - 2026-09-16
 
 ### Added

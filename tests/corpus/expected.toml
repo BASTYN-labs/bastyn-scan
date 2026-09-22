@@ -244,6 +244,15 @@ severity = "high"
 why      = "eval(compile(model_reply, ...)) -- the taint is one hop away from the model reply through a local variable named `compiled`. BAS-LLM10-004 drops the response/reply/... name requirement and flags eval()/exec() on any non-literal argument."
 
 [[expect]]
+file     = "vulnerable/real_misses/exec_with_globals_dict.py"
+line     = 32
+rule     = "BAS-LLM10-004"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "exec(manifest[\"setup_code\"], namespace) -- an explicit globals dict as the second argument. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-LLM10-004 used to match only the single-argument shape, so the 2-arg call was silently missed."
+
+[[expect]]
 file     = "vulnerable/real_misses/overridable_system_prompt.py"
 line     = 19
 rule     = "BAS-ZT4-002"
@@ -280,6 +289,24 @@ severity = "high"
 why      = "`system_prompt = system_override or self._build_system_prompt(...)` -- the caller's override replaces the instruction channel outright. Measured 2026-08-28: this is the only caller-supplied prompt override in 65 real repositories, and it is an `or` fallback, not the f-string interpolation BAS-ZT4-002 was originally written against."
 
 [[expect]]
+file     = "vulnerable/real_misses/header_override_self_concat.py"
+line     = 36
+rule     = "BAS-ZT4-002"
+category = "LLM01"
+kind     = "defect"
+severity = "high"
+why      = "system_prompt = system_prompt + x_agent_goal_override -- a header-sourced override self-concatenated onto the system prompt. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-ZT4-002 had no self-concatenation shape, so this was silently missed regardless of which FastAPI idiom sourced the header value."
+
+[[expect]]
+file     = "vulnerable/real_misses/sql_through_local_variable.py"
+line     = 41
+rule     = "BAS-LLM10-008"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "sql = f\"...{refined_query}%'\"; cursor.execute(sql) -- the model's reply reaches SQL through one local f-string reassignment. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-LLM10-003's name-gate never sees a variable named `sql`, so this was silently missed; BAS-LLM10-008 asks the flow graph instead of guessing from the variable's name."
+
+[[expect]]
 file     = "vulnerable/real_misses/eval_expression_tool.js"
 line     = 26
 rule     = "BAS-LLM10-005"
@@ -302,6 +329,12 @@ file     = "vulnerable/real_misses/autonomous_action_from_model_text.py"
 line     = 29
 category = "LLM03"
 why      = "The model is instructed to emit an EXECUTE_SIGNAL{...} marker; the app re.search()es for it and dispatches the embedded JSON with no confirmation. BAS-LLM03-001 only matches a destructive-named @tool function with a missing guard clause -- there is no tool function here at all, just free text parsed for a marker."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/sql_from_tool_parameter.py"
+line     = 39
+category = "LLM10"
+why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter -- agent-controlled once you know it's a tool handler, but the flow graph resolves a bare parameter to Origin::Parameter, never Origin::Call{...}, and has no concept that a decorated tool function's parameters are untrusted. Would need a new SourceKind plus a decorator-recognition pass; genuinely separate, larger engine work, not attempted here."
 
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
@@ -747,4 +780,39 @@ why  = "A public, unauthenticated /chat Express endpoint (correct for a public c
 [[expect_none]]
 file = "clean/near_misses.ts"
 why  = "eval on a literal, new Function() on a literal, approxTokens/tokenCount/apiKeyName/maxTokens near-miss variable names, process.env credential handling, a non-prompt-shaped template literal, a parameterized SQL query, RegExp.prototype.exec, and better-sqlite3's Database.exec -- the TS/JS analogs of every near-miss in clean/near_misses.py, plus the two receiver shapes BAS-LLM10-006 confused for child_process (measured 2026-08-28: 18 of the rule's findings, 29% of all findings in the corpus, were pattern.exec/db.exec misidentified as a shell call) -- plus isPlaceholderKey(), whose own placeholder-detection literals used to trip BAS-ZT1-003. Plus two 2026-08-31 additions: a Bearer token that is unexpanded {{env.X}} template syntax, and a credential scrubbed to [REDACTED] before being persisted."
+
+# =====================================================================
+# skills/ — SKILL.md manifest scanning (BAS-SKILL-001/002/003)
+# =====================================================================
+
+[[expect]]
+file     = "vulnerable/skills/log-analyzer/SKILL.md"
+line     = 20
+rule     = "BAS-SKILL-002"
+category = "LLM01"
+kind     = "defect"
+severity = "critical"
+why      = "Complete, well-formed frontmatter (name/description/version/permissions all present), but the body's \"example log line\" embeds classic instruction-override phrasing (\"ignore all previous instructions\") plus a sensitive-path reference (~/.ssh/id_rsa) disguised as sample input a log parser would encounter. Proves BAS-SKILL-002 fires on body text even when BAS-SKILL-001 has nothing to say about this file."
+
+[[expect]]
+file     = "vulnerable/skills/auto-remediate/SKILL.md"
+line     = 1
+rule     = "BAS-SKILL-001"
+category = "LLM04"
+kind     = "defect"
+severity = "low"
+why      = "Frontmatter declares only name and description, omitting version and permissions -- the two fields a host would need to pin this skill across updates or scope what it may do."
+
+[[expect]]
+file     = "vulnerable/skills/auto-remediate/SKILL.md"
+line     = 12
+rule     = "BAS-SKILL-003"
+category = "LLM03"
+kind     = "defect"
+severity = "high"
+why      = "The body states the skill \"will act autonomously\" and applies remediation \"rather than waiting on a human to approve each step\" -- explicit excessive-agency language telling the agent not to pause for approval before a chain of infrastructure-changing actions. Same file as the BAS-SKILL-001 finding above, proving one SKILL.md can trigger both an independent frontmatter check and an independent body-text check."
+
+[[expect_none]]
+file = "clean/skills/well-formed/SKILL.md"
+why  = "Complete frontmatter (name/description/version/permissions all present) and ordinary body text with no instruction-override or confirmation-skipping phrasing from either BAS-SKILL-002's or BAS-SKILL-003's list -- must produce zero findings."
 
