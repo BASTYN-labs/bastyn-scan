@@ -272,9 +272,13 @@ fn allowlisted_files(
     // (`.mcp.json`/`.mcp.yaml`/`.mcp.yml`/`.mcp.toml`). Walked rather than
     // read directly with `std::fs::read_dir` so a `.gitignore` line or an
     // `--exclude` pattern can still suppress them exactly as it would any
-    // other path — `Some(1)` keeps it to the root's immediate children,
-    // which is all a `read_dir` would have reached anyway.
-    for path in walk_scoped(root, root, options, excludes, skipped, Some(1))? {
+    // other path. Depth `1` keeps it to the root's immediate children, which
+    // is all a `read_dir` would have reached anyway — but `--max-depth` is a
+    // promise about levels below the scan root, and this scan *is* rooted
+    // at the scan root, so a caller-supplied depth smaller than `1` has to
+    // win: the tighter of the two constraints applies.
+    let root_scan_depth = Some(options.max_depth.map_or(1, |depth| depth.min(1)));
+    for path in walk_scoped(root, root, options, excludes, skipped, root_scan_depth)? {
         let is_allowlisted = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -289,30 +293,53 @@ fn allowlisted_files(
     }
 
     // Everything under a root-level `.claude/`: skills, settings, agent
-    // configuration.
+    // configuration. `.claude/` sits one level below the scan root, so
+    // `--max-depth`'s "N levels below the root" promise means the local
+    // depth handed to this sub-walk has to be `N` reduced by that one level
+    // — see `depth_below`.
     let claude_dir = root.join(".claude");
-    if claude_dir.is_dir() && !exclude_directory_root(root, &claude_dir, excludes, skipped) {
+    if claude_dir.is_dir()
+        && !exclude_directory_root(root, &claude_dir, excludes, skipped)
+        && !(options.respect_ignore_files
+            && ignore_file_excludes_directory_root(root, &claude_dir, 1, options, skipped)?)
+    {
+        // The root's own `.bastynignore` is reported before the main walk
+        // starts, for the same reason: `.claude/` is about to become a
+        // walk's root, and a walk's root never passes through
+        // `filter_entry`, which is the only other place a `.bastynignore`
+        // would be noticed.
+        if options.respect_ignore_files {
+            note_bastynignore(skipped, root, &claude_dir);
+        }
         files.extend(walk_scoped(
             root,
             &claude_dir,
             options,
             excludes,
             skipped,
-            None,
+            depth_below(options.max_depth, 1),
         )?);
     }
 
     // Everything under a root-level `.github/workflows/`: CI/CD pipeline
     // definitions, where secrets handling and supply-chain risk live.
+    // `.github/workflows/` sits two levels below the scan root.
     let workflows_dir = root.join(".github").join("workflows");
-    if workflows_dir.is_dir() && !exclude_directory_root(root, &workflows_dir, excludes, skipped) {
+    if workflows_dir.is_dir()
+        && !exclude_directory_root(root, &workflows_dir, excludes, skipped)
+        && !(options.respect_ignore_files
+            && ignore_file_excludes_directory_root(root, &workflows_dir, 2, options, skipped)?)
+    {
+        if options.respect_ignore_files {
+            note_bastynignore(skipped, root, &workflows_dir);
+        }
         files.extend(walk_scoped(
             root,
             &workflows_dir,
             options,
             excludes,
             skipped,
-            None,
+            depth_below(options.max_depth, 2),
         )?);
     }
 
@@ -328,6 +355,12 @@ fn allowlisted_files(
 /// check, excluding `.claude/` or `.github/workflows/` by name would have no
 /// effect, since nothing inside either sub-walk is ever named `.claude` or
 /// `.github/workflows`.
+///
+/// This only covers `--exclude`. The same gap for a repository's own
+/// `.gitignore`/`.bastynignore` is handled separately, by
+/// [`ignore_file_excludes_directory_root`], because that one cannot be
+/// answered by matching against a hand-built [`Gitignore`] the way this one
+/// is — see that function's doc comment for why.
 fn exclude_directory_root(
     root: &Path,
     directory: &Path,
@@ -342,6 +375,92 @@ fn exclude_directory_root(
     } else {
         false
     }
+}
+
+/// Whether an ignore file the main walk in [`collect_files`] would itself
+/// respect — a `.gitignore`, global Git excludes, or `.bastynignore` —
+/// already excludes `directory`, recording it in `skipped` if so.
+///
+/// This exists for the same reason as [`exclude_directory_root`]:
+/// `directory` is about to become the *root* of its own [`walk_scoped`]
+/// call, so nothing inside that sub-walk would ever see `directory`'s own
+/// name pass through [`make_filter_entry`] to test it against an
+/// ignore-file rule. But unlike an `--exclude` pattern, there is no single
+/// hand-built matcher to consult: ignore-file resolution can involve several
+/// nested `.gitignore` files, global excludes, and `.bastynignore`, all
+/// combined by rules this module deliberately does not reimplement (see this
+/// module's own doc comment on why hand-rolling a second matcher is exactly
+/// the mistake to avoid). So instead of answering the question directly,
+/// this asks the real ignore-file stack: a cheap probe walk of `root`,
+/// built with the same ignore-file settings the main walk uses, deep enough
+/// to reach `directory`. If `directory` exists on disk (the caller has
+/// already confirmed that with `is_dir()`) but this probe never yields it, a
+/// real ignore-file rule is why — even though which rule, and in which
+/// file, is not recoverable this way. Unlike the `--exclude` case, there is
+/// no `glob.original()` to quote, so the recorded [`Skip`] names the path
+/// without a specific pattern; that is an honest degradation, not a silent
+/// one — the path still lands in [`Traversal::skipped`] either way.
+///
+/// Only meaningful, and only ever called, when
+/// [`WalkOptions::respect_ignore_files`] is set: the caller gates on that,
+/// matching how the rest of this module conditions ignore-file behaviour on
+/// the same flag.
+fn ignore_file_excludes_directory_root(
+    root: &Path,
+    directory: &Path,
+    levels_below_root: usize,
+    options: &WalkOptions,
+    skipped: &Arc<Mutex<BTreeSet<Skip>>>,
+) -> Result<bool> {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(false)
+        .follow_links(options.follow_symlinks)
+        .parents(options.respect_ignore_files)
+        .git_global(options.respect_ignore_files)
+        .git_ignore(options.respect_ignore_files)
+        .git_exclude(options.respect_ignore_files)
+        .ignore(options.respect_ignore_files)
+        .require_git(false)
+        .max_depth(Some(levels_below_root));
+
+    if options.respect_ignore_files {
+        builder.add_custom_ignore_filename(BASTYN_IGNORE);
+    }
+
+    for entry in builder.build() {
+        let entry = entry.map_err(|source| Error::Walk {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        if entry.path() == directory {
+            // The probe still reaches it, so no ignore-file rule is hiding
+            // it.
+            return Ok(false);
+        }
+    }
+
+    let mut path = display_path(root, directory);
+    path.push('/');
+    record(skipped, Skip::excluded(path, "a respected ignore file"));
+    Ok(true)
+}
+
+/// How many directory levels below the scan root a sub-walk rooted
+/// `levels_below_root` levels below it may still descend, given the
+/// caller's own [`WalkOptions::max_depth`].
+///
+/// `--max-depth <N>` promises "stop descending after N levels below the
+/// *scan root*", not below whatever directory a particular sub-walk happens
+/// to be rooted at. A sub-walk rooted at `.claude/` (one level below the
+/// scan root) or `.github/workflows/` (two levels below it) therefore has to
+/// have its own local depth budget reduced by that many levels before it is
+/// handed to [`walk_scoped`]. When the caller's budget is already smaller
+/// than `levels_below_root`, the correct local depth is zero — descend no
+/// further than the sub-walk's own root — rather than silently ignoring the
+/// flag by falling back to unlimited depth.
+fn depth_below(max_depth: Option<usize>, levels_below_root: usize) -> Option<usize> {
+    max_depth.map(|depth| depth.saturating_sub(levels_below_root))
 }
 
 /// Walk `walk_root` (`root` itself, or a directory under it) the same way
@@ -735,6 +854,94 @@ mod tests {
         assert_eq!(as_strings(&files), ["visible.rs"]);
     }
 
+    /// A repository's own `.gitignore` is just as capable of dropping an
+    /// allowlisted path as an `--exclude` pattern is (see the previous
+    /// test) — the module's own doc comment promises both. `.claude/` is
+    /// the walk *root* of its own scoped sub-walk, so nothing inside that
+    /// sub-walk is ever named `.claude` for a normal `filter_entry` check to
+    /// catch; before this fix, that meant a `.gitignore` line of `.claude/`
+    /// had no effect at all.
+    #[test]
+    fn a_gitignore_rule_still_drops_the_dot_claude_directory_root() {
+        let dir = tree(&["visible.rs", ".claude/skills/x/SKILL.md"]);
+        fs::write(dir.path().join(".gitignore"), ".claude/\n").unwrap();
+
+        let walked = collect_files(dir.path(), &WalkOptions::default()).unwrap();
+
+        assert_eq!(as_strings(&walked.files), ["visible.rs"]);
+        assert!(
+            walked
+                .skipped
+                .iter()
+                .any(|entry| entry.line().contains(".claude")),
+            "the exclusion must be reported, not silent: {:#?}",
+            walked.skipped
+        );
+    }
+
+    /// Same gap, for `.github/workflows/` instead of `.claude/` — it is the
+    /// walk root of its own sub-walk two levels below the scan root rather
+    /// than one, so the fix has to reach it too.
+    #[test]
+    fn a_gitignore_rule_still_drops_the_dot_github_workflows_directory_root() {
+        let dir = tree(&["visible.rs", ".github/workflows/ci.yml"]);
+        fs::write(dir.path().join(".gitignore"), ".github/workflows/\n").unwrap();
+
+        let walked = collect_files(dir.path(), &WalkOptions::default()).unwrap();
+
+        assert_eq!(as_strings(&walked.files), ["visible.rs"]);
+        assert!(
+            walked
+                .skipped
+                .iter()
+                .any(|entry| entry.line().contains(".github/workflows")),
+            "the exclusion must be reported, not silent: {:#?}",
+            walked.skipped
+        );
+    }
+
+    /// The same gap exists for `.bastynignore`, not just `.gitignore` — both
+    /// are "a respected ignore file" as far as the probe this fix adds is
+    /// concerned.
+    #[test]
+    fn a_bastynignore_rule_still_drops_the_dot_claude_directory_root() {
+        let dir = tree(&["visible.rs", ".claude/skills/x/SKILL.md"]);
+        fs::write(dir.path().join(".bastynignore"), ".claude/\n").unwrap();
+
+        let walked = collect_files(dir.path(), &WalkOptions::default()).unwrap();
+
+        assert_eq!(as_strings(&walked.files), ["visible.rs"]);
+        assert!(
+            walked
+                .skipped
+                .iter()
+                .any(|entry| entry.line().contains(".claude")),
+            "the exclusion must be reported, not silent: {:#?}",
+            walked.skipped
+        );
+    }
+
+    /// `--no-ignore` (`respect_ignore_files: false`) turns off ignore-file
+    /// handling everywhere else in this module; the new probe has to honour
+    /// that too, or a caller who explicitly asked for ignore files to be
+    /// ignored would find `.claude/` disappearing anyway.
+    #[test]
+    fn disabling_ignore_files_also_disables_the_directory_root_probe() {
+        let dir = tree(&["visible.rs", ".claude/skills/x/SKILL.md"]);
+        fs::write(dir.path().join(".gitignore"), ".claude/\n").unwrap();
+
+        let options = WalkOptions {
+            respect_ignore_files: false,
+            ..WalkOptions::default()
+        };
+        let files = collect_files(dir.path(), &options).unwrap().files;
+
+        assert_eq!(
+            as_strings(&files),
+            [".claude/skills/x/SKILL.md", "visible.rs"]
+        );
+    }
+
     /// `--hidden` already includes everything; the allowlist pass must not
     /// run redundantly on top of it, and the result must be identical to
     /// what `include_hidden: true` produced before this change.
@@ -976,6 +1183,43 @@ mod tests {
         );
     }
 
+    /// `.claude/.bastynignore` sits directly at the *root* of `.claude/`'s
+    /// own scoped sub-walk — the same reason [`collect_files`] has to call
+    /// [`note_bastynignore`] for the scan root by hand instead of relying on
+    /// `filter_entry`, applied one level down. The exclusion of `fixtures/`
+    /// itself was never in doubt: the scoped walker already honours a
+    /// `.bastynignore` sitting at its own root the same way the main walk
+    /// honours one at the scan root. Only its *visibility* in
+    /// [`Traversal::skipped`] was missing before this fix — mirroring
+    /// `a_nested_bastynignore_applies_to_its_own_directory` above, but for a
+    /// `.bastynignore` inside an allowlisted directory root rather than an
+    /// ordinarily-walked one.
+    ///
+    /// `.claude/.bastynignore` itself shows up in `files`: unlike the scan
+    /// root, `.claude/`'s sub-walk always includes hidden entries (see
+    /// [`walk_scoped`]'s doc comment), and nothing about honouring a
+    /// `.bastynignore`'s patterns excludes the file that declares them.
+    #[test]
+    fn a_bastynignore_directly_inside_dot_claude_is_reported() {
+        let dir = tree(&[".claude/fixtures/x.py", ".claude/skills/y.py"]);
+        fs::write(dir.path().join(".claude/.bastynignore"), "fixtures/\n").unwrap();
+
+        let walked = collect_files(dir.path(), &WalkOptions::default()).unwrap();
+
+        assert_eq!(
+            as_strings(&walked.files),
+            [".claude/.bastynignore", ".claude/skills/y.py"]
+        );
+        assert!(
+            walked
+                .skipped
+                .iter()
+                .any(|entry| entry.line().starts_with(".claude/.bastynignore \u{2014}")),
+            "the top-level .bastynignore inside .claude/ must be reported, not silent: {:#?}",
+            walked.skipped
+        );
+    }
+
     #[test]
     fn a_bastynignore_that_excludes_nothing_is_still_reported() {
         // It is a standing reduction in coverage whether or not it bit on
@@ -1095,6 +1339,62 @@ mod tests {
         let files = collect_files(dir.path(), &options).unwrap().files;
 
         assert_eq!(as_strings(&files), ["one/mid.rs", "top.rs"]);
+    }
+
+    /// `--max-depth` counts levels below the *scan root*, not below whatever
+    /// directory a particular sub-walk happens to be rooted at. `.claude/`
+    /// itself sits one level below the scan root, so with `max_depth:
+    /// Some(1)` the local depth budget handed to its sub-walk is
+    /// `depth_below(Some(1), 1) == Some(0)`: the sub-walk may see `.claude/`
+    /// itself but nothing inside it. That holds regardless of how deep
+    /// inside `.claude/` a file sits — both `.claude/README.md` (one level
+    /// below `.claude/`, so two below the scan root) and
+    /// `.claude/skills/deploy/SKILL.md` (three levels below `.claude/`, so
+    /// four below the scan root) are past a scan-root depth of `1`, exactly
+    /// as an ordinary file at that same absolute depth would be. The
+    /// allowlist widens *which* paths are covered; it must never widen *how
+    /// deep* `--max-depth` is allowed to reach.
+    #[test]
+    fn max_depth_limits_descent_into_the_allowlisted_dot_claude_directory() {
+        let dir = tree(&[
+            "top.rs",
+            ".claude/README.md",
+            ".claude/skills/deploy/SKILL.md",
+        ]);
+
+        let options = WalkOptions {
+            max_depth: Some(1),
+            ..WalkOptions::default()
+        };
+        let files = collect_files(dir.path(), &options).unwrap().files;
+
+        assert_eq!(as_strings(&files), ["top.rs"]);
+    }
+
+    /// `max_depth: None` (the default, unlimited) must behave exactly as it
+    /// did before this fix: an unbounded scan still reaches arbitrarily deep
+    /// files under `.claude/` and `.github/workflows/`, since
+    /// `depth_below(None, _)` stays `None`.
+    #[test]
+    fn max_depth_none_still_reaches_deeply_nested_allowlisted_paths() {
+        let dir = tree(&[
+            "top.rs",
+            ".claude/skills/deploy/nested/very/deep/SKILL.md",
+            ".github/workflows/nested/deep/ci.yml",
+        ]);
+
+        let files = collect_files(dir.path(), &WalkOptions::default())
+            .unwrap()
+            .files;
+
+        assert_eq!(
+            as_strings(&files),
+            [
+                ".claude/skills/deploy/nested/very/deep/SKILL.md",
+                ".github/workflows/nested/deep/ci.yml",
+                "top.rs",
+            ]
+        );
     }
 
     #[test]

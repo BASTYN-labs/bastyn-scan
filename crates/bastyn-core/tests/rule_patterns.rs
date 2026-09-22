@@ -294,7 +294,7 @@ fn eval_metavariable(rule_id: &str, var: &str, text: &str) -> bool {
         ("BAS-LLM10-001" | "BAS-LLM10-002" | "BAS-LLM10-003", "ARG") => {
             contains_ci(text, LLM_OUTPUT_WORDS)
         }
-        ("BAS-LLM10-003", "CUR") => {
+        ("BAS-LLM10-003" | "BAS-LLM10-008", "CUR") => {
             contains_ci(text, &["cursor", "cur", "db", "conn", "connection"])
         }
         ("BAS-ZT4-001" | "BAS-ZT4-002", "SYS") => contains_ci(

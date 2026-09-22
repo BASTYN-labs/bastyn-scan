@@ -263,6 +263,18 @@ rules:
     language: python
     any:
       - $CUR.execute($ARG)
+    # Unlike BAS-LLM10-001's ARG gate, this is not a name guess this rule can
+    # afford to drop: `.execute()` is not SQL-specific by itself -- a
+    # GraphQL client, a task queue, or a workflow engine can all expose an
+    # `.execute()` method, and METHOD_SINKS's own doc comment in
+    # crates/bastyn-core/src/flow/catalogue.rs already notes ".execute is
+    # DB-API's" as a convention this file relies on, not a guarantee the
+    # flow graph enforces on this rule's behalf (the `flow:` clause here has
+    # no `sink:`, so nothing checks that the receiver is actually a DB
+    # cursor). Keeping BAS-LLM10-003's CUR gate is what keeps this rule from
+    # mislabeling `gql_client.execute(model_reply)` as SQL injection.
+    metavariable_matches:
+      CUR: "(?i)(cursor|cur|db|conn|connection)"
     flow:
       variable: ARG
       source: model_output
