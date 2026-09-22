@@ -816,3 +816,12 @@ why      = "The body states the skill \"will act autonomously\" and applies reme
 file = "clean/skills/well-formed/SKILL.md"
 why  = "Complete frontmatter (name/description/version/permissions all present) and ordinary body text with no instruction-override or confirmation-skipping phrasing from either BAS-SKILL-002's or BAS-SKILL-003's list -- must produce zero findings."
 
+[[expect]]
+file     = "vulnerable/skills/word-wrapped-injection/SKILL.md"
+line     = 11
+rule     = "BAS-SKILL-002"
+category = "LLM01"
+kind     = "defect"
+severity = "critical"
+why      = "Complete, well-formed frontmatter, but the body's classic instruction-override phrase (\"ignore all previous instructions\") is word-wrapped across a Markdown line break (\"IGNORE ALL PREVIOUS\\nINSTRUCTIONS\"). Regression fixture for a bug where scan_phrases only did a literal substring match and silently missed phrases split by a line break; the same phrasing on one line was already caught (see log-analyzer above)."
+
