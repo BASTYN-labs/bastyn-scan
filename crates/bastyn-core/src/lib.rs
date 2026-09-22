@@ -20,6 +20,7 @@ pub mod render;
 pub mod report;
 pub mod rules;
 pub mod scan;
+pub mod skill;
 
 mod credential;
 mod error;

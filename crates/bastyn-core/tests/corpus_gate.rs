@@ -116,7 +116,19 @@ struct KnownFalsePositive {
 ///
 /// Entries marked `requires_network` are excluded: they are measurement limits
 /// of an offline gate, not things the scanner cannot detect.
-const MAX_KNOWN_GAPS: usize = 12;
+const MAX_KNOWN_GAPS: usize = 13;
+// Raised from 12 to 13 on 2026-09-22, admitting one deliberate new gap: a
+// known_gap entry for vulnerable/real_misses/sql_from_tool_parameter.py,
+// added alongside the new BAS-LLM10-008 rule (model output reaching SQL
+// through a local variable, complementary to BAS-LLM10-003). BAS-LLM10-008
+// asks the flow graph whether the value passed to .execute() traces back to
+// a model call, and correctly stays silent when it instead traces back to a
+// bare function parameter: a parameter resolves to Origin::Parameter, never
+// Origin::Call{...}, and the flow graph has no concept that a parameter of
+// an @tool-decorated function is agent-controlled. Catching that would need
+// a new SourceKind plus a decorator-recognition pass -- separate, larger
+// engine work, not attempted here.
+//
 // Lowered from 14 to 12 on 2026-08-28: the two eval_guarded_by_local_check.py
 // entries moved out to `known_false_positive` (see MAX_KNOWN_FALSE_POSITIVES
 // below). They were counted here since the "Admitted, +2" entry below, but

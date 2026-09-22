@@ -198,6 +198,92 @@ rules:
       parameter values, never to the query text itself.
 
   # ---------------------------------------------------------------------
+  # LLM10 — the same SQL-injection shape as BAS-LLM10-003 above, but with
+  # the taint passing through one local variable first:
+  #
+  #   sql = f"SELECT id, title, body FROM kb_articles WHERE title LIKE
+  #   '%{query}%'"
+  #   cursor.execute(sql)
+  #
+  # BAS-LLM10-003 is a pure structural pattern gated by
+  # `metavariable_matches` on $CUR's and $ARG's own *text*. When the
+  # tainted value is assigned to a local variable first and that variable
+  # -- not the f-string itself -- is what reaches `.execute()`, $ARG's
+  # captured text is just `sql`: no response/reply/... trigger word
+  # appears anywhere in it, so the name-gate can never see it. This is the
+  # same sibling-statement blindness already documented on BAS-LLM10-004
+  # above: `none:` only rules out alternate shapes of the matched node
+  # itself, and `inside:` only reaches its ancestors -- neither can look
+  # at a prior sibling assignment, which is exactly where the SQL string
+  # was actually built.
+  #
+  # Found via an external security-gap report run against a benchmark repo
+  # called opsdesk-agent (not part of this file's own 65-real-repository
+  # measurement corpus). Confirmed directly against this codebase's flow
+  # graph (crates/bastyn-core/src/flow/), unmodified: `Analyzer::compute`'s
+  # `"string"` match arm already treats an f-string as carrying whatever
+  # its `{...}` interpolations carry, and its `"identifier"` case already
+  # resolves a name back through its local binding's assigned expression --
+  # so resolving the origin of `sql` in the example above already returns
+  # `Origin::Call { callee: "client.chat.completions.create" }` today, with
+  # no engine changes. What was actually missing is that BAS-LLM10-003
+  # never asked the flow graph this question at all: it has no `flow:`
+  # clause. This rule is that question, asked the same way BAS-LLM10-001
+  # already asks it for eval()/exec() -- no `metavariable_matches` on $CUR
+  # or $ARG here; the flow gate's proof of provenance does the precision
+  # work a name guess only approximates.
+  #
+  # Additive, not a replacement: BAS-LLM10-003's `.format()`/%-operator/
+  # name-gate coverage (and its literal-concatenation exclusions) stays
+  # exactly as-is. The two rules overlap on the direct single-line case
+  # (`cursor.execute(f"...{response}...")` satisfies both), and when they
+  # match the identical node this codebase's `merge_same_location` (in
+  # crates/bastyn-core/src/rules/engine.rs) already collapses that into one
+  # cross-layer finding rather than reporting a duplicate -- existing,
+  # relied-upon behaviour, not something new this rule has to handle.
+  #
+  # Known gap, not oversold: this rule does not catch the value when it
+  # arrives as a plain function parameter with no traceable in-file call to
+  # a catalogued source -- e.g. an MCP tool function's own `query: str`
+  # parameter, which is conceptually agent-controlled once you know it is a
+  # tool handler, but resolves to `Origin::Parameter` in the flow graph,
+  # not `Origin::Call{...}`, and so cannot classify as `model_output` no
+  # matter what it is named. Catching that would need a new `SourceKind`
+  # plus a decorator-recognition pass treating a tool function's parameters
+  # as tainted -- separate, larger engine work, not attempted here. See
+  # tests/corpus/vulnerable/real_misses/sql_from_tool_parameter.py and its
+  # `known_gap` entry in tests/corpus/expected.toml.
+  # ---------------------------------------------------------------------
+  - id: BAS-LLM10-008
+    title: Model output reaches SQL through a local variable
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - $CUR.execute($ARG)
+    flow:
+      variable: ARG
+      source: model_output
+    description: >
+      A database cursor executes a query built from a local variable whose
+      value traces back, through the flow graph, to a model call -- most
+      commonly one local f-string reassignment between the model reply and
+      the execute() call (sql = f"...{response}..."; cursor.execute(sql)).
+      Since the model's reply is attacker-influenceable (via prompt
+      injection from any untrusted document, tool result, or user message
+      it has seen), this is SQL injection with the model as the delivery
+      mechanism, exactly as BAS-LLM10-003 catches for the direct,
+      single-expression case -- this rule catches it when a local variable
+      sits in between.
+    remediation: >
+      Never interpolate model output into a SQL string, whether directly or
+      through an intermediate variable. Use parameterized queries
+      (cursor.execute(sql, params)) and keep model output confined to
+      parameter values, never to the query text itself.
+
+  # ---------------------------------------------------------------------
   # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
   # instructions. This is the shape every "ignore previous instructions"
   # attack depends on.
@@ -475,12 +561,34 @@ rules:
     confidence: medium
     categories: [LLM10]
     language: python
+    # Both `any:` shapes below used to be single-argument only. Python's
+    # exec() and eval() both accept optional positional globals/locals dict
+    # arguments (exec(source, globals=None, locals=None)) -- an ordinary,
+    # common idiom, often used specifically to *sandbox* the call (passing a
+    # restricted globals dict). Because that idiom is common, a 2/3-arg call
+    # is an especially important case to catch when the sandbox dict is
+    # incomplete, not a rare edge case to skip. Found via an external
+    # security-gap report run against a benchmark repo (opsdesk-agent, not
+    # part of this file's own 65-repo corpus measurement):
+    # `exec(manifest["setup_code"], {})` at opsdesk-agent/mcp_server/tools.py
+    # was silently missed purely because of the extra `{}` argument, not
+    # because of the dict-subscript expression -- `exec(manifest["setup_code"])`
+    # (1 arg) was already caught. See
+    # tests/corpus/vulnerable/real_misses/exec_with_globals_dict.py.
     any:
       - eval($ARG)
       - exec($ARG)
+      - eval($ARG, $GLOBALS)
+      - eval($ARG, $GLOBALS, $LOCALS)
+      - exec($ARG, $GLOBALS)
+      - exec($ARG, $GLOBALS, $LOCALS)
     none:
       - eval("$LIT")
       - exec("$LIT")
+      - eval("$LIT", $GLOBALS)
+      - eval("$LIT", $GLOBALS, $LOCALS)
+      - exec("$LIT", $GLOBALS)
+      - exec("$LIT", $GLOBALS, $LOCALS)
     # Measured 2026-08-28: 6 false positives, all this rule, all a call
     # provably safe from context the rule cannot see -- eval(class_name)
     # where class_name can only ever be self.__class__.__name__, and
@@ -552,10 +660,28 @@ rules:
     # see. The two metavariable gates are what keep it off every ordinary
     # `x = y or default`: the assignment target must be prompt-shaped *and*
     # the value must be named as an override.
+    #
+    # The self-concatenation shapes (`$SYS = $SYS + $OVERRIDE` and its
+    # augmented-assignment sugar `$SYS += $OVERRIDE`) were added after an
+    # external security-gap report against a benchmark repo called
+    # opsdesk-agent (not this file's own 65-repo corpus measurement) found
+    # `system_prompt = system_prompt + x_agent_goal_override`, sourced from a
+    # FastAPI `Header(...)` parameter, going undetected. The report's own
+    # diagnosis was wrong -- it guessed the miss was about this rule not
+    # recognizing the `Header(...)` parameter-injection idiom as a source, as
+    # opposed to `request.headers.get(...)`. It is neither: this rule has
+    # never looked at how the override value was sourced, only at the shape
+    # of the assignment statement, and it already fires on a `Header(...)`
+    # value in the `$SYS = $OVERRIDE or $FALLBACK` shape above. The actual
+    # gap was structural -- self-concatenation was simply a fourth shape this
+    # rule had no pattern for, independent of which FastAPI idiom produced
+    # the value being appended.
     any:
       - '$SYS = f"$$$A{$OVERRIDE}$$$B{$VAR2}$$$C"'
       - 'return f"$$$A{$OVERRIDE}$$$B{$VAR2}$$$C"'
       - '$SYS = $OVERRIDE or $FALLBACK'
+      - '$SYS = $SYS + $OVERRIDE'
+      - '$SYS += $OVERRIDE'
     metavariable_matches:
       SYS: "(?i)(system|prompt|instruction|persona|template)"
       OVERRIDE: "(?i)(override|overridden|custom_instructions|force_prompt)"

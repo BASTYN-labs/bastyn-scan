@@ -19,6 +19,7 @@ use crate::mcp;
 use crate::observe::{Observer, Phase, Silent};
 use crate::report::{CveStatus, Report, Skip, Summary};
 use crate::rules::{RuleSet, ScanOutcome, SourceLanguage, scan_source_checked};
+use crate::skill;
 use crate::walk::{WalkOptions, collect_files};
 
 /// How a scan should behave.
@@ -180,6 +181,7 @@ fn is_analysed(relative: &Path) -> bool {
         || cve::is_manifest(relative)
         || infra::is_infra_file(relative)
         || instructions::is_instruction_file(relative)
+        || skill::is_skill_file(relative)
 }
 
 /// What one pass over the tree produced.
@@ -330,7 +332,14 @@ fn analyse_file(root: &Path, relative: &Path, ruleset: &RuleSet) -> Option<FileA
     let manifest = cve::is_manifest(relative);
     let infra_file = infra::is_infra_file(relative);
     let instruction_file = instructions::is_instruction_file(relative);
-    if source_language.is_none() && !mcp_config && !manifest && !infra_file && !instruction_file {
+    let skill_file = skill::is_skill_file(relative);
+    if source_language.is_none()
+        && !mcp_config
+        && !manifest
+        && !infra_file
+        && !instruction_file
+        && !skill_file
+    {
         return None;
     }
 
@@ -345,7 +354,7 @@ fn analyse_file(root: &Path, relative: &Path, ruleset: &RuleSet) -> Option<FileA
     if let Some(found) = &generated {
         out.skipped
             .push(Skip::generated(display_path(relative), found.measurement()));
-        if !mcp_config && !manifest && !infra_file && !instruction_file {
+        if !mcp_config && !manifest && !infra_file && !instruction_file && !skill_file {
             // Nothing else claims this file, so there is nothing left to read
             // it for. The usual case: `no_source_extension_is_claimed_by_
             // another_analyser` records the two names that are the exception.
@@ -411,6 +420,12 @@ fn analyse_file(root: &Path, relative: &Path, ruleset: &RuleSet) -> Option<FileA
         // also reads -- the one place a hidden Unicode payload matters.
         out.findings
             .extend(instructions::inspect(relative, &contents));
+    }
+
+    if skill_file {
+        // A SKILL.md manifest: frontmatter completeness, embedded prompt
+        // injection, and excessive-agency language -- see `crate::skill`.
+        out.findings.extend(skill::inspect(relative, &contents));
     }
 
     if manifest {
@@ -733,7 +748,8 @@ mod tests {
                 let also_claimed = mcp::is_mcp_config(&path)
                     || cve::is_manifest(&path)
                     || infra::is_infra_file(&path)
-                    || instructions::is_instruction_file(&path);
+                    || instructions::is_instruction_file(&path)
+                    || skill::is_skill_file(&path);
                 assert_eq!(
                     also_claimed,
                     stem == "Dockerfile",
