@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-09-22
+
 ### Added
 
 - **`SKILL.md` manifest scanning (`BAS-SKILL-001` to `-003`).** Bastyn had no `SKILL.md`-specific
@@ -57,6 +59,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   the rule has never inspected how the value was sourced, only the shape of the assignment
   statement it lands in. Now also matches the self-concatenation shape (`$SYS = $SYS + $OVERRIDE`)
   and its augmented-assignment form (`$SYS += $OVERRIDE`).
+- **`BAS-SKILL-002`/`BAS-SKILL-003` missed a phrase word-wrapped across a line break.** Both checks
+  matched their phrase lists (e.g. `"ignore all previous instructions"`) with a literal substring
+  search, so Markdown word-wrap splitting a phrase across a line break — or any run of irregular
+  whitespace between its words — silently defeated the match, even though the identical phrasing on
+  one line was caught correctly. Found via an external tester after the `SKILL.md` checks shipped.
+  The shared phrase-matching helper now normalizes whitespace before searching, while still
+  reporting an accurate line/column for the match in the original file.
 
 ## [0.1.5] - 2026-09-16
 
@@ -388,7 +397,8 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.4
 [0.1.3]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.3
