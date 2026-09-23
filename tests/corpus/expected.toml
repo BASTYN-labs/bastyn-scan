@@ -951,7 +951,7 @@ why      = "the admin password's environment lookup has a real, source-visible d
 [[expect]]
 file     = "vulnerable/llm01_tool_poisoning.py"
 line     = 11
-rule     = "BAS-LLM01-001"
+rule     = "BAS-LLM01-002"
 category = "LLM01"
 kind     = "defect"
 severity = "high"
@@ -960,7 +960,7 @@ why      = "the docstring contains an <IMPORTANT> tag instructing the model to r
 [[expect]]
 file     = "vulnerable/llm01_tool_poisoning.py"
 line     = 22
-rule     = "BAS-LLM01-002"
+rule     = "BAS-LLM01-003"
 category = "LLM01"
 kind     = "observation"
 severity = "low"

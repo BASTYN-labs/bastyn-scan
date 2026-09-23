@@ -306,7 +306,7 @@ fn looks_like_interpolated_query_arg(text: &str) -> bool {
     false
 }
 
-/// Mirrors BAS-LLM01-001's `DOC` regex
+/// Mirrors BAS-LLM01-002's `DOC` regex
 /// (`(?i)(<important>|<hidden>|do not mention|do not tell the user|present
 /// it as if)`): a fixed set of hidden-instruction markers, appearing
 /// anywhere in the docstring text.
@@ -323,7 +323,7 @@ fn looks_like_hidden_instruction_marker(text: &str) -> bool {
     )
 }
 
-/// Mirrors BAS-LLM01-002's `DOC` regex
+/// Mirrors BAS-LLM01-003's `DOC` regex
 /// (`(?i)(ignore (previous|prior|all) instructions|disregard
 /// (prior|previous)|override (your|the) (instructions|system
 /// prompt)|bypass (the|your) (safety|restriction))`): each `any:` group's
@@ -425,8 +425,8 @@ fn eval_metavariable(rule_id: &str, var: &str, text: &str) -> bool {
                 "force_prompt",
             ],
         ),
-        ("BAS-LLM01-001", "DOC") => looks_like_hidden_instruction_marker(text),
-        ("BAS-LLM01-002", "DOC") => looks_like_instruction_override_phrase(text),
+        ("BAS-LLM01-002", "DOC") => looks_like_hidden_instruction_marker(text),
+        ("BAS-LLM01-003", "DOC") => looks_like_instruction_override_phrase(text),
         _ => unreachable!(
             "no verification predicate wired up for {rule_id}.{var} -- \
              add one in eval_metavariable alongside the YAML regex"
@@ -574,9 +574,9 @@ fn yaml_schema_is_valid() {
     // plan, closing the SQL-injection cluster from the same smoke-python-v1
     // recall-gap report -- two deliberate, reviewed additions, not scope
     // creep. Same one-rule-per-rule bump as above.
-    // Raised from 20 to 22 on 2026-09-23: BAS-LLM01-001 (a hidden
+    // Raised from 20 to 22 on 2026-09-23: BAS-LLM01-002 (a hidden
     // instruction block, marked with <IMPORTANT>/<HIDDEN> tags or "do not
-    // mention" phrasing, inside a tool's own docstring) and BAS-LLM01-002
+    // mention" phrasing, inside a tool's own docstring) and BAS-LLM01-003
     // (the lower-confidence "ignore previous instructions"-style keyword
     // companion) are Task 5 of the recall-gap-detection-rules plan, closing
     // the tool-poisoning cluster from the same smoke-python-v1 recall-gap
