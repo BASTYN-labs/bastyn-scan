@@ -128,3 +128,12 @@ def run_backup_script(target_dir: str) -> None:
     but built as an argv list with shell=False -- no shell ever parses
     target_dir, so there is nothing to inject into."""
     subprocess.run(["tar", "-czf", "backup.tar.gz", target_dir], shell=False)
+
+
+def read_runbook_resolved(filename: str) -> str:
+    """The same lookup as the vulnerable fixture, but the joined path is
+    wrapped in os.path.realpath() before open() ever sees it -- the
+    `none:` exclusion for open(os.path.realpath(...)) must keep this
+    quiet even though the shape (os.path.join then open) is identical."""
+    with open(os.path.realpath(os.path.join("/srv/opsbot/runbooks", filename))) as handle:
+        return handle.read()

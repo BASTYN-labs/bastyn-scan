@@ -129,6 +129,24 @@ severity = "critical"
 why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted."
 
 [[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 16
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "filename is joined onto the runbook directory and opened with no realpath/containment check."
+
+[[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 28
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "the containment check tests the unresolved string; the open() call has no realpath wrapper."
+
+[[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
 line     = 13
 rule     = "BAS-ZT1-001"
@@ -362,6 +380,12 @@ file     = "vulnerable/real_misses/sql_from_tool_parameter.py"
 line     = 39
 category = "LLM10"
 why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter -- agent-controlled once you know it's a tool handler, but the flow graph resolves a bare parameter to Origin::Parameter, never Origin::Call{...}, and has no concept that a decorated tool function's parameters are untrusted. Would need a new SourceKind plus a decorator-recognition pass; genuinely separate, larger engine work, not attempted here."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/path_traversal_bare_parameter.py"
+line     = 25
+category = "LLM10"
+why      = "open(filename) with no join/f-string/concat shape for BAS-LLM10-012's ARG gate to match; needs a bare-parameter variant or dataflow tracing."
 
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
