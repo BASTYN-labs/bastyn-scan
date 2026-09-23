@@ -470,6 +470,43 @@ category = "LLM10"
 why      = "eval(f\"torch.{torch_dtype}\") guarded one line above by an exact-match check against a 3-item whitelist that raises before eval() is ever reached. The guard is a sibling if/raise statement, not part of the eval() call's own node, so `none:` (same-node exclusion) and `inside:` (ancestor constraint) both structurally cannot express it."
 
 # ---------------------------------------------------------------------
+# vulnerable/real_misses/path_traversal_safe_local_constant.py -- final
+# review, 2026-09-23 (finding C1, part 2). BAS-LLM10-012's
+# metavariable_not_matches exclusion (added the same day) closes the
+# all-literal-arguments case for os.path.join(...), but a join with one
+# safe *local constant* argument (HERE = os.path.dirname(__file__)) still
+# fires, correctly per the rule's own contract (HERE genuinely is a
+# non-literal identifier) but incorrectly in practice, since HERE can
+# never be attacker-influenceable. Same-node regex matching cannot tell a
+# safe local constant from an attacker-controlled variable without real
+# dataflow analysis -- the same precision ceiling every other
+# unconditional/structural rule in this batch (BAS-LLM10-009, -017, -018)
+# already accepts by design.
+# ---------------------------------------------------------------------
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/path_traversal_safe_local_constant.py"
+line     = 40
+category = "LLM10"
+why      = "open(os.path.join(HERE, \"data.json\")) where HERE = os.path.dirname(__file__) at module level -- a fixed, local, never-attacker-influenceable constant, not a caller-supplied value. BAS-LLM10-012's ARG-shape gate cannot tell a safe local constant apart from a real non-literal without dataflow analysis, so it fires exactly as its contract says it should on a bare-identifier argument."
+
+# ---------------------------------------------------------------------
+# vulnerable/real_misses/shell_command_via_local_variable.py -- final
+# review, 2026-09-23 (finding I1). The identical sibling-statement
+# blindness already documented for BAS-LLM10-004 above (and for
+# BAS-LLM10-012's own known_gap entries): a fixed literal command held in
+# a local variable one line above the sink cannot be excluded by `none:`,
+# which only ever matches alternate shapes of the matched node itself, not
+# a prior sibling assignment.
+# ---------------------------------------------------------------------
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/shell_command_via_local_variable.py"
+line     = 32
+category = "LLM10"
+why      = "cmd = \"systemctl restart opsbot-worker\"; subprocess.run(cmd, shell=True) -- a fixed literal command, but assigned to a local variable one line above the call rather than passed inline. BAS-LLM10-009's `none:` exclusion for a bare string-literal argument (same-node only) cannot see the prior assignment."
+
+# ---------------------------------------------------------------------
 # vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not
 # expressed in application source at all. ZT3 had no rule until the infra
 # analyser read container configuration.
@@ -947,6 +984,34 @@ category = "ZT1"
 kind     = "defect"
 severity = "high"
 why      = "the admin password's environment lookup has a real, source-visible default."
+
+# ---------------------------------------------------------------------
+# vulnerable/zt1_jwt_credential_shaped_key.py -- a final-review regression
+# fixture (2026-09-23, finding I2). zt1_secret_shapes.py's JWT-holding key
+# was renamed from the realistic `service_token` to `issued_jwt`
+# specifically to avoid this co-firing; this file documents it instead as
+# intentional, correct behavior: a realistically-named credential-shaped
+# variable whose value also has the exact JWT shape legitimately produces
+# two independent, correct findings at the same line.
+# ---------------------------------------------------------------------
+
+[[expect]]
+file     = "vulnerable/zt1_jwt_credential_shaped_key.py"
+line     = 26
+rule     = "BAS-ZT1-010"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "session_token is a realistic, credential-shaped variable name holding a high-entropy literal -- BAS-ZT1-010's generic credential-shaped-key signal, independent of the value's specific shape."
+
+[[expect]]
+file     = "vulnerable/zt1_jwt_credential_shaped_key.py"
+line     = 26
+rule     = "BAS-ZT1-018"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "the same literal also has the exact eyJ.<payload>.<signature> JWT shape -- BAS-ZT1-018's more specific signal, co-firing at the same line as BAS-ZT1-010 above. Both are correct, independent true positives, not a duplicate: one flags the name, the other flags the value's own structure."
 
 [[expect]]
 file     = "vulnerable/llm01_tool_poisoning.py"
