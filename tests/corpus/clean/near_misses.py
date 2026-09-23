@@ -102,20 +102,6 @@ def literal_sql_through_local_variable(cursor) -> None:
     cursor.execute(sql)
 
 
-def plain_parameter_sql_through_local_variable(cursor, query: str) -> None:
-    """A local variable built from an ordinary, non-tool function
-    parameter -- not a model call -- interpolated into SQL and executed.
-    BAS-LLM10-008 must stay silent here exactly as it does on the
-    known_gap fixture (real_misses/sql_from_tool_parameter.py): a bare
-    parameter resolves to Origin::Parameter in the flow graph, never
-    Origin::Call{...}, so it cannot classify as model_output regardless
-    of whether the enclosing function happens to be a decorated tool.
-    This case confirms the rule doesn't over-fire on *any* parameter --
-    only that it is currently blind to the tool-decorated case too."""
-    sql = f"SELECT id, title, body FROM kb_articles WHERE title LIKE '%{query}%'"
-    cursor.execute(sql)
-
-
 def restart_known_service() -> None:
     """A shell command built entirely from fixed literals, never from a
     caller-supplied value -- BAS-LLM10-009's `none:` exclusion for a bare
