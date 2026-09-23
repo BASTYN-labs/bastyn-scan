@@ -387,6 +387,12 @@ line     = 25
 category = "LLM10"
 why      = "open(filename) with no join/f-string/concat shape for BAS-LLM10-012's ARG gate to match; needs a bare-parameter variant or dataflow tracing."
 
+[[known_gap]]
+file     = "vulnerable/real_misses/path_traversal_variable_then_open.py"
+line     = 35
+category = "LLM10"
+why      = "path = os.path.join(RUNBOOK_DIR, filename) on the line above, then open(path) -- the join is genuinely there, but in a separate statement. BAS-LLM10-012's metavariable_matches only ever inspects the literal text of the captured $ARG node at the open() call site itself (RegexMatcher has no dataflow/definition resolution), so a bare `path` identifier can never match the os.path.join(/f-string/concat regex no matter what it was assigned to a line earlier. Distinct from path_traversal_bare_parameter.py, where the path is never assembled at all -- here it is assembled, just not inline."
+
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
 # below run in the *opposite* direction from every `[[known_gap]]` above,
