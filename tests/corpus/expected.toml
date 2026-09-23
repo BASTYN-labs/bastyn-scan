@@ -147,6 +147,15 @@ severity = "high"
 why      = "the containment check tests the unresolved string; the open() call has no realpath wrapper."
 
 [[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 9
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the query is f-string interpolated directly into execute(), with no variable-name gate needed."
+
+[[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
 line     = 13
 rule     = "BAS-ZT1-001"
@@ -352,6 +361,15 @@ severity = "critical"
 why      = "sql = f\"...{refined_query}%'\"; cursor.execute(sql) -- the model's reply reaches SQL through one local f-string reassignment. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-LLM10-003's name-gate never sees a variable named `sql`, so this was silently missed; BAS-LLM10-008 asks the flow graph instead of guessing from the variable's name."
 
 [[expect]]
+file     = "vulnerable/real_misses/sql_through_local_variable.py"
+line     = 29
+rule     = "BAS-LLM10-018"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the same interpolate-then-execute shape BAS-LLM10-018 catches unconditionally, co-firing alongside the existing model-output-gated BAS-LLM10-008 finding at the same location. BAS-LLM10-018's matched pattern is the whole enclosing function (def $FN($$$ARGS) -> $RET:\\n    $$$PRE\\n    $SQL = f\"...\"\\n    $CUR.execute($SQL)\\n    $$$REST, needed because ast_grep_core's Pattern::try_new refuses a two-statement pattern with no shared parent as 'Multiple AST nodes'), so the reported location is the def line (29), not the assignment (40) or execute() (41) line."
+
+[[expect]]
 file     = "vulnerable/real_misses/eval_expression_tool.js"
 line     = 26
 rule     = "BAS-LLM10-005"
@@ -375,11 +393,14 @@ line     = 29
 category = "LLM03"
 why      = "The model is instructed to emit an EXECUTE_SIGNAL{...} marker; the app re.search()es for it and dispatches the embedded JSON with no confirmation. BAS-LLM03-001 only matches a destructive-named @tool function with a missing guard clause -- there is no tool function here at all, just free text parsed for a marker."
 
-[[known_gap]]
+[[expect]]
 file     = "vulnerable/real_misses/sql_from_tool_parameter.py"
-line     = 39
+line     = 33
+rule     = "BAS-LLM10-018"
 category = "LLM10"
-why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter -- agent-controlled once you know it's a tool handler, but the flow graph resolves a bare parameter to Origin::Parameter, never Origin::Call{...}, and has no concept that a decorated tool function's parameters are untrusted. Would need a new SourceKind plus a decorator-recognition pass; genuinely separate, larger engine work, not attempted here."
+kind     = "defect"
+severity = "critical"
+why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter. Promoted from known_gap on 2026-09-23: BAS-LLM10-018 catches the interpolate-then-execute shape unconditionally, without needing the new SourceKind plus decorator-recognition pass that flow-based Origin::Parameter tracking would have required -- it never asks where `query` came from, only whether an f-string-built local is executed on the very next line. BAS-LLM10-018's matched pattern is the whole enclosing function (see BAS-LLM10-018's comment in bastyn.yml for why: ast_grep_core's Pattern::try_new refuses a bare two-statement pattern as 'Multiple AST nodes', since the two statements share no parent node outside of one), so the reported location is the def line (33), not the known_gap's previously recorded line (39, the execute() call)."
 
 [[known_gap]]
 file     = "vulnerable/real_misses/path_traversal_bare_parameter.py"

@@ -155,3 +155,12 @@ def storage_backend_setting() -> str:
     (STORAGE_TYPE: local); the equivalent Python-source shape must not
     repeat it."""
     return os.environ.get("STORAGE_TYPE", "local")
+
+
+def search_articles_parameterized(cursor, keyword: str) -> list:
+    """The same search, parameterized correctly -- BAS-LLM10-017's ARG
+    regex requires an f-string/concat/%-format shape, and a plain
+    literal query string with a bind parameter has none of those."""
+    return cursor.execute(
+        "SELECT id, title FROM kb_articles WHERE title LIKE ?", (f"%{keyword}%",)
+    ).fetchall()
