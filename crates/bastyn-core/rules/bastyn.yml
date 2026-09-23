@@ -366,10 +366,15 @@ rules:
   # composition itself is the defect" design as BAS-LLM10-009. Matches
   # docs/rule-catalogue.md's LLM10.9/LLM10.11.
   #
-  # Known gap, documented rather than papered over: a bare-parameter call
-  # (open(filename), with no join/f-string/concat shape in the argument
-  # at all) does not match this rule's ARG-shape gate. See
-  # tests/corpus/vulnerable/real_misses/path_traversal_bare_parameter.py.
+  # Known gaps, documented rather than papered over:
+  #   - a bare-parameter call (open(filename), with no join/f-string/concat
+  #     shape in the argument at all) does not match this rule's ARG-shape
+  #     gate. See tests/corpus/vulnerable/real_misses/path_traversal_bare_parameter.py.
+  #   - a path assembled by os.path.join/f-string/concat in a *prior*
+  #     statement and then opened via a variable (path = os.path.join(...);
+  #     open(path)) is also not caught -- metavariable_matches only inspects
+  #     $ARG's own text at the open() call site, never an earlier assignment.
+  #     See tests/corpus/vulnerable/real_misses/path_traversal_variable_then_open.py.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-012
@@ -394,15 +399,20 @@ rules:
     metavariable_matches:
       ARG: '(os\.path\.join\(|^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27])'
     description: >
-      A file is opened at a path built by os.path.join, f-string
-      interpolation, or string concatenation with a non-literal value,
-      and the argument is never wrapped in os.path.realpath/abspath. A
-      relative-traversal segment (../../etc/passwd) or a symlink planted
-      inside the intended directory escapes whatever containment the
-      surrounding code assumes, because the raw joined string is never
-      resolved before use — a string-prefix check elsewhere in the
-      function does not change this, since it tests the same unresolved
-      string.
+      A file is opened at a path built inline, directly inside the
+      open(...) call, by os.path.join, f-string interpolation, or string
+      concatenation with a non-literal value, and the argument is never
+      wrapped in os.path.realpath/abspath. A relative-traversal segment
+      (../../etc/passwd) or a symlink planted inside the intended
+      directory escapes whatever containment the surrounding code
+      assumes, because the raw joined string is never resolved before
+      use — a string-prefix check elsewhere in the function does not
+      change this, since it tests the same unresolved string. Detection
+      requires the join/f-string/concat expression to appear directly as
+      the open() argument; a path assembled the same way in a prior
+      statement and then passed in as a variable (path = os.path.join(...);
+      open(path)) is not detected — the matcher only inspects the
+      argument's own text at the call site, not any earlier assignment.
     remediation: >
       Resolve the joined path with os.path.realpath (not just
       os.path.abspath, which does not follow symlinks) before using it,

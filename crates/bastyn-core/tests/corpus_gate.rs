@@ -116,7 +116,19 @@ struct KnownFalsePositive {
 ///
 /// Entries marked `requires_network` are excluded: they are measurement limits
 /// of an offline gate, not things the scanner cannot detect.
-const MAX_KNOWN_GAPS: usize = 14;
+const MAX_KNOWN_GAPS: usize = 15;
+// Raised from 14 to 15 on 2026-09-23, admitting one deliberate new gap: a
+// known_gap entry for vulnerable/real_misses/path_traversal_variable_then_open.py,
+// documenting a distinct BAS-LLM10-012 miss from the bare-parameter gap below --
+// here the path *is* assembled with os.path.join(...), but in a separate
+// statement (`path = os.path.join(...)`) before `open(path)`. The rule's
+// metavariable_matches only ever inspects the literal text of the $ARG node
+// captured at the open() call site itself, with no dataflow/definition
+// resolution, so it cannot see the join that happened one line earlier. Added
+// alongside a tightened BAS-LLM10-012 `description:` making this inline-argument
+// requirement explicit, per a task reviewer finding that the prior wording
+// overclaimed what the pattern detects.
+//
 // Raised from 13 to 14 on 2026-09-23, admitting one deliberate new gap: a
 // known_gap entry for vulnerable/real_misses/path_traversal_bare_parameter.py,
 // added alongside the new BAS-LLM10-012 rule (a file opened at an unresolved
