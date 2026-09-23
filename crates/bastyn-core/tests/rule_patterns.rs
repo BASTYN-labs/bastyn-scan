@@ -430,7 +430,7 @@ fn yaml_schema_is_valid() {
     );
     let python_count = rules.iter().filter(|r| r.language == "python").count();
     assert!(
-        python_count <= 13,
+        python_count <= 14,
         "aim for 8-12 python rules; {python_count} is more than the brief asks for"
     );
     // Raised from 12 to 13 on 2026-09-22: BAS-LLM10-008 (model output
@@ -443,6 +443,12 @@ fn yaml_schema_is_valid() {
     // TypeScript/JavaScript support came later (see `python_rules`'s doc
     // comment); those rules get their own budget rather than sharing the
     // python-era cap.
+    // Raised from 13 to 14 on 2026-09-23: BAS-LLM10-009 (a non-literal
+    // command reaching a shell regardless of any allowlist/denylist check)
+    // is Task 1 of the recall-gap-detection-rules plan, closing the
+    // command-injection cluster from the smoke-python-v1 recall-gap report
+    // -- another deliberate, reviewed addition, not scope creep. Same
+    // one-rule bump as above.
     let ts_js_count = rules.len() - python_count;
     assert!(
         ts_js_count <= 10,

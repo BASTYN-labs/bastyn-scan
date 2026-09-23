@@ -296,6 +296,68 @@ rules:
       parameter values, never to the query text itself.
 
   # ---------------------------------------------------------------------
+  # LLM10 — a non-literal command reaches a shell, independent of any
+  # check that precedes it. BAS-LLM10-002 only fires when the argument's
+  # own text names a response/reply/... variable (a model-output gate);
+  # this rule drops that requirement entirely, the same way BAS-LLM10-004
+  # dropped it for eval()/exec(). A shell interprets the *whole* command
+  # string, so a check on only the first whitespace-split token
+  # (allowlist) or on a short substring list (denylist) leaves the rest
+  # of the string open to injection — this rule reports the composition
+  # itself, not the absence of a check, so a bypassable check does not
+  # suppress it. Matches docs/rule-catalogue.md's LLM10.12.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-009
+    title: Non-literal command run through a shell, regardless of any allowlist/denylist check
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - os.system($ARG)
+      - os.popen($ARG)
+      - subprocess.run($ARG, shell=True)
+      - subprocess.run($ARG, shell=True, $$$REST)
+      - subprocess.call($ARG, shell=True)
+      - subprocess.call($ARG, shell=True, $$$REST)
+      - subprocess.check_call($ARG, shell=True)
+      - subprocess.check_call($ARG, shell=True, $$$REST)
+      - subprocess.check_output($ARG, shell=True)
+      - subprocess.check_output($ARG, shell=True, $$$REST)
+      - subprocess.Popen($ARG, shell=True)
+      - subprocess.Popen($ARG, shell=True, $$$REST)
+    none:
+      - os.system("$LIT")
+      - os.popen("$LIT")
+      - subprocess.run("$LIT", shell=True)
+      - subprocess.run("$LIT", shell=True, $$$REST)
+      - subprocess.call("$LIT", shell=True)
+      - subprocess.call("$LIT", shell=True, $$$REST)
+      - subprocess.check_call("$LIT", shell=True)
+      - subprocess.check_call("$LIT", shell=True, $$$REST)
+      - subprocess.check_output("$LIT", shell=True)
+      - subprocess.check_output("$LIT", shell=True, $$$REST)
+      - subprocess.Popen("$LIT", shell=True)
+      - subprocess.Popen("$LIT", shell=True, $$$REST)
+    description: >
+      A command string that is not a fixed literal reaches a shell
+      (subprocess...shell=True, os.system, or os.popen). A shell
+      interprets the entire string, so any check narrower than "the
+      whole command matches one of a fixed set of literals" — a
+      first-token allowlist, a substring denylist — is bypassable. This
+      rule reports the composition itself: a non-literal command reaching
+      a shell is a defect independent of whatever check happens to
+      precede it.
+    remediation: >
+      Never build a shell command string from anything other than a fixed
+      literal. Call the target program directly with an argv list and
+      shell=False (subprocess.run([prog, arg1, arg2], shell=False)),
+      validate each argument against a strict allowlist of exact values,
+      and never pass a caller-supplied string to a shell.
+
+  # ---------------------------------------------------------------------
   # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
   # instructions. This is the shape every "ignore previous instructions"
   # attack depends on.

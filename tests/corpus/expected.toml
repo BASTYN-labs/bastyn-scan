@@ -102,6 +102,33 @@ severity = "critical"
 why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism."
 
 [[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 16
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "host is interpolated into a shell command with no validation at all."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 25
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the allowlist only inspects the command's first token, then the whole string reaches a shell."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 36
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted."
+
+[[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
 line     = 13
 rule     = "BAS-ZT1-001"
