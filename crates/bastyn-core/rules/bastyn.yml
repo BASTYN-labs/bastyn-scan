@@ -532,7 +532,7 @@ rules:
   # intent with no fixed marker at all, which this rule does not attempt).
   # ---------------------------------------------------------------------
 
-  - id: BAS-LLM01-001
+  - id: BAS-LLM01-002
     title: Hidden instruction block in a tool's own description
     kind: defect
     severity: high
@@ -565,13 +565,13 @@ rules:
       description at all.
 
   # ---------------------------------------------------------------------
-  # LLM01 — the lower-confidence companion to BAS-LLM01-001: a fixed
+  # LLM01 — the lower-confidence companion to BAS-LLM01-002: a fixed
   # phrase list with no marker tag, shipped as `observation` for the same
   # reason docs/rule-catalogue.md's LLM01.8 grades it `Kind: observation`
   # ("legitimate tool docs share vocabulary with the attack pattern").
   # ---------------------------------------------------------------------
 
-  - id: BAS-LLM01-002
+  - id: BAS-LLM01-003
     title: Suspicious instruction-override phrase in a tool's own description
     kind: observation
     severity: low
