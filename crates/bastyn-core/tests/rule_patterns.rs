@@ -535,7 +535,8 @@ fn yaml_schema_is_valid() {
     let python_count = rules.iter().filter(|r| r.language == "python").count();
     assert!(
         python_count <= 22,
-        "aim for 8-12 python rules; {python_count} is more than the brief asks for"
+        "python rule budget is 22 (raised incrementally from the original 8-12 brief as \
+         deliberate additions landed -- see the history comments below); {python_count} exceeds it"
     );
     // Raised from 12 to 13 on 2026-09-22: BAS-LLM10-008 (model output
     // reaching SQL through a local variable) is a deliberate, reviewed

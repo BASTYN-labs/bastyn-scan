@@ -9,25 +9,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Added
 
 - **`BAS-LLM10-009`: non-literal command run through a shell, regardless of any allowlist/denylist
-  check.** Flags a `subprocess`/`child_process` shell call fed a non-literal command even when the
-  surrounding code has an allowlist or denylist gate, since neither actually prevents the shell from
-  receiving attacker-controlled input. Found by measuring Bastyn's rule set against a 5-repository
-  benchmark corpus of intentionally-vulnerable MCP/agent applications and closing the recall gap it
-  surfaced.
+  check.** Flags a `subprocess`/`os.system`/`os.popen` shell call fed a non-literal command even when
+  the surrounding code has an allowlist or denylist gate, since neither actually prevents the shell
+  from receiving attacker-controlled input. Python only for now — no `child_process` (JS/TS) twin
+  ships in this change. Found by measuring Bastyn's rule set against a 5-repository benchmark corpus
+  of intentionally-vulnerable MCP/agent applications and closing the recall gap it surfaced.
 - **`BAS-LLM10-012`: file opened at an unresolved path built by joining or interpolating a non-literal
   value.** Flags `open()` calls assembled inline via `os.path.join`/f-string/string concatenation with
   no `realpath`/`abspath` resolution — including when the only existing guard is a bypassable
-  string-prefix containment check. Found via the same benchmark-corpus recall pass.
+  string-prefix containment check. Python only for now — no JS/TS twin ships in this change. Found via
+  the same benchmark-corpus recall pass.
 - **`BAS-ZT1-018`/`-019`/`-020`: hardcoded JWT literal, hardcoded AWS access key ID, and a
   credential-shaped default value read from an environment variable.** Three new hardcoded-secret
   shapes the existing `ZT1` rules didn't cover, closing recall gaps the benchmark corpus surfaced.
+  Python only for now — no JS/TS twin ships in this change.
 - **`BAS-LLM10-017`/`-018`: unparameterized SQL query reaches execution, directly or via a local
   variable.** Flags an interpolation-built query string that reaches `.execute()` either inline or
-  after first being assigned to a local variable, closing another benchmark-corpus recall gap.
+  after first being assigned to a local variable, closing another benchmark-corpus recall gap. Python
+  only for now — no JS/TS twin ships in this change.
 - **`BAS-LLM01-002`/`-003`: hidden instruction block and suspicious instruction-override phrase in a
   tool's own description.** Detects MCP "tool poisoning" — an adversarial instruction riding along
   inside a tool's docstring that a human reviewer approving the tool would never read as an
-  instruction. Found via the same benchmark-corpus recall pass.
+  instruction. Python only for now — no JS/TS twin ships in this change. Found via the same
+  benchmark-corpus recall pass.
 
 ## [0.1.6] - 2026-09-22
 
