@@ -468,6 +468,27 @@ rules:
   # that built it. This is the literal shape of
   # tests/corpus/vulnerable/real_misses/sql_from_tool_parameter.py's
   # known_gap.
+  #
+  # The pattern is written as `def ... $$$PRE ... execute($SQL) $$$REST`
+  # rather than a bare two-statement pattern because ast_grep_core's
+  # Pattern::try_new rejects a pattern spanning two module-level sibling
+  # statements ("Multiple AST nodes are detected") -- they share no
+  # parent node outside of a whole function body. Wrapping the pair in a
+  # `def` gives the pattern a single root node to anchor on, at the cost
+  # of reporting the def line rather than the assignment/execute line.
+  #
+  # `$$$REST` is a variadic capture for zero-or-more trailing statements,
+  # but this engine's multi-line pattern parser does not actually treat
+  # it as zero-or-more in the last-child position: a function where
+  # execute() is the literal last statement (the common "fire and
+  # forget" INSERT/UPDATE/DELETE shape, with nothing returned or run
+  # afterward) failed to match the four variants above, even though
+  # $$$REST should bind to an empty statement list. Fixed 2026-09-23 by
+  # adding four sibling variants below, identical except they end
+  # immediately after the execute() call with no `$$$REST` tail --
+  # mirroring how BAS-LLM03-001 in this same file expresses its
+  # `-> $RET` / no-return-type variants as separate `any:` entries
+  # rather than one pattern trying to cover both shapes.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-018
@@ -482,6 +503,10 @@ rules:
       - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)\n    $$$REST"
       - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)\n    $$$REST"
       - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)"
     metavariable_matches:
       CUR: "(?i)(cursor|cur|db|conn|connection)"
     description: >

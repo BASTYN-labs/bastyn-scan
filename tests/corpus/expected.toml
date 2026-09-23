@@ -156,6 +156,24 @@ severity = "critical"
 why      = "the query is f-string interpolated directly into execute(), with no variable-name gate needed."
 
 [[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 12
+rule     = "BAS-LLM10-018"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "archive_stale_ticket(): sql = f\"UPDATE ...{ticket_id}\"; cursor.execute(sql) with nothing after the execute() call -- a fire-and-forget write, the most common real shape for INSERT/UPDATE/DELETE. Regression fixture for a 2026-09-23 review finding: BAS-LLM10-018's def-wrapped pattern required its trailing $$$REST capture to bind at least one statement after execute(), so this exact shape (execute() as the function's literal last statement) produced no finding until the rule gained sibling any: variants with no $$$REST tail (see bastyn.yml's comment on BAS-LLM10-018). Reported at the def line (12), same as this rule's other entries, since the matched root is still the whole enclosing function."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 27
+rule     = "BAS-LLM10-018"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "plain_parameter_sql_through_local_variable(): moved here from clean/near_misses.py on 2026-09-23, where it had originally proved BAS-LLM10-008 stays silent on a bare, non-tool function parameter (Origin::Parameter, never Origin::Call{...}, so it can never classify as model_output). That is still true and BAS-LLM10-008 does not fire here. But BAS-LLM10-018 has no provenance gate at all -- it fires on the interpolate-then-execute shape alone, exactly like BAS-LLM10-017 and BAS-LLM10-009 do, regardless of where the value came from -- so once the last-statement parsing gap above was fixed, this became a genuine BAS-LLM10-018 true positive and the function no longer belonged in a file whose whole point is that nothing in it should fire."
+
+[[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
 line     = 13
 rule     = "BAS-ZT1-001"
