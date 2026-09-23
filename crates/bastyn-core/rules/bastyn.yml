@@ -358,6 +358,59 @@ rules:
       and never pass a caller-supplied string to a shell.
 
   # ---------------------------------------------------------------------
+  # LLM10 — a file is opened at a path built by joining or interpolating
+  # a non-literal value, with no os.path.realpath/abspath resolution
+  # around the argument. A bare .startswith()/prefix check on the
+  # *unresolved* string does not appear anywhere in this pattern's own
+  # shape, so it does not suppress the finding — the same "the
+  # composition itself is the defect" design as BAS-LLM10-009. Matches
+  # docs/rule-catalogue.md's LLM10.9/LLM10.11.
+  #
+  # Known gap, documented rather than papered over: a bare-parameter call
+  # (open(filename), with no join/f-string/concat shape in the argument
+  # at all) does not match this rule's ARG-shape gate. See
+  # tests/corpus/vulnerable/real_misses/path_traversal_bare_parameter.py.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-012
+    title: File opened at an unresolved path built by joining or interpolating a non-literal value
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - open($ARG)
+      - open($ARG, $$$MODE)
+    none:
+      - open(os.path.realpath($$$A))
+      - open(os.path.realpath($$$A), $$$MODE)
+      - open(os.path.abspath($$$A))
+      - open(os.path.abspath($$$A), $$$MODE)
+      - open(safe_join($$$A))
+      - open(safe_join($$$A), $$$MODE)
+      - open(werkzeug.utils.safe_join($$$A))
+      - open(werkzeug.utils.safe_join($$$A), $$$MODE)
+    metavariable_matches:
+      ARG: '(os\.path\.join\(|^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27])'
+    description: >
+      A file is opened at a path built by os.path.join, f-string
+      interpolation, or string concatenation with a non-literal value,
+      and the argument is never wrapped in os.path.realpath/abspath. A
+      relative-traversal segment (../../etc/passwd) or a symlink planted
+      inside the intended directory escapes whatever containment the
+      surrounding code assumes, because the raw joined string is never
+      resolved before use — a string-prefix check elsewhere in the
+      function does not change this, since it tests the same unresolved
+      string.
+    remediation: >
+      Resolve the joined path with os.path.realpath (not just
+      os.path.abspath, which does not follow symlinks) before using it,
+      and verify the resolved path is contained under the intended root
+      directory (os.path.commonpath, or a vetted helper like
+      werkzeug.utils.safe_join) before opening it.
+
+  # ---------------------------------------------------------------------
   # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
   # instructions. This is the shape every "ignore previous instructions"
   # attack depends on.
