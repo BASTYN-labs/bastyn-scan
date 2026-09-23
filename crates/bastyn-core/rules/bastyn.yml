@@ -421,6 +421,82 @@ rules:
       werkzeug.utils.safe_join) before opening it.
 
   # ---------------------------------------------------------------------
+  # LLM10 — the same execute()-of-untrusted-SQL shape BAS-LLM10-003
+  # already catches, but unconditional: BAS-LLM10-003 only fires when the
+  # argument's own text names a response/reply/... variable. This rule
+  # drops that name gate, the same way BAS-LLM10-009 drops it for shell
+  # commands -- interpolating any non-literal value into a query string
+  # instead of binding it as a parameter is wrong regardless of what the
+  # value is named or where it came from.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-017
+    title: Unparameterized query built by interpolation reaches SQL execution
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - $CUR.execute($ARG)
+    none:
+      - $CUR.execute("$LIT")
+      - $CUR.execute('$LIT')
+      - $CUR.execute("""$LIT""")
+      - $CUR.execute('''$LIT''')
+      - $CUR.execute($ARG, $PARAMS)
+    metavariable_matches:
+      CUR: "(?i)(cursor|cur|db|conn|connection)"
+      ARG: '(^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27]|%\s*\()'
+    description: >
+      A database cursor executes a query string built by f-string
+      interpolation, concatenation, or %-formatting, with the
+      interpolated value passed inline rather than as a separate bind
+      parameter. This reports the composition unconditionally rather
+      than gating on the interpolated value's name or provenance.
+    remediation: >
+      Never interpolate a value into a SQL string. Use parameterized
+      queries (cursor.execute(sql, params)) and keep every dynamic value
+      confined to a bind parameter, never to the query text itself.
+
+  # ---------------------------------------------------------------------
+  # LLM10 — the same defect as BAS-LLM10-017, split across two
+  # statements: the interpolated query is assigned to a local variable
+  # one line before the execute() call that consumes it. BAS-LLM10-017's
+  # same-node ARG-shape gate cannot see this -- $ARG's captured text at
+  # the execute() call site is just the variable name, not the f-string
+  # that built it. This is the literal shape of
+  # tests/corpus/vulnerable/real_misses/sql_from_tool_parameter.py's
+  # known_gap.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-018
+    title: Unparameterized query assigned to a local variable then executed
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)\n    $$$REST"
+    metavariable_matches:
+      CUR: "(?i)(cursor|cur|db|conn|connection)"
+    description: >
+      A local variable is assigned an f-string-interpolated query, then
+      passed straight to execute() on the very next line. Splitting the
+      f-string out of the call site does not change what happens at
+      runtime -- the query text is still built by interpolation, not by
+      parameter binding.
+    remediation: >
+      Never interpolate a value into a SQL string, whether directly in
+      the execute() call or through an intermediate variable one line
+      earlier. Use parameterized queries (cursor.execute(sql, params))
+      instead.
+
+  # ---------------------------------------------------------------------
   # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
   # instructions. This is the shape every "ignore previous instructions"
   # attack depends on.

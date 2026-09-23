@@ -116,7 +116,20 @@ struct KnownFalsePositive {
 ///
 /// Entries marked `requires_network` are excluded: they are measurement limits
 /// of an offline gate, not things the scanner cannot detect.
-const MAX_KNOWN_GAPS: usize = 15;
+const MAX_KNOWN_GAPS: usize = 14;
+// Lowered from 15 to 14 on 2026-09-23, the direction this constant exists to
+// reward: the known_gap entry for vulnerable/real_misses/sql_from_tool_parameter.py
+// (sql = f"...{query}%'"; cursor.execute(sql), where `query` is an
+// @tool-decorated MCP handler's own parameter) was promoted to [[expect]]
+// alongside the new BAS-LLM10-018 rule (unparameterized query assigned to a
+// local variable then executed). BAS-LLM10-018 catches the interpolate-then-
+// execute shape unconditionally, without needing the new SourceKind plus
+// decorator-recognition pass that flow-based Origin::Parameter tracking would
+// have required -- it never asks where the interpolated value came from, only
+// whether an f-string-built local is executed on the very next line. This is
+// not a loosened guardrail: a real gap closed, so the ceiling it is measured
+// against closes with it.
+//
 // Raised from 14 to 15 on 2026-09-23, admitting one deliberate new gap: a
 // known_gap entry for vulnerable/real_misses/path_traversal_variable_then_open.py,
 // documenting a distinct BAS-LLM10-012 miss from the bare-parameter gap below --
