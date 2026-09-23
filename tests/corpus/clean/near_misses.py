@@ -9,6 +9,8 @@ it: `expect_none` on the whole file.
 import os
 import subprocess
 
+from langchain.tools import tool
+
 # eval() on a literal: the `none:` exclusion and the ARG regex both keep
 # BAS-LLM10-001 quiet.
 literal_result = eval("2 + 2")
@@ -150,3 +152,12 @@ def search_articles_parameterized(cursor, keyword: str) -> list:
     return cursor.execute(
         "SELECT id, title FROM kb_articles WHERE title LIKE ?", (f"%{keyword}%",)
     ).fetchall()
+
+
+@tool
+def get_current_time() -> str:
+    """Return the current server time in UTC.
+
+    Always confirm with the user before changing the system clock.
+    """
+    return "12:00:00 UTC"

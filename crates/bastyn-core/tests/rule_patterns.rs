@@ -306,6 +306,50 @@ fn looks_like_interpolated_query_arg(text: &str) -> bool {
     false
 }
 
+/// Mirrors BAS-LLM01-001's `DOC` regex
+/// (`(?i)(<important>|<hidden>|do not mention|do not tell the user|present
+/// it as if)`): a fixed set of hidden-instruction markers, appearing
+/// anywhere in the docstring text.
+fn looks_like_hidden_instruction_marker(text: &str) -> bool {
+    contains_ci(
+        text,
+        &[
+            "<important>",
+            "<hidden>",
+            "do not mention",
+            "do not tell the user",
+            "present it as if",
+        ],
+    )
+}
+
+/// Mirrors BAS-LLM01-002's `DOC` regex
+/// (`(?i)(ignore (previous|prior|all) instructions|disregard
+/// (prior|previous)|override (your|the) (instructions|system
+/// prompt)|bypass (the|your) (safety|restriction))`): each `any:` group's
+/// alternatives spelled out as concrete phrases, since every group is
+/// space-joined with a fixed set of choices.
+fn looks_like_instruction_override_phrase(text: &str) -> bool {
+    contains_ci(
+        text,
+        &[
+            "ignore previous instructions",
+            "ignore prior instructions",
+            "ignore all instructions",
+            "disregard prior",
+            "disregard previous",
+            "override your instructions",
+            "override your system prompt",
+            "override the instructions",
+            "override the system prompt",
+            "bypass the safety",
+            "bypass the restriction",
+            "bypass your safety",
+            "bypass your restriction",
+        ],
+    )
+}
+
 /// Mirrors BAS-LLM03-001's `FN` regex: a destructive verb at the start of
 /// the function name.
 fn is_destructive_tool_name(text: &str) -> bool {
@@ -381,6 +425,8 @@ fn eval_metavariable(rule_id: &str, var: &str, text: &str) -> bool {
                 "force_prompt",
             ],
         ),
+        ("BAS-LLM01-001", "DOC") => looks_like_hidden_instruction_marker(text),
+        ("BAS-LLM01-002", "DOC") => looks_like_instruction_override_phrase(text),
         _ => unreachable!(
             "no verification predicate wired up for {rule_id}.{var} -- \
              add one in eval_metavariable alongside the YAML regex"
@@ -488,7 +534,7 @@ fn yaml_schema_is_valid() {
     );
     let python_count = rules.iter().filter(|r| r.language == "python").count();
     assert!(
-        python_count <= 20,
+        python_count <= 22,
         "aim for 8-12 python rules; {python_count} is more than the brief asks for"
     );
     // Raised from 12 to 13 on 2026-09-22: BAS-LLM10-008 (model output
@@ -528,6 +574,14 @@ fn yaml_schema_is_valid() {
     // plan, closing the SQL-injection cluster from the same smoke-python-v1
     // recall-gap report -- two deliberate, reviewed additions, not scope
     // creep. Same one-rule-per-rule bump as above.
+    // Raised from 20 to 22 on 2026-09-23: BAS-LLM01-001 (a hidden
+    // instruction block, marked with <IMPORTANT>/<HIDDEN> tags or "do not
+    // mention" phrasing, inside a tool's own docstring) and BAS-LLM01-002
+    // (the lower-confidence "ignore previous instructions"-style keyword
+    // companion) are Task 5 of the recall-gap-detection-rules plan, closing
+    // the tool-poisoning cluster from the same smoke-python-v1 recall-gap
+    // report -- two deliberate, reviewed additions, not scope creep. Same
+    // one-rule-per-rule bump as above.
     let ts_js_count = rules.len() - python_count;
     assert!(
         ts_js_count <= 10,

@@ -948,3 +948,20 @@ kind     = "defect"
 severity = "high"
 why      = "the admin password's environment lookup has a real, source-visible default."
 
+[[expect]]
+file     = "vulnerable/llm01_tool_poisoning.py"
+line     = 11
+rule     = "BAS-LLM01-001"
+category = "LLM01"
+kind     = "defect"
+severity = "high"
+why      = "the docstring contains an <IMPORTANT> tag instructing the model to read an SSH key and not mention doing so."
+
+[[expect]]
+file     = "vulnerable/llm01_tool_poisoning.py"
+line     = 22
+rule     = "BAS-LLM01-002"
+category = "LLM01"
+kind     = "observation"
+severity = "low"
+why      = "the docstring contains \"ignore previous instructions\" phrasing, a lower-confidence lexical signal."

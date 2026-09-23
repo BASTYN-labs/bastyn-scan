@@ -522,6 +522,87 @@ rules:
       instead.
 
   # ---------------------------------------------------------------------
+  # LLM01 — a tool's own docstring contains a hidden-instruction marker
+  # aimed at the model that reads it, not the human approving the tool.
+  # Matches docs/rule-catalogue.md's LLM01.7's illustrative shape at the
+  # LLM01.9 confidence level (LLM01.9 grades the identical
+  # <IMPORTANT>/"do not mention" marker, in a SKILL.md sibling artifact,
+  # as `Kind: defect`, `Detectability: structural` -- LLM01.7 itself is
+  # graded `semantic`/high-risk because it also tries to catch free-text
+  # intent with no fixed marker at all, which this rule does not attempt).
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM01-001
+    title: Hidden instruction block in a tool's own description
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM01]
+    language: python
+    any:
+      - "@tool\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+    metavariable_matches:
+      DOC: '(?i)(<important>|<hidden>|do not mention|do not tell the user|present it as if)'
+    description: >
+      A tool's docstring -- the text an agent reads to decide how and
+      when to call it -- contains a hidden-instruction marker
+      (<IMPORTANT>/<HIDDEN> tags, or explicit "do not mention"/"do not
+      tell the user" language) invisible to a human skimming the tool
+      list but fully visible to the model. This is the mechanism behind
+      real MCP "tool poisoning" attacks: a second, adversarial
+      instruction riding along inside a tool description the developer
+      approved for something else entirely.
+    remediation: >
+      Remove the hidden instruction. A tool's description should say only
+      what the tool does and when to call it; anything addressed to the
+      model itself, especially language asking it to act silently or
+      withhold information from the user, does not belong in a tool
+      description at all.
+
+  # ---------------------------------------------------------------------
+  # LLM01 — the lower-confidence companion to BAS-LLM01-001: a fixed
+  # phrase list with no marker tag, shipped as `observation` for the same
+  # reason docs/rule-catalogue.md's LLM01.8 grades it `Kind: observation`
+  # ("legitimate tool docs share vocabulary with the attack pattern").
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM01-002
+    title: Suspicious instruction-override phrase in a tool's own description
+    kind: observation
+    severity: low
+    confidence: low
+    categories: [LLM01]
+    language: python
+    any:
+      - "@tool\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+    metavariable_matches:
+      DOC: '(?i)(ignore (previous|prior|all) instructions|disregard (prior|previous)|override (your|the) (instructions|system prompt)|bypass (the|your) (safety|restriction))'
+    description: >
+      A tool's docstring contains a lower-confidence lexical signal --
+      phrasing like "ignore previous instructions," "override the system
+      prompt," or "bypass the safety restriction." Legitimate tool
+      documentation occasionally shares vocabulary with this pattern
+      ("always confirm before deleting" does not trip it, but a looser
+      phrasing might), which is why this is an observation rather than a
+      defect.
+    remediation: >
+      Review the tool description's wording. If it is not legitimately
+      instructing the agent about the tool's own confirmation/safety
+      behavior, remove the phrasing; if the tool comes from a
+      third-party MCP server, treat this as a signal to audit the
+      server's other tool descriptions too.
+
+  # ---------------------------------------------------------------------
   # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
   # instructions. This is the shape every "ignore previous instructions"
   # attack depends on.
