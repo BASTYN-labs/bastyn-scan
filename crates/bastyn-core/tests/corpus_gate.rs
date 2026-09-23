@@ -287,7 +287,37 @@ const MAX_KNOWN_GAPS: usize = 14;
 /// Raising it means a rule started over-triggering on a new case that
 /// cannot currently be excluded precisely -- that needs a human decision in
 /// the PR description, not a silent bump, exactly like `MAX_KNOWN_GAPS`.
-const MAX_KNOWN_FALSE_POSITIVES: usize = 2;
+const MAX_KNOWN_FALSE_POSITIVES: usize = 4;
+// Raised from 2 to 4 on 2026-09-23, admitting two deliberate new precision
+// debts, both found and fixed in the same final-review pass:
+//
+//   - vulnerable/real_misses/path_traversal_safe_local_constant.py:40
+//     (finding C1, part 2). BAS-LLM10-012's metavariable_not_matches
+//     exclusion, added in the same review pass, closes the *all-literal*
+//     os.path.join(...) false positive (a genuine contract violation --
+//     see the -3-to-2 history below this comment for context on why that
+//     part was a fix, not an admission). What it deliberately does not
+//     close is a join with one *safe local constant* argument (HERE =
+//     os.path.dirname(__file__)): HERE is a bare identifier, a genuine
+//     non-literal, so the rule fires exactly as its own contract says it
+//     should -- but it is not attacker-influenceable in practice, and
+//     same-node regex matching cannot tell that apart from a real
+//     non-literal without dataflow analysis. The same precision ceiling
+//     BAS-LLM10-009/-017/-018 already accept by design.
+//   - vulnerable/real_misses/shell_command_via_local_variable.py:32
+//     (finding I1). A fixed literal shell command held in a local variable
+//     one line above the subprocess.run(..., shell=True) call that
+//     consumes it. Identical sibling-statement blindness to the
+//     eval_guarded_by_local_check.py entries below: `none:` only matches
+//     alternate shapes of the matched node itself, never a prior sibling
+//     assignment.
+//
+// Neither is fixable without either narrowing the rule in a way that risks
+// swallowing a real non-literal command/path, or real dataflow tracing --
+// not attempted here, consistent with this whole rule batch's deliberate
+// unconditional/structural design (see the plan's Architecture note in
+// docs/superpowers/plans/2026-09-23-recall-gap-detection-rules.md).
+//
 // 2 on 2026-08-28: split out of MAX_KNOWN_GAPS (see that constant's 14-to-12
 // history entry). Both entries are BAS-LLM10-004 flagging an eval()/exec()
 // call whose argument a human can see is safe by reading a sibling
