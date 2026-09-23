@@ -2,7 +2,7 @@
 
 **Nothing in this file is a shipped rule.** It is a design catalogue of
 candidate rules, and every count in it (100 rules, the per-category table, the
-30-rule shortlist) describes what is proposed, not what exists. Bastyn ships 43
+30-rule shortlist) describes what is proposed, not what exists. Bastyn ships 53
 rules; they live in `crates/bastyn-core/rules/*.yml`, and
 [`docs/frameworks/README.md`](frameworks/README.md) records which framework
 categories currently have a detector behind them.
@@ -191,6 +191,8 @@ Cursor/Copilot.
 **Source:** [Semgrep `ai-config-hidden-unicode`](https://github.com/semgrep/semgrep-rules/blob/develop/ai/ai-best-practices/ai-config-hidden-unicode/ai-config-hidden-unicode.yaml); [Snyk agent-scan W021](https://github.com/snyk/agent-scan/blob/main/docs/issue-codes.md)
 
 ### LLM01.7 Prompt injection embedded in an MCP tool's own description
+*Now shipped as `BAS-LLM01-002`.*
+
 **What it detects:** A tool's `description` field contains adversarial
 imperative text meant to hijack the calling agent, invisible to the human
 approving the tool but fully visible to the model.
@@ -209,6 +211,8 @@ servers have been found in the wild by both Snyk and Invariant Labs.
 **Source:** [Snyk agent-scan, issue E001](https://github.com/snyk/agent-scan/blob/main/docs/issue-codes.md)
 
 ### LLM01.8 Suspicious/dangerous keyword pattern in a tool description
+*Now shipped as `BAS-LLM01-003`.*
+
 **What it detects:** Lower-confidence lexical signal: phrases like "ignore
 previous instructions," "override," "bypass," or "do not tell the user"
 inside a tool description.
@@ -223,6 +227,10 @@ deleting") share vocabulary with the attack pattern.
 **Source:** [Snyk agent-scan, issue W001](https://github.com/snyk/agent-scan/blob/main/docs/issue-codes.md)
 
 ### LLM01.9 SKILL.md/AGENT.md prompt-injection frontmatter
+*Sits next to the shipped `BAS-LLM01-002`/`BAS-LLM01-003`, which cover Python
+`@tool`/`@mcp.tool()` docstrings only; this SKILL.md/AGENT.md-manifest variant
+remains unshipped.*
+
 **What it detects:** A skill or agent manifest's `description:` field (or
 body) contains "ignore previous instructions," "disregard prior,"
 `<IMPORTANT>`, or "system: you are". Same class of attack as LLM01.7,
@@ -1144,6 +1152,8 @@ parsing-confusion attack bypassed.
 **Source:** [AutoGPT CVE-2025-0454 write-up](https://medium.com/@narendarlb123/1-cve-2025-0454-autogpt-ssrf-via-url-parsing-confusion-921d66fafcbe) (independent write-up, cross-checked against the GitHub Advisories search index; treat as secondary evidence pending a primary GHSA record)
 
 ### LLM10.9 Path traversal via an agent-controlled file path (Python tool)
+*Now shipped as `BAS-LLM10-012`.*
+
 **What it detects:** A tool's `path` argument (from LLM tool-call args) is
 joined with `os.path.join(BASE_DIR, path)` and opened, with no
 `os.path.realpath`/containment check against `BASE_DIR`, allowing
@@ -1181,6 +1191,11 @@ and `mcp-server-git`'s `git_init` tool accepted arbitrary paths
 **Source:** [Langflow CVE-2026-5027 write-up](https://thehackernews.com/2026/06/unpatched-langflow-flaw-cve-2026-5027.html)
 
 ### LLM10.11 Path-containment check uses string prefix instead of resolved path
+*The inline-open-call shape here is also covered by the shipped `BAS-LLM10-012`,
+whose description explicitly notes that a string-prefix check elsewhere in the
+function does not change the outcome; the general dataflow case (containment
+check and `open()` separated across statements) remains unshipped.*
+
 **What it detects:** A narrower, higher-precision variant of LLM10.9/10:
 a containment check exists (so a naive "is there any check" rule would
 pass it), but it compares a string prefix rather than a canonicalized/
@@ -1205,6 +1220,8 @@ harder to catch than "not fixed at all," which is exactly why it recurs.
 **Source:** [GHSA-j893-m93w-jwjw](https://github.com/advisories/GHSA-j893-m93w-jwjw)
 
 ### LLM10.12 Code-execution tool shells out via `subprocess`/`child_process` as its "sandbox"
+*Now shipped as `BAS-LLM10-009`.*
+
 **What it detects:** An LLM-facing "run code" or "execute command" tool
 passes model-generated code/commands to `subprocess.run(code, shell=True)`
 or Node `child_process.exec(cmd)`, using the parent shell as the entire
