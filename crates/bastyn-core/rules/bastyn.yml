@@ -328,19 +328,38 @@ rules:
       - subprocess.check_output($ARG, shell=True, $$$REST)
       - subprocess.Popen($ARG, shell=True)
       - subprocess.Popen($ARG, shell=True, $$$REST)
+    # Both quote styles are excluded for every sink shape below. Final
+    # review on 2026-09-23 found all twelve entries spelled with
+    # double-quoted "$LIT" only, so a single-quoted fixed command
+    # (subprocess.run('systemctl restart opsbot-worker', shell=True))
+    # produced an incorrect finding at this rule's own critical severity.
+    # Follows the exact quote-style-coverage precedent BAS-LLM10-017 below
+    # already ships ("$LIT", '$LIT', """$LIT""", '''$LIT''').
     none:
       - os.system("$LIT")
+      - os.system('$LIT')
       - os.popen("$LIT")
+      - os.popen('$LIT')
       - subprocess.run("$LIT", shell=True)
+      - subprocess.run('$LIT', shell=True)
       - subprocess.run("$LIT", shell=True, $$$REST)
+      - subprocess.run('$LIT', shell=True, $$$REST)
       - subprocess.call("$LIT", shell=True)
+      - subprocess.call('$LIT', shell=True)
       - subprocess.call("$LIT", shell=True, $$$REST)
+      - subprocess.call('$LIT', shell=True, $$$REST)
       - subprocess.check_call("$LIT", shell=True)
+      - subprocess.check_call('$LIT', shell=True)
       - subprocess.check_call("$LIT", shell=True, $$$REST)
+      - subprocess.check_call('$LIT', shell=True, $$$REST)
       - subprocess.check_output("$LIT", shell=True)
+      - subprocess.check_output('$LIT', shell=True)
       - subprocess.check_output("$LIT", shell=True, $$$REST)
+      - subprocess.check_output('$LIT', shell=True, $$$REST)
       - subprocess.Popen("$LIT", shell=True)
+      - subprocess.Popen('$LIT', shell=True)
       - subprocess.Popen("$LIT", shell=True, $$$REST)
+      - subprocess.Popen('$LIT', shell=True, $$$REST)
     description: >
       A command string that is not a fixed literal reaches a shell
       (subprocess...shell=True, os.system, or os.popen). A shell
@@ -365,6 +384,32 @@ rules:
   # shape, so it does not suppress the finding — the same "the
   # composition itself is the defect" design as BAS-LLM10-009. Matches
   # docs/rule-catalogue.md's LLM10.9/LLM10.11.
+  #
+  # metavariable_not_matches closes a genuine contract violation found in
+  # final review on 2026-09-23: an os.path.join(...) call whose every
+  # argument is a quoted string literal (open(os.path.join("/etc/opsbot",
+  # "settings.ini"))) matched the ARG-shape gate's first alternative
+  # (`os\.path\.join\(` is a substring test, not a "some argument is
+  # non-literal" test) even though nothing about the path is built from a
+  # non-literal value at all -- directly contradicting this rule's own
+  # title and description. The exclusion regex anchors the *whole* ARG
+  # text end-to-end ("os.path.join( then only quoted-literal arguments,
+  # comma-separated, then )"), the same technique BAS-LLM10-003 above uses
+  # for its own "the whole argument is nothing but quoted-literal
+  # segments" exclusion -- adapted here for a call shape instead of a bare
+  # literal-concatenation shape. See
+  # tests/corpus/clean/near_misses.py's all_literal_join_is_not_flagged
+  # for the regression proof.
+  #
+  # This does NOT close the case where every os.path.join(...) argument is
+  # either a literal or a *safe local constant* (e.g. HERE =
+  # os.path.dirname(__file__); open(os.path.join(HERE, "data.json"))) --
+  # HERE is a bare identifier, a genuine non-literal, so the rule's own
+  # contract says it should fire, and same-node regex matching over the
+  # join's argument text cannot tell a safe local constant from an
+  # attacker-controlled variable without real dataflow analysis. Recorded
+  # as a known_false_positive rather than narrowed further -- see
+  # tests/corpus/vulnerable/real_misses/path_traversal_safe_local_constant.py.
   #
   # Known gaps, documented rather than papered over:
   #   - a bare-parameter call (open(filename), with no join/f-string/concat
@@ -398,6 +443,8 @@ rules:
       - open(werkzeug.utils.safe_join($$$A), $$$MODE)
     metavariable_matches:
       ARG: '(os\.path\.join\(|^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27])'
+    metavariable_not_matches:
+      ARG: '^os\.path\.join\(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*,\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*\)$'
     description: >
       A file is opened at a path built inline, directly inside the
       open(...) call, by os.path.join, f-string interpolation, or string
@@ -407,12 +454,15 @@ rules:
       directory escapes whatever containment the surrounding code
       assumes, because the raw joined string is never resolved before
       use — a string-prefix check elsewhere in the function does not
-      change this, since it tests the same unresolved string. Detection
-      requires the join/f-string/concat expression to appear directly as
-      the open() argument; a path assembled the same way in a prior
-      statement and then passed in as a variable (path = os.path.join(...);
-      open(path)) is not detected — the matcher only inspects the
-      argument's own text at the call site, not any earlier assignment.
+      change this, since it tests the same unresolved string. An
+      os.path.join(...) call whose every argument is a fixed string
+      literal is excluded: nothing in it is non-literal, so it is not
+      "built from a non-literal value" at all. Detection requires the
+      join/f-string/concat expression to appear directly as the open()
+      argument; a path assembled the same way in a prior statement and
+      then passed in as a variable (path = os.path.join(...); open(path))
+      is not detected — the matcher only inspects the argument's own text
+      at the call site, not any earlier assignment.
     remediation: >
       Resolve the joined path with os.path.realpath (not just
       os.path.abspath, which does not follow symlinks) before using it,

@@ -145,6 +145,28 @@ def storage_backend_setting() -> str:
     return os.environ.get("STORAGE_TYPE", "local")
 
 
+def all_literal_join_is_not_flagged() -> str:
+    """BAS-LLM10-012's ARG-shape gate's first alternative used to be a bare
+    substring test for `os.path.join(` -- true even when every argument
+    inside the call is a fixed string literal, contradicting the rule's own
+    title ("...built by joining or interpolating a non-literal value"). The
+    metavariable_not_matches exclusion added 2026-09-23 anchors the whole
+    ARG text end-to-end and must keep this quiet."""
+    with open(os.path.join("/etc/opsbot", "settings.ini")) as handle:
+        return handle.read()
+
+
+def restart_service_single_quoted() -> None:
+    """The same fixed-literal shell command as restart_known_service()
+    above, but single-quoted -- BAS-LLM10-009's `none:` list used to only
+    spell the exclusion with double-quoted "$LIT", so this single-quoted
+    form produced an incorrect critical finding until the 2026-09-23 fix
+    added the '$LIT' variant for all twelve sink shapes. Kept as a sibling
+    function rather than editing restart_known_service() itself, so that
+    function's own regression proof (the double-quoted case) stays intact."""
+    subprocess.run('systemctl restart opsbot-worker', shell=True)
+
+
 def search_articles_parameterized(cursor, keyword: str) -> list:
     """The same search, parameterized correctly -- BAS-LLM10-017's ARG
     regex requires an f-string/concat/%-format shape, and a plain
