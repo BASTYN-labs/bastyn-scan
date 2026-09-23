@@ -984,7 +984,7 @@ not yet common outside advanced agent-memory systems.
 
 ## LLM10 Improper Output Handling
 
-Bastyn ships seven rules here today (`BAS-LLM10-001` through `-007`), and
+Bastyn ships eighteen rules here today (`BAS-LLM10-001` through `-018`), and
 it is the category the project's own docs correctly call the highest
 priority, because running model output as code is wrong in every deployment. It
 is also the category that most exposes the name-matching problem: every
