@@ -7,6 +7,7 @@ it: `expect_none` on the whole file.
 """
 
 import os
+import subprocess
 
 # eval() on a literal: the `none:` exclusion and the ARG regex both keep
 # BAS-LLM10-001 quiet.
@@ -113,3 +114,17 @@ def plain_parameter_sql_through_local_variable(cursor, query: str) -> None:
     only that it is currently blind to the tool-decorated case too."""
     sql = f"SELECT id, title, body FROM kb_articles WHERE title LIKE '%{query}%'"
     cursor.execute(sql)
+
+
+def restart_known_service() -> None:
+    """A shell command built entirely from fixed literals, never from a
+    caller-supplied value -- BAS-LLM10-009's `none:` exclusion for a bare
+    string-literal argument covers exactly this."""
+    subprocess.run("systemctl restart opsbot-worker", shell=True)
+
+
+def run_backup_script(target_dir: str) -> None:
+    """The same kind of operation as the vulnerable fixture's ping tool,
+    but built as an argv list with shell=False -- no shell ever parses
+    target_dir, so there is nothing to inject into."""
+    subprocess.run(["tar", "-czf", "backup.tar.gz", target_dir], shell=False)
