@@ -882,3 +882,30 @@ kind     = "defect"
 severity = "critical"
 why      = "Complete, well-formed frontmatter, but the body's classic instruction-override phrase (\"ignore all previous instructions\") is word-wrapped across a Markdown line break (\"IGNORE ALL PREVIOUS\\nINSTRUCTIONS\"). Regression fixture for a bug where scan_phrases only did a literal substring match and silently missed phrases split by a line break; the same phrasing on one line was already caught (see log-analyzer above)."
 
+[[expect]]
+file     = "vulnerable/zt1_secret_shapes.py"
+line     = 13
+rule     = "BAS-ZT1-018"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "a live-looking JWT is hardcoded directly in source."
+
+[[expect]]
+file     = "vulnerable/zt1_secret_shapes.py"
+line     = 21
+rule     = "BAS-ZT1-019"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "an AWS access key ID in the exact AKIA-prefixed shape is hardcoded."
+
+[[expect]]
+file     = "vulnerable/zt1_secret_shapes.py"
+line     = 26
+rule     = "BAS-ZT1-020"
+category = "ZT1"
+kind     = "defect"
+severity = "high"
+why      = "the admin password's environment lookup has a real, source-visible default."
+

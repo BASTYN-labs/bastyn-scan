@@ -137,3 +137,21 @@ def read_runbook_resolved(filename: str) -> str:
     quiet even though the shape (os.path.join then open) is identical."""
     with open(os.path.realpath(os.path.join("/srv/opsbot/runbooks", filename))) as handle:
         return handle.read()
+
+
+def jwt_algorithm_config() -> dict:
+    """A string that merely mentions JWT/algorithm config, not a token
+    shape itself -- BAS-ZT1-018's VALUE regex requires the exact
+    eyJ.<payload>.<signature> three-segment structure, which this does
+    not have."""
+    return {"jwt_algorithm": "HS256"}
+
+
+def storage_backend_setting() -> str:
+    """BAS-ZT1-020: STORAGE_TYPE is read via os.environ.get with a
+    default, but the KEY itself never matches the
+    password/secret/token/api_key/... gate -- this is the exact false
+    positive BAS-INFRA-006 produced against a real Docker Compose file
+    (STORAGE_TYPE: local); the equivalent Python-source shape must not
+    repeat it."""
+    return os.environ.get("STORAGE_TYPE", "local")

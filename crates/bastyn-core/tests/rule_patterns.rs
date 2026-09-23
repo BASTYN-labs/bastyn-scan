@@ -430,7 +430,7 @@ fn yaml_schema_is_valid() {
     );
     let python_count = rules.iter().filter(|r| r.language == "python").count();
     assert!(
-        python_count <= 15,
+        python_count <= 18,
         "aim for 8-12 python rules; {python_count} is more than the brief asks for"
     );
     // Raised from 12 to 13 on 2026-09-22: BAS-LLM10-008 (model output
@@ -455,6 +455,14 @@ fn yaml_schema_is_valid() {
     // of the path-traversal cluster from the same smoke-python-v1
     // recall-gap report -- another deliberate, reviewed addition, not scope
     // creep. Same one-rule bump as above.
+    // Raised from 15 to 18 on 2026-09-23: BAS-ZT1-018/019/020 (a hardcoded
+    // JWT literal, a hardcoded AWS access key ID, and a credential-shaped
+    // os.environ.get()/os.getenv() default) are Task 3 of the
+    // recall-gap-detection-rules plan, closing the JWT-literal,
+    // AWS-key-literal, and env-default-leak slices of the Hardcoded
+    // Secrets cluster from the same smoke-python-v1 recall-gap report --
+    // three deliberate, reviewed additions, not scope creep. Same
+    // one-rule-per-rule bump as above.
     let ts_js_count = rules.len() - python_count;
     assert!(
         ts_js_count <= 10,
