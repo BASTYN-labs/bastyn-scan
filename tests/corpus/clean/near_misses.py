@@ -260,3 +260,16 @@ def read_bundled_config() -> str:
     exclude_if: constant_path clause now suppresses this correctly."""
     with open(os.path.join(HERE, "data.json")) as handle:
         return handle.read()
+
+
+def ensure_column(conn, table: str, column: str, decl: str) -> None:
+    """near_miss (LLM10): table/column/decl are SQL identifiers in a schema
+    migration, not query values -- DB-API has no way to bind an identifier
+    as a parameter, so interpolating one is the only correct way to write
+    this. BAS-LLM10-017's metavariable_not_matches DDL-keyword exclusion
+    suppresses PRAGMA/ALTER TABLE specifically; a real value interpolated
+    into a WHERE clause is a different shape and still fires (see
+    llm10_unparameterized_sql_tool.py)."""
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

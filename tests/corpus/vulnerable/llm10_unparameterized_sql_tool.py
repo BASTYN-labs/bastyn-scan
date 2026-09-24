@@ -44,3 +44,10 @@ def plain_parameter_sql_through_local_variable(cursor, query: str) -> None:
     provenance), -018 firing (the interpolation shape alone is enough)."""
     sql = f"SELECT id, title, body FROM kb_articles WHERE title LIKE '%{query}%'"
     cursor.execute(sql)
+
+
+def find_ticket_by_customer(conn, customer_email: str):
+    """LLM10 (BAS-LLM10-017): customer_email is interpolated as a query
+    *value* in a WHERE clause, not a schema identifier -- the DDL-keyword
+    exclusion does not apply here, and this must still fire."""
+    return conn.execute(f"SELECT * FROM tickets WHERE customer_email = '{customer_email}'").fetchall()

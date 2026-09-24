@@ -531,12 +531,20 @@ rules:
     metavariable_matches:
       CUR: "(?i)(cursor|cur|db|conn|connection)"
       ARG: '(^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27]|%\s*\()'
+    metavariable_not_matches:
+      ARG: '(?i)^f["\x27]\s*(PRAGMA|ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+TABLE|CREATE\s+INDEX|DROP\s+INDEX)\b'
     description: >
       A database cursor executes a query string built by f-string
       interpolation, concatenation, or %-formatting, with the
       interpolated value passed inline rather than as a separate bind
       parameter. This reports the composition unconditionally rather
       than gating on the interpolated value's name or provenance.
+      Excluded when the interpolated text is a schema-definition
+      statement (PRAGMA, ALTER TABLE, CREATE TABLE, DROP TABLE,
+      CREATE/DROP INDEX) — SQL identifiers such as table and column
+      names cannot be bound as query parameters at all, so interpolating
+      them here is the correct way to write this, unlike interpolating a
+      value into a WHERE/SELECT clause.
     remediation: >
       Never interpolate a value into a SQL string. Use parameterized
       queries (cursor.execute(sql, params)) and keep every dynamic value
