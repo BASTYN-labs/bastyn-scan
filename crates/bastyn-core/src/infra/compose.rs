@@ -566,6 +566,25 @@ mod tests {
     }
 
     #[test]
+    fn a_storage_mode_setting_on_a_secret_named_key_is_not_flagged_but_a_real_value_nearby_is() {
+        // Verbatim shape from the community benchmark: a key containing
+        // SECRETKEY whose value is a mode word, two lines above the real
+        // hardcoded secret on a differently-named key.
+        let contents = "services:\n  agent:\n    environment:\n      SECRETKEY_STORAGE_TYPE: local\n      SECRETKEY_PATH: /root/.agent\n      AGENT_SECRETKEY_OVERWRITE: \"agent-demo-2026\"\n";
+
+        let findings = run_all(Path::new("docker-compose.yml"), contents);
+
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].rule_id, "BAS-INFRA-006");
+        assert!(
+            findings[0]
+                .description
+                .contains("AGENT_SECRETKEY_OVERWRITE"),
+            "{findings:#?}"
+        );
+    }
+
+    #[test]
     fn ordinary_non_credential_environment_variables_are_not_flagged() {
         let contents = "services:\n  agent:\n    environment:\n      - AGENT_ROLE=operator\n      - MYSQL_DATABASE=runbook\n      - PORT=8080\n";
 

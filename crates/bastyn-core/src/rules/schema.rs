@@ -129,6 +129,18 @@ pub(crate) struct RuleDef {
     /// rather than in a single sweep, and when both are present both apply.
     #[serde(default)]
     pub(crate) flow: Option<FlowDef>,
+    /// Drop an otherwise-matching candidate when a targeted, Python-only
+    /// structural predicate proves the captured value is safe.
+    ///
+    /// Distinct from `flow:`: `flow:` is a *positive* requirement ("this
+    /// value must have come from an untrusted source"), which requires a
+    /// `source:` kind. This is a *negative* exclusion for a rule that, by
+    /// design, does not gate on provenance at all (`BAS-LLM10-009`,
+    /// `BAS-LLM10-012` drop the source-name gate the way `BAS-LLM10-004`
+    /// dropped it for eval/exec) but still recognises the handful of shapes
+    /// that are provably safe regardless of where the value came from.
+    #[serde(default)]
+    pub(crate) exclude_if: Option<ExcludeIfDef>,
     /// What is wrong and why it matters. Two sentences at most.
     pub(crate) description: String,
     /// What to do about it. Actionable, specific to this code.
@@ -197,4 +209,60 @@ impl SourceSpec {
 /// The metavariable a `flow:` clause tests when it does not name one.
 fn default_flow_variable() -> String {
     "ARG".to_owned()
+}
+
+/// A rule's `exclude_if:` clause, exactly as written in YAML.
+///
+/// ```yaml
+/// exclude_if:
+///   variable: ARG          # which capture to test; defaults to ARG
+///   kind: constant_path    # closed_value | constant_path | shell_quoted,
+///                          # one kind or a list of them
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExcludeIfDef {
+    /// The captured metavariable whose value is tested. Defaults to `ARG`,
+    /// the same default `flow:` uses and for the same reason.
+    #[serde(default = "default_flow_variable")]
+    pub(crate) variable: String,
+    /// Which Tier-2 structural predicate(s) to test.
+    pub(crate) kind: ExcludeIfKindSpec,
+}
+
+/// One `exclude_if:` kind or several, so a rule author writes `kind:
+/// closed_value` when one predicate is enough and `kind: [closed_value,
+/// shell_quoted]` when the match should be dropped if *any* of them proves
+/// the value safe.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ExcludeIfKindSpec {
+    One(ExcludeIfKind),
+    Many(Vec<ExcludeIfKind>),
+}
+
+impl ExcludeIfKindSpec {
+    pub(crate) fn kinds(&self) -> Vec<ExcludeIfKind> {
+        match self {
+            Self::One(kind) => vec![*kind],
+            Self::Many(kinds) => kinds.clone(),
+        }
+    }
+}
+
+/// Which Python-only structural predicate `exclude_if:` tests. See
+/// `crate::flow::graph::Resolved` for what each one means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExcludeIfKind {
+    /// The value's origin is closed: drawn from a set this file itself
+    /// fixes (a literal, a dict of literals with a proven membership check,
+    /// ...).
+    ClosedValue,
+    /// A path expression built only from literals, `__file__`, and calls to
+    /// a whitelisted set of pure path-construction functions.
+    ConstantPath,
+    /// Every non-literal segment is wrapped directly in
+    /// `shlex.quote(...)`/`shlex.join(...)`.
+    ShellQuoted,
 }

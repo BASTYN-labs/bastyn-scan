@@ -107,11 +107,42 @@ pub enum RuleError {
         language: String,
     },
 
+    /// A rule declared an `exclude_if:` clause in a language the dataflow
+    /// graph cannot be built for.
+    ///
+    /// A load error rather than a rule that silently never excludes: the
+    /// graph is Python-only today (see the crate-internal `flow` module), and an `exclude_if:`
+    /// clause compiled against any other grammar would be a matcher that can
+    /// never fire, with nothing in the report to say so.
+    #[error(
+        "rule `{id}`: `exclude_if` is only supported for `language: python`, not `{language}`; \
+         the dataflow graph has no other grammar"
+    )]
+    ExcludeIfUnsupportedLanguage {
+        /// The offending rule's id.
+        id: String,
+        /// The language the rule declared.
+        language: String,
+    },
+
     /// A rule declared a `flow:` clause with no source kinds in it.
     ///
     /// Such a rule can never match, because no origin satisfies an empty set.
     #[error("rule `{id}`: `flow.source` must name at least one source kind")]
     EmptyFlowSources {
+        /// The offending rule's id.
+        id: String,
+    },
+
+    /// A rule declared an `exclude_if:` clause with no kinds in it.
+    ///
+    /// Such a clause would silently compile into a no-op exclusion --
+    /// `kinds.iter().any(...)` over an empty list is always `false`, so
+    /// nothing would ever be excluded, with nothing in the report to say
+    /// so. Rejecting it at load time is the same contract `flow.source`
+    /// already keeps via `EmptyFlowSources`.
+    #[error("rule `{id}`: `exclude_if.kind` must name at least one kind")]
+    EmptyExcludeIfKinds {
         /// The offending rule's id.
         id: String,
     },

@@ -111,7 +111,7 @@ use crate::flow::{FlowGraph, FlowLanguage, SinkKind, SourceKind, guards};
 use crate::test_path::is_test_path;
 
 use super::error::{Result, RuleError};
-use super::schema::{RuleDef, RuleFile, RuleLanguage, TestPathPolicy};
+use super::schema::{ExcludeIfDef, ExcludeIfKind, RuleDef, RuleFile, RuleLanguage, TestPathPolicy};
 
 /// A grammar the engine can parse and match rules against, guessed from a
 /// file's extension.
@@ -181,6 +181,7 @@ struct CompiledRule {
     metavariable_matches: Vec<(String, RegexMatcher)>,
     metavariable_not_matches: Vec<(String, RegexMatcher)>,
     flow: Option<CompiledFlow>,
+    exclude_if: Option<CompiledExcludeIf>,
 }
 
 /// A rule's `flow:` clause, validated at load time.
@@ -213,6 +214,15 @@ impl CompiledFlow {
         }
         !(self.unguarded && guards::is_guarded(graph, node_id))
     }
+}
+
+/// A rule's `exclude_if:` clause, validated at load time.
+struct CompiledExcludeIf {
+    /// Which captured metavariable to test.
+    variable: String,
+    /// Which Tier-2 predicate(s) to test it with; the match is dropped if
+    /// *any* proves the value safe.
+    kinds: Vec<ExcludeIfKind>,
 }
 
 impl CompiledRule {
@@ -270,6 +280,8 @@ impl CompiledRule {
             }
         };
 
+        let exclude_if = compile_exclude_if(&def.id, def.language, def.exclude_if)?;
+
         let any = compile_patterns(&def.id, grammar, &def.any, lang)?;
         let none = compile_patterns(&def.id, grammar, &def.none, lang)?;
         let inside = compile_patterns(&def.id, grammar, &def.inside, lang)?;
@@ -322,6 +334,7 @@ impl CompiledRule {
             metavariable_matches,
             metavariable_not_matches,
             flow,
+            exclude_if,
         })
     }
 
@@ -369,6 +382,38 @@ impl CompiledRule {
             env.get_match(var)
                 .is_none_or(|node| regex.match_node(node.clone()).is_none())
         })
+    }
+}
+
+/// Validate and compile a rule's `exclude_if:` clause, if it declared one.
+///
+/// Exactly the same Python-only contract `flow:` enforces, for the same
+/// reason: the predicate this clause tests only exists for
+/// tree-sitter-python. Split out of [`CompiledRule::compile`] to keep that
+/// function's length in check, the same way [`compile_patterns`] is.
+fn compile_exclude_if(
+    id: &str,
+    language: RuleLanguage,
+    exclude_if: Option<ExcludeIfDef>,
+) -> Result<Option<CompiledExcludeIf>> {
+    match exclude_if {
+        None => Ok(None),
+        Some(_) if language != RuleLanguage::Python => {
+            Err(RuleError::ExcludeIfUnsupportedLanguage {
+                id: id.to_string(),
+                language: format!("{language:?}").to_lowercase(),
+            })
+        }
+        Some(exclude) => {
+            let kinds = exclude.kind.kinds();
+            if kinds.is_empty() {
+                return Err(RuleError::EmptyExcludeIfKinds { id: id.to_string() });
+            }
+            Ok(Some(CompiledExcludeIf {
+                variable: exclude.variable,
+                kinds,
+            }))
+        }
     }
 }
 
@@ -692,6 +737,20 @@ fn scan_with<L: LanguageExt + Copy>(
                 let graph =
                     graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
                 if !flow.satisfied_by(graph, captured.node_id()) {
+                    continue;
+                }
+            }
+            if let Some(exclude) = &rule.exclude_if
+                && let Some(captured) = candidate.get_env().get_match(&exclude.variable)
+            {
+                let graph =
+                    graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
+                let excluded = exclude.kinds.iter().any(|kind| match kind {
+                    ExcludeIfKind::ClosedValue => graph.is_closed(captured.node_id()),
+                    ExcludeIfKind::ConstantPath => graph.is_constant_path(captured.node_id()),
+                    ExcludeIfKind::ShellQuoted => graph.is_shell_quoted(captured.node_id()),
+                });
+                if excluded {
                     continue;
                 }
             }

@@ -249,6 +249,107 @@ fn looks_like_credential_value(text: &str) -> bool {
     looks_like_creds_url(text) || looks_like_secret_token(text)
 }
 
+/// Mirrors BAS-LLM10-017's `ARG` regex
+/// (`^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27]|%\s*\(`): the captured
+/// argument's own text is an f-string, a string literal concatenated with a
+/// non-literal on either side, or a %-format call — any shape showing the
+/// query string was assembled rather than passed as a fixed literal.
+fn looks_like_interpolated_query_arg(text: &str) -> bool {
+    if text.starts_with("f\"") || text.starts_with("f'") {
+        return true;
+    }
+    let is_quote = |c: char| c == '"' || c == '\'';
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    for i in 0..n {
+        if is_quote(chars[i]) {
+            let mut j = i + 1;
+            while j < n && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < n && chars[j] == '+' {
+                let mut k = j + 1;
+                while k < n && chars[k].is_whitespace() {
+                    k += 1;
+                }
+                if k < n && is_word(chars[k]) {
+                    return true;
+                }
+            }
+        }
+        if is_word(chars[i]) {
+            let mut j = i + 1;
+            while j < n && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < n && chars[j] == '+' {
+                let mut k = j + 1;
+                while k < n && chars[k].is_whitespace() {
+                    k += 1;
+                }
+                if k < n && is_quote(chars[k]) {
+                    return true;
+                }
+            }
+        }
+        if chars[i] == '%' {
+            let mut j = i + 1;
+            while j < n && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < n && chars[j] == '(' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mirrors BAS-LLM01-002's `DOC` regex
+/// (`(?i)(<important>|<hidden>|do not mention|do not tell the user|present
+/// it as if)`): a fixed set of hidden-instruction markers, appearing
+/// anywhere in the docstring text.
+fn looks_like_hidden_instruction_marker(text: &str) -> bool {
+    contains_ci(
+        text,
+        &[
+            "<important>",
+            "<hidden>",
+            "do not mention",
+            "do not tell the user",
+            "present it as if",
+        ],
+    )
+}
+
+/// Mirrors BAS-LLM01-003's `DOC` regex
+/// (`(?i)(ignore (previous|prior|all) instructions|disregard
+/// (prior|previous)|override (your|the) (instructions|system
+/// prompt)|bypass (the|your) (safety|restriction))`): each `any:` group's
+/// alternatives spelled out as concrete phrases, since every group is
+/// space-joined with a fixed set of choices.
+fn looks_like_instruction_override_phrase(text: &str) -> bool {
+    contains_ci(
+        text,
+        &[
+            "ignore previous instructions",
+            "ignore prior instructions",
+            "ignore all instructions",
+            "disregard prior",
+            "disregard previous",
+            "override your instructions",
+            "override your system prompt",
+            "override the instructions",
+            "override the system prompt",
+            "bypass the safety",
+            "bypass the restriction",
+            "bypass your safety",
+            "bypass your restriction",
+        ],
+    )
+}
+
 /// Mirrors BAS-LLM03-001's `FN` regex: a destructive verb at the start of
 /// the function name.
 fn is_destructive_tool_name(text: &str) -> bool {
@@ -294,9 +395,10 @@ fn eval_metavariable(rule_id: &str, var: &str, text: &str) -> bool {
         ("BAS-LLM10-001" | "BAS-LLM10-002" | "BAS-LLM10-003", "ARG") => {
             contains_ci(text, LLM_OUTPUT_WORDS)
         }
-        ("BAS-LLM10-003" | "BAS-LLM10-008", "CUR") => {
+        ("BAS-LLM10-003" | "BAS-LLM10-008" | "BAS-LLM10-017" | "BAS-LLM10-018", "CUR") => {
             contains_ci(text, &["cursor", "cur", "db", "conn", "connection"])
         }
+        ("BAS-LLM10-017", "ARG") => looks_like_interpolated_query_arg(text),
         ("BAS-ZT4-001" | "BAS-ZT4-002", "SYS") => contains_ci(
             text,
             &["system", "prompt", "instruction", "persona", "template"],
@@ -323,6 +425,8 @@ fn eval_metavariable(rule_id: &str, var: &str, text: &str) -> bool {
                 "force_prompt",
             ],
         ),
+        ("BAS-LLM01-002", "DOC") => looks_like_hidden_instruction_marker(text),
+        ("BAS-LLM01-003", "DOC") => looks_like_instruction_override_phrase(text),
         _ => unreachable!(
             "no verification predicate wired up for {rule_id}.{var} -- \
              add one in eval_metavariable alongside the YAML regex"
@@ -430,8 +534,9 @@ fn yaml_schema_is_valid() {
     );
     let python_count = rules.iter().filter(|r| r.language == "python").count();
     assert!(
-        python_count <= 13,
-        "aim for 8-12 python rules; {python_count} is more than the brief asks for"
+        python_count <= 22,
+        "python rule budget is 22 (raised incrementally from the original 8-12 brief as \
+         deliberate additions landed -- see the history comments below); {python_count} exceeds it"
     );
     // Raised from 12 to 13 on 2026-09-22: BAS-LLM10-008 (model output
     // reaching SQL through a local variable) is a deliberate, reviewed
@@ -443,6 +548,41 @@ fn yaml_schema_is_valid() {
     // TypeScript/JavaScript support came later (see `python_rules`'s doc
     // comment); those rules get their own budget rather than sharing the
     // python-era cap.
+    // Raised from 13 to 14 on 2026-09-23: BAS-LLM10-009 (a non-literal
+    // command reaching a shell regardless of any allowlist/denylist check)
+    // is Task 1 of the recall-gap-detection-rules plan, closing the
+    // command-injection cluster from the smoke-python-v1 recall-gap report
+    // -- another deliberate, reviewed addition, not scope creep. Same
+    // one-rule bump as above.
+    // Raised from 14 to 15 on 2026-09-23: BAS-LLM10-012 (a file opened at
+    // an unresolved path built by joining or interpolating a non-literal
+    // value) is Task 2 of the recall-gap-detection-rules plan, closing most
+    // of the path-traversal cluster from the same smoke-python-v1
+    // recall-gap report -- another deliberate, reviewed addition, not scope
+    // creep. Same one-rule bump as above.
+    // Raised from 15 to 18 on 2026-09-23: BAS-ZT1-018/019/020 (a hardcoded
+    // JWT literal, a hardcoded AWS access key ID, and a credential-shaped
+    // os.environ.get()/os.getenv() default) are Task 3 of the
+    // recall-gap-detection-rules plan, closing the JWT-literal,
+    // AWS-key-literal, and env-default-leak slices of the Hardcoded
+    // Secrets cluster from the same smoke-python-v1 recall-gap report --
+    // three deliberate, reviewed additions, not scope creep. Same
+    // one-rule-per-rule bump as above.
+    // Raised from 18 to 20 on 2026-09-23: BAS-LLM10-017 (unparameterized
+    // query built by interpolation reaches SQL execution) and BAS-LLM10-018
+    // (the same defect split across a local-variable assignment and the next
+    // line's execute() call) are Task 4 of the recall-gap-detection-rules
+    // plan, closing the SQL-injection cluster from the same smoke-python-v1
+    // recall-gap report -- two deliberate, reviewed additions, not scope
+    // creep. Same one-rule-per-rule bump as above.
+    // Raised from 20 to 22 on 2026-09-23: BAS-LLM01-002 (a hidden
+    // instruction block, marked with <IMPORTANT>/<HIDDEN> tags or "do not
+    // mention" phrasing, inside a tool's own docstring) and BAS-LLM01-003
+    // (the lower-confidence "ignore previous instructions"-style keyword
+    // companion) are Task 5 of the recall-gap-detection-rules plan, closing
+    // the tool-poisoning cluster from the same smoke-python-v1 recall-gap
+    // report -- two deliberate, reviewed additions, not scope creep. Same
+    // one-rule-per-rule bump as above.
     let ts_js_count = rules.len() - python_count;
     assert!(
         ts_js_count <= 10,

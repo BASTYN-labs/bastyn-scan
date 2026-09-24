@@ -47,6 +47,8 @@ mod schema;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_exclude_if;
+#[cfg(test)]
 mod tests_flow;
 
 #[cfg(test)]

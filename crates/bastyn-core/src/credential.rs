@@ -45,6 +45,40 @@ pub(crate) fn looks_like_credential_key(name: &str) -> bool {
         .any(|fragment| normalized.contains(fragment))
 }
 
+/// Value tokens that name a storage backend, mode, or format rather than
+/// holding a credential -- matched exactly (case-insensitively) against the
+/// *whole* trimmed value, never a substring, so a real secret that merely
+/// contains one of these words (`localpass123`) still fires. Measured
+/// 2026-09-24: `SECRETKEY_STORAGE_TYPE: local` in a real docker-compose.yml
+/// -- the key matches `SECRET`, so every other signal here said "secret",
+/// but the value is a mode setting a deployment chooses from a small fixed
+/// set, not something anyone types in as a password.
+const ENUM_MODE_VALUES: &[&str] = &[
+    "local",
+    "remote",
+    "memory",
+    "disk",
+    "file",
+    "none",
+    "disabled",
+    "enabled",
+    "default",
+    "standard",
+    "basic",
+    "simple",
+    "sqlite",
+    "postgres",
+    "postgresql",
+    "mysql",
+    "mariadb",
+    "redis",
+    "mongodb",
+    "s3",
+    "gcs",
+    "azure",
+    "cloud",
+];
+
 /// Value fragments — matched case-insensitively — that mark a value as an
 /// obvious documentation placeholder rather than something a real deployment
 /// would run with. Deliberately narrow: a genuinely weak password
@@ -129,6 +163,9 @@ pub(crate) fn is_hardcoded_credential_value(value: &str) -> bool {
         return false;
     }
     if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    if ENUM_MODE_VALUES.contains(&lower.as_str()) {
         return false;
     }
     // `OPENAI_API_KEY_NAME=OPENAI_API_KEY` -- a SCREAMING_SNAKE_CASE value is
@@ -319,6 +356,22 @@ mod tests {
     fn a_boolean_or_numeric_flag_is_not_hardcoded() {
         for value in ["yes", "no", "true", "false", "on", "off", "3600", "0"] {
             assert!(!is_hardcoded_credential_value(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_storage_backend_mode_word_is_not_hardcoded() {
+        for value in ["local", "LOCAL", "sqlite", "redis", "s3", "disabled"] {
+            assert!(!is_hardcoded_credential_value(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_value_merely_containing_an_enum_word_still_fires() {
+        // The exclusion is exact-match, not substring -- a real credential
+        // that happens to start with a mode word must not be swallowed.
+        for value in ["localpass123", "redis-svc-4f8a1c62d90b47e3a5216fbc8de07394"] {
+            assert!(is_hardcoded_credential_value(value), "{value}");
         }
     }
 

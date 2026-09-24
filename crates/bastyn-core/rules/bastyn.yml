@@ -296,6 +296,472 @@ rules:
       parameter values, never to the query text itself.
 
   # ---------------------------------------------------------------------
+  # LLM10 — a non-literal command reaches a shell, independent of any
+  # check that precedes it. BAS-LLM10-002 only fires when the argument's
+  # own text names a response/reply/... variable (a model-output gate);
+  # this rule drops that requirement entirely, the same way BAS-LLM10-004
+  # dropped it for eval()/exec(). A shell interprets the *whole* command
+  # string, so a check on only the first whitespace-split token
+  # (allowlist) or on a short substring list (denylist) leaves the rest
+  # of the string open to injection — this rule reports the composition
+  # itself, not the absence of a check, so a bypassable check does not
+  # suppress it. Matches docs/rule-catalogue.md's LLM10.12.
+  #
+  # Known false positives, documented rather than papered over:
+  #   - a sink inside a function nothing in the file calls still fires --
+  #     this rule has no reachability analysis, and "does anything call
+  #     this" is a whole-program question a file-local structural rule
+  #     cannot answer. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_via_unreachable_function.py.
+  #   - a sink reachable only when a module-level boolean constant is
+  #     flipped from its shipped value still fires -- this rule has no
+  #     constant-propagation or dead-branch analysis, so it cannot prove
+  #     a guard like `if SECURE_MODE: return ...` makes the sink below it
+  #     unreachable. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_behind_disabled_flag.py.
+  #
+  # Known gaps, documented rather than papered over:
+  #   - a module-level dict/list that is genuinely mutated elsewhere in the
+  #     file (COMMANDS[name] = cmd) still resolves as permanently
+  #     `closed: true` by exclude_if: closed_value, wrongly suppressing a
+  #     real finding -- crates/bastyn-core/src/flow/graph.rs's
+  #     Analyzer::bind_targets only records a binding for a plain-identifier
+  #     assignment target; a subscript target or an attribute-call receiver
+  #     both record nothing, so the graph never learns the container was
+  #     mutated after its own literal initializer. Tracking mutated
+  #     container names through the graph is a materially larger change
+  #     than this fix wave's scope. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_via_mutated_registry.py.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-009
+    title: Non-literal command run through a shell, regardless of any allowlist/denylist check
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - os.system($ARG)
+      - os.popen($ARG)
+      - subprocess.run($ARG, shell=True)
+      - subprocess.run($ARG, shell=True, $$$REST)
+      - subprocess.call($ARG, shell=True)
+      - subprocess.call($ARG, shell=True, $$$REST)
+      - subprocess.check_call($ARG, shell=True)
+      - subprocess.check_call($ARG, shell=True, $$$REST)
+      - subprocess.check_output($ARG, shell=True)
+      - subprocess.check_output($ARG, shell=True, $$$REST)
+      - subprocess.Popen($ARG, shell=True)
+      - subprocess.Popen($ARG, shell=True, $$$REST)
+    # Both quote styles are excluded for every sink shape below. Final
+    # review on 2026-09-23 found all twelve entries spelled with
+    # double-quoted "$LIT" only, so a single-quoted fixed command
+    # (subprocess.run('systemctl restart opsbot-worker', shell=True))
+    # produced an incorrect finding at this rule's own critical severity.
+    # Follows the exact quote-style-coverage precedent BAS-LLM10-017 below
+    # already ships ("$LIT", '$LIT', """$LIT""", '''$LIT''').
+    none:
+      - os.system("$LIT")
+      - os.system('$LIT')
+      - os.popen("$LIT")
+      - os.popen('$LIT')
+      - subprocess.run("$LIT", shell=True)
+      - subprocess.run('$LIT', shell=True)
+      - subprocess.run("$LIT", shell=True, $$$REST)
+      - subprocess.run('$LIT', shell=True, $$$REST)
+      - subprocess.call("$LIT", shell=True)
+      - subprocess.call('$LIT', shell=True)
+      - subprocess.call("$LIT", shell=True, $$$REST)
+      - subprocess.call('$LIT', shell=True, $$$REST)
+      - subprocess.check_call("$LIT", shell=True)
+      - subprocess.check_call('$LIT', shell=True)
+      - subprocess.check_call("$LIT", shell=True, $$$REST)
+      - subprocess.check_call('$LIT', shell=True, $$$REST)
+      - subprocess.check_output("$LIT", shell=True)
+      - subprocess.check_output('$LIT', shell=True)
+      - subprocess.check_output("$LIT", shell=True, $$$REST)
+      - subprocess.check_output('$LIT', shell=True, $$$REST)
+      - subprocess.Popen("$LIT", shell=True)
+      - subprocess.Popen('$LIT', shell=True)
+      - subprocess.Popen("$LIT", shell=True, $$$REST)
+      - subprocess.Popen('$LIT', shell=True, $$$REST)
+    exclude_if:
+      variable: ARG
+      kind: [closed_value, shell_quoted]
+    description: >
+      A command string that is not a fixed literal reaches a shell
+      (subprocess...shell=True, os.system, or os.popen). A shell
+      interprets the entire string, so any check narrower than "the
+      whole command matches one of a fixed set of literals" — a
+      first-token allowlist, a substring denylist — is bypassable. This
+      rule reports the composition itself: a non-literal command reaching
+      a shell is a defect independent of whatever check happens to
+      precede it. An argument provably drawn from a fixed set the file
+      itself defines — for example a dict of literal commands looked up
+      by a key already checked for membership — is excluded: nothing in
+      it can be attacker-influenced regardless of the identifier's name.
+      Also excluded when every non-literal segment of the command is
+      wrapped directly in shlex.quote(...)/shlex.join(...), which makes a
+      shell treat it as one argument regardless of content.
+    remediation: >
+      Never build a shell command string from anything other than a fixed
+      literal. Call the target program directly with an argv list and
+      shell=False (subprocess.run([prog, arg1, arg2], shell=False)),
+      validate each argument against a strict allowlist of exact values,
+      and never pass a caller-supplied string to a shell.
+
+  # ---------------------------------------------------------------------
+  # LLM10 — a file is opened at a path built by joining or interpolating
+  # a non-literal value, with no os.path.realpath/abspath resolution
+  # around the argument. A bare .startswith()/prefix check on the
+  # *unresolved* string does not appear anywhere in this pattern's own
+  # shape, so it does not suppress the finding — the same "the
+  # composition itself is the defect" design as BAS-LLM10-009. Matches
+  # docs/rule-catalogue.md's LLM10.9/LLM10.11.
+  #
+  # metavariable_not_matches closes a genuine contract violation found in
+  # final review on 2026-09-23: an os.path.join(...) call whose every
+  # argument is a quoted string literal (open(os.path.join("/etc/opsbot",
+  # "settings.ini"))) matched the ARG-shape gate's first alternative
+  # (`os\.path\.join\(` is a substring test, not a "some argument is
+  # non-literal" test) even though nothing about the path is built from a
+  # non-literal value at all -- directly contradicting this rule's own
+  # title and description. The exclusion regex anchors the *whole* ARG
+  # text end-to-end ("os.path.join( then only quoted-literal arguments,
+  # comma-separated, then )"), the same technique BAS-LLM10-003 above uses
+  # for its own "the whole argument is nothing but quoted-literal
+  # segments" exclusion -- adapted here for a call shape instead of a bare
+  # literal-concatenation shape. See
+  # tests/corpus/clean/near_misses.py's all_literal_join_is_not_flagged
+  # for the regression proof.
+  #
+  # 2026-09-24: the case above -- every os.path.join(...) argument either a
+  # literal or a *safe local constant* built once at module level from
+  # __file__ (e.g. HERE = os.path.dirname(__file__); open(os.path.join(HERE,
+  # "data.json"))) -- is now closed. The Tier-2 dataflow graph's
+  # constant_path fact (crates/bastyn-core/src/flow/graph.rs) proves such a
+  # value is built only from literals, __file__, and calls to a whitelisted
+  # set of pure os.path.* functions, resolving through the module-scope
+  # assignment that same-node regex matching could never see on its own.
+  # exclude_if: constant_path drops the match when that proof holds. See
+  # tests/corpus/clean/near_misses.py's read_bundled_config() for the
+  # regression proof (moved from vulnerable/real_misses/
+  # path_traversal_safe_local_constant.py, now confirmed safe rather than a
+  # known_false_positive).
+  #
+  # Known gaps, documented rather than papered over:
+  #   - a bare-parameter call (open(filename), with no join/f-string/concat
+  #     shape in the argument at all) does not match this rule's ARG-shape
+  #     gate. See tests/corpus/vulnerable/real_misses/path_traversal_bare_parameter.py.
+  #   - a path assembled by os.path.join/f-string/concat in a *prior*
+  #     statement and then opened via a variable (path = os.path.join(...);
+  #     open(path)) is also not caught -- metavariable_matches only inspects
+  #     $ARG's own text at the open() call site, never an earlier assignment.
+  #     See tests/corpus/vulnerable/real_misses/path_traversal_variable_then_open.py.
+  #   - a function *parameter* joined the same way (os.path.join(root,
+  #     filename) where root is a parameter, not a module-level __file__
+  #     chain) still fires even when every call site in the file happens to
+  #     pass a literal for that parameter -- constant_path only proves a
+  #     value from its own definition forward, never across a call
+  #     boundary, and telling "every caller happens to pass a literal
+  #     today" apart from "a real caller-supplied path" would need genuine
+  #     interprocedural call-site analysis, out of scope here (report FP
+  #     #6). Recorded as a known_false_positive (a precision debt, not a
+  #     recall gap -- the rule fires exactly as its own contract says it
+  #     should) at
+  #     tests/corpus/vulnerable/real_misses/path_traversal_parameter_with_literal_callers.py;
+  #     see tests/corpus/vulnerable/llm10_path_traversal_tool.py's
+  #     read_bundled_asset() for the adjacent, correctly-still-firing case
+  #     of a parameter reaching os.path.join with no literal-callers-only
+  #     guarantee at all.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-012
+    title: File opened at an unresolved path built by joining or interpolating a non-literal value
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - open($ARG)
+      - open($ARG, $$$MODE)
+    none:
+      - open(os.path.realpath($$$A))
+      - open(os.path.realpath($$$A), $$$MODE)
+      - open(os.path.abspath($$$A))
+      - open(os.path.abspath($$$A), $$$MODE)
+      - open(safe_join($$$A))
+      - open(safe_join($$$A), $$$MODE)
+      - open(werkzeug.utils.safe_join($$$A))
+      - open(werkzeug.utils.safe_join($$$A), $$$MODE)
+    metavariable_matches:
+      ARG: '(os\.path\.join\(|^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27])'
+    metavariable_not_matches:
+      ARG: '^os\.path\.join\(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*,\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*\)$'
+    exclude_if:
+      variable: ARG
+      kind: constant_path
+    description: >
+      A file is opened at a path built inline, directly inside the
+      open(...) call, by os.path.join, f-string interpolation, or string
+      concatenation with a non-literal value, and the argument is never
+      wrapped in os.path.realpath/abspath. A relative-traversal segment
+      (../../etc/passwd) or a symlink planted inside the intended
+      directory escapes whatever containment the surrounding code
+      assumes, because the raw joined string is never resolved before
+      use — a string-prefix check elsewhere in the function does not
+      change this, since it tests the same unresolved string. An
+      os.path.join(...) call whose every argument is a fixed string
+      literal is excluded: nothing in it is non-literal, so it is not
+      "built from a non-literal value" at all. Detection requires the
+      join/f-string/concat expression to appear directly as the open()
+      argument; a path assembled the same way in a prior statement and
+      then passed in as a variable (path = os.path.join(...); open(path))
+      is not detected — the matcher only inspects the argument's own text
+      at the call site, not any earlier assignment. Also excluded when the
+      joined path is built only from literals, __file__, and calls to
+      os.path.dirname/abspath/realpath/normpath/join/os.getcwd — a
+      module-level path root the file derives from its own location on
+      disk, not from anything a caller supplies.
+    remediation: >
+      Resolve the joined path with os.path.realpath (not just
+      os.path.abspath, which does not follow symlinks) before using it,
+      and verify the resolved path is contained under the intended root
+      directory (os.path.commonpath, or a vetted helper like
+      werkzeug.utils.safe_join) before opening it.
+
+  # ---------------------------------------------------------------------
+  # LLM10 — the same execute()-of-untrusted-SQL shape BAS-LLM10-003
+  # already catches, but unconditional: BAS-LLM10-003 only fires when the
+  # argument's own text names a response/reply/... variable. This rule
+  # drops that name gate, the same way BAS-LLM10-009 drops it for shell
+  # commands -- interpolating any non-literal value into a query string
+  # instead of binding it as a parameter is wrong regardless of what the
+  # value is named or where it came from.
+  #
+  # metavariable_not_matches (added 2026-09-24 to fix all 4 BAS-LLM10-017
+  # report false positives) originally excluded any f-string that merely
+  # *opened* with a DDL keyword (PRAGMA/ALTER TABLE/...), without checking
+  # the rest of the string -- so f"CREATE TABLE {name} AS SELECT * FROM
+  # src WHERE owner = '{user_filter}'" and f"ALTER TABLE t ADD COLUMN c
+  # TEXT DEFAULT '{user_filter}'" were both wrongly excluded, even though
+  # each interpolates a real query *value* (wrapped in the opposite quote
+  # character) alongside the DDL keyword. Tightened the same day, final
+  # review: the exclusion now also requires no quote character (of either
+  # kind) anywhere between the DDL keyword and the closing delimiter --
+  # a genuine SQL identifier never needs quoting in DDL, a value literal
+  # always does. See tests/corpus/vulnerable/llm10_unparameterized_sql_tool.py's
+  # materialize_filtered_table() / add_column_with_default() for the
+  # regression fixtures.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-017
+    title: Unparameterized query built by interpolation reaches SQL execution
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - $CUR.execute($ARG)
+    none:
+      - $CUR.execute("$LIT")
+      - $CUR.execute('$LIT')
+      - $CUR.execute("""$LIT""")
+      - $CUR.execute('''$LIT''')
+      - $CUR.execute($ARG, $PARAMS)
+    metavariable_matches:
+      CUR: "(?i)(cursor|cur|db|conn|connection)"
+      ARG: '(^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27]|%\s*\()'
+    metavariable_not_matches:
+      ARG: '(?i)^f["\x27]\s*(PRAGMA|ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+TABLE|CREATE\s+INDEX|DROP\s+INDEX)\b[^"\x27]*["\x27]$'
+    description: >
+      A database cursor executes a query string built by f-string
+      interpolation, concatenation, or %-formatting, with the
+      interpolated value passed inline rather than as a separate bind
+      parameter. This reports the composition unconditionally rather
+      than gating on the interpolated value's name or provenance.
+      Excluded when the string opens with a schema-definition keyword
+      (PRAGMA, ALTER TABLE, CREATE TABLE, DROP TABLE, CREATE/DROP INDEX)
+      and no interpolated value literal (quoted) appears anywhere in the
+      rest of the statement — SQL identifiers such as table and column
+      names cannot be bound as query parameters at all, so interpolating
+      one here is the correct way to write this. A DDL statement that
+      also interpolates a quoted value (for example a WHERE/DEFAULT
+      clause built onto a CREATE/ALTER) still fires, since that value
+      could have been bound as a parameter and was not.
+    remediation: >
+      Never interpolate a value into a SQL string. Use parameterized
+      queries (cursor.execute(sql, params)) and keep every dynamic value
+      confined to a bind parameter, never to the query text itself.
+
+  # ---------------------------------------------------------------------
+  # LLM10 — the same defect as BAS-LLM10-017, split across two
+  # statements: the interpolated query is assigned to a local variable
+  # one line before the execute() call that consumes it. BAS-LLM10-017's
+  # same-node ARG-shape gate cannot see this -- $ARG's captured text at
+  # the execute() call site is just the variable name, not the f-string
+  # that built it. This is the literal shape of
+  # tests/corpus/vulnerable/real_misses/sql_from_tool_parameter.py's
+  # known_gap.
+  #
+  # The pattern is written as `def ... $$$PRE ... execute($SQL) $$$REST`
+  # rather than a bare two-statement pattern because ast_grep_core's
+  # Pattern::try_new rejects a pattern spanning two module-level sibling
+  # statements ("Multiple AST nodes are detected") -- they share no
+  # parent node outside of a whole function body. Wrapping the pair in a
+  # `def` gives the pattern a single root node to anchor on, at the cost
+  # of reporting the def line rather than the assignment/execute line.
+  #
+  # `$$$REST` is a variadic capture for zero-or-more trailing statements,
+  # but this engine's multi-line pattern parser does not actually treat
+  # it as zero-or-more in the last-child position: a function where
+  # execute() is the literal last statement (the common "fire and
+  # forget" INSERT/UPDATE/DELETE shape, with nothing returned or run
+  # afterward) failed to match the four variants above, even though
+  # $$$REST should bind to an empty statement list. Fixed 2026-09-23 by
+  # adding four sibling variants below, identical except they end
+  # immediately after the execute() call with no `$$$REST` tail --
+  # mirroring how BAS-LLM03-001 in this same file expresses its
+  # `-> $RET` / no-return-type variants as separate `any:` entries
+  # rather than one pattern trying to cover both shapes.
+  #
+  # 2026-09-24 final review: this rule has the same DDL-identifier false
+  # positive Finding 2 fixed for BAS-LLM10-017 above (sql = f"ALTER TABLE
+  # {table} ADD COLUMN {column} TEXT"; conn.execute(sql) is a genuine
+  # schema-identifier interpolation, not a value injection, and should not
+  # fire). Tried the -017-style fix here: a `metavariable_not_matches:
+  # {FSTR: '(?i)^(PRAGMA|ALTER\s+TABLE|...)\b[^"\x27]*$'}` clause against
+  # $$$FSTR, the variadic capture this rule's `any:` patterns bind the
+  # f-string's inner text to. Confirmed empirically (built the scanner
+  # with the clause added and ran it against both a DDL-only fixture and
+  # an existing true-positive fixture) that it compiles but never excludes
+  # anything -- the DDL-only fixture still fired. Root cause traced to
+  # ast_grep_core::meta_var::MetaVarEnv: a `$$$`-prefixed capture is stored
+  # in `multi_matched`, but both `metavariable_matches` and
+  # `metavariable_not_matches` in this engine's CompiledRule only ever
+  # call `env.get_match(var)`, which reads `single_matched` -- the same
+  # limitation already documented for `metavariable_matches` against
+  # `$$$OVERRIDE`-shaped captures (see the vulnerable/real_misses/
+  # three_interpolation_override.py known_gap). Not attempted as a rule
+  # fix; recorded instead as a known_false_positive. See
+  # tests/corpus/vulnerable/real_misses/sql_ddl_via_local_variable.py.
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM10-018
+    title: Unparameterized query assigned to a local variable then executed
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)\n    $$$REST"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f\"$$$FSTR\"\n    $CUR.execute($SQL)"
+      - "def $FN($$$ARGS):\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)"
+      - "def $FN($$$ARGS) -> $RET:\n    $$$PRE\n    $SQL = f'$$$FSTR'\n    $CUR.execute($SQL)"
+    metavariable_matches:
+      CUR: "(?i)(cursor|cur|db|conn|connection)"
+    description: >
+      A local variable is assigned an f-string-interpolated query, then
+      passed straight to execute() on the very next line. Splitting the
+      f-string out of the call site does not change what happens at
+      runtime -- the query text is still built by interpolation, not by
+      parameter binding.
+    remediation: >
+      Never interpolate a value into a SQL string, whether directly in
+      the execute() call or through an intermediate variable one line
+      earlier. Use parameterized queries (cursor.execute(sql, params))
+      instead.
+
+  # ---------------------------------------------------------------------
+  # LLM01 — a tool's own docstring contains a hidden-instruction marker
+  # aimed at the model that reads it, not the human approving the tool.
+  # Matches docs/rule-catalogue.md's LLM01.7's illustrative shape at the
+  # LLM01.9 confidence level (LLM01.9 grades the identical
+  # <IMPORTANT>/"do not mention" marker, in a SKILL.md sibling artifact,
+  # as `Kind: defect`, `Detectability: structural` -- LLM01.7 itself is
+  # graded `semantic`/high-risk because it also tries to catch free-text
+  # intent with no fixed marker at all, which this rule does not attempt).
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM01-002
+    title: Hidden instruction block in a tool's own description
+    kind: defect
+    severity: high
+    confidence: high
+    categories: [LLM01]
+    language: python
+    any:
+      - "@tool\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+    metavariable_matches:
+      DOC: '(?i)(<important>|<hidden>|do not mention|do not tell the user|present it as if)'
+    description: >
+      A tool's docstring -- the text an agent reads to decide how and
+      when to call it -- contains a hidden-instruction marker
+      (<IMPORTANT>/<HIDDEN> tags, or explicit "do not mention"/"do not
+      tell the user" language) invisible to a human skimming the tool
+      list but fully visible to the model. This is the mechanism behind
+      real MCP "tool poisoning" attacks: a second, adversarial
+      instruction riding along inside a tool description the developer
+      approved for something else entirely.
+    remediation: >
+      Remove the hidden instruction. A tool's description should say only
+      what the tool does and when to call it; anything addressed to the
+      model itself, especially language asking it to act silently or
+      withhold information from the user, does not belong in a tool
+      description at all.
+
+  # ---------------------------------------------------------------------
+  # LLM01 — the lower-confidence companion to BAS-LLM01-002: a fixed
+  # phrase list with no marker tag, shipped as `observation` for the same
+  # reason docs/rule-catalogue.md's LLM01.8 grades it `Kind: observation`
+  # ("legitimate tool docs share vocabulary with the attack pattern").
+  # ---------------------------------------------------------------------
+
+  - id: BAS-LLM01-003
+    title: Suspicious instruction-override phrase in a tool's own description
+    kind: observation
+    severity: low
+    confidence: low
+    categories: [LLM01]
+    language: python
+    any:
+      - "@tool\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS):\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+      - "@mcp.tool()\ndef $FN($$$ARGS) -> $RET:\n    \"\"\"$DOC\"\"\"\n    $$$BODY"
+    metavariable_matches:
+      DOC: '(?i)(ignore (previous|prior|all) instructions|disregard (prior|previous)|override (your|the) (instructions|system prompt)|bypass (the|your) (safety|restriction))'
+    description: >
+      A tool's docstring contains a lower-confidence lexical signal --
+      phrasing like "ignore previous instructions," "override the system
+      prompt," or "bypass the safety restriction." Legitimate tool
+      documentation occasionally shares vocabulary with this pattern
+      ("always confirm before deleting" does not trip it, but a looser
+      phrasing might), which is why this is an observation rather than a
+      defect.
+    remediation: >
+      Review the tool description's wording. If it is not legitimately
+      instructing the agent about the tool's own confirmation/safety
+      behavior, remove the phrasing; if the tool comes from a
+      third-party MCP server, treat this as a signal to audit the
+      server's other tool descriptions too.
+
+  # ---------------------------------------------------------------------
   # LLM01 / ZT4 — untrusted input reaching a prompt without separation from
   # instructions. This is the shape every "ignore previous instructions"
   # attack depends on.

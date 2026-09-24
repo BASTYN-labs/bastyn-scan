@@ -4,7 +4,59 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Pre-1.0, the minor version may carry breaking changes; they will always be listed here.
 
-## [Unreleased]
+## [0.1.7] - 2026-09-24
+
+### Added
+
+- **`BAS-LLM10-009`: non-literal command run through a shell, regardless of any allowlist/denylist
+  check.** Flags a `subprocess`/`os.system`/`os.popen` shell call fed a non-literal command even when
+  the surrounding code has an allowlist or denylist gate, since neither actually prevents the shell
+  from receiving attacker-controlled input. Python only for now — no `child_process` (JS/TS) twin
+  ships in this change. Found by measuring Bastyn's rule set against a 5-repository benchmark corpus
+  of intentionally-vulnerable MCP/agent applications and closing the recall gap it surfaced.
+- **`BAS-LLM10-012`: file opened at an unresolved path built by joining or interpolating a non-literal
+  value.** Flags `open()` calls assembled inline via `os.path.join`/f-string/string concatenation with
+  no `realpath`/`abspath` resolution — including when the only existing guard is a bypassable
+  string-prefix containment check. Python only for now — no JS/TS twin ships in this change. Found via
+  the same benchmark-corpus recall pass.
+- **`BAS-ZT1-018`/`-019`/`-020`: hardcoded JWT literal, hardcoded AWS access key ID, and a
+  credential-shaped default value read from an environment variable.** Three new hardcoded-secret
+  shapes the existing `ZT1` rules didn't cover, closing recall gaps the benchmark corpus surfaced.
+  Python only for now — no JS/TS twin ships in this change.
+- **`BAS-LLM10-017`/`-018`: unparameterized SQL query reaches execution, directly or via a local
+  variable.** Flags an interpolation-built query string that reaches `.execute()` either inline or
+  after first being assigned to a local variable, closing another benchmark-corpus recall gap. Python
+  only for now — no JS/TS twin ships in this change.
+- **`BAS-LLM01-002`/`-003`: hidden instruction block and suspicious instruction-override phrase in a
+  tool's own description.** Detects MCP "tool poisoning" — an adversarial instruction riding along
+  inside a tool's docstring that a human reviewer approving the tool would never read as an
+  instruction. Python only for now — no JS/TS twin ships in this change. Found via the same
+  benchmark-corpus recall pass.
+
+### Fixed
+
+- **`BAS-INFRA-006`** no longer flags a storage-mode/enum value (`local`, `sqlite`, `redis`, ...)
+  sitting on a credential-shaped key; a real secret two lines away is unaffected.
+- **`BAS-LLM10-009`** no longer flags a shell command looked up in a dict of literals after a
+  membership check, a fixed literal held in a local variable, or a command built entirely from
+  `shlex.quote()`/`shlex.join()`-wrapped segments. A command with even one unquoted segment still
+  fires.
+- **`BAS-LLM10-012`** no longer flags a path built from a module-level constant derived from
+  `__file__` (the common `HERE = os.path.dirname(os.path.abspath(__file__))` pattern). A path
+  built from a function parameter still fires.
+- **`BAS-LLM10-017`** no longer flags a SQL identifier (table/column name) interpolated into a
+  `PRAGMA`/`ALTER TABLE`/`CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX` statement — SQL
+  has no way to bind an identifier as a query parameter, so interpolating one there is correct. A
+  value interpolated into a `WHERE`/`SELECT` clause still fires.
+- New `exclude_if:` rule clause (`closed_value` | `constant_path` | `shell_quoted`), backing the
+  `BAS-LLM10-009` and `BAS-LLM10-012` fixes above, extends the Python dataflow graph (`crate::flow`)
+  with two new per-expression facts (`shell_quoted`, `constant_path`) computed through its existing
+  scoping and def-use resolution. The `BAS-LLM10-017` fix above is a plain `metavariable_not_matches`
+  regex, and the `BAS-INFRA-006` fix is Rust-native config-file matching; neither uses `exclude_if:`.
+
+Found by an independent benchmark re-run against the same 5-repository corpus this release's own
+new rules (listed under `### Added` above) were measured against; see
+`~/dev/bastyn-community-benchmarks/results/bastyn-0.1.7rc/labels/BASTYN_PRECISION_REGRESSIONS.md`.
 
 ## [0.1.6] - 2026-09-22
 
@@ -397,7 +449,7 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.6...HEAD
+[0.1.7]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.6...HEAD
 [0.1.6]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.4

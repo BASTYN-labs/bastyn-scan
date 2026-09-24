@@ -102,6 +102,123 @@ severity = "critical"
 why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism."
 
 [[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 25
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "host is interpolated into a shell command with no validation at all."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 34
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the allowlist only inspects the command's first token, then the whole string reaches a shell."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 45
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 59
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted."
+
+[[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 16
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "filename is joined onto the runbook directory and opened with no realpath/containment check."
+
+[[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 28
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "the containment check tests the unresolved string; the open() call has no realpath wrapper."
+
+[[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 37
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "asset_root is a function parameter, not a module-level __file__-derived constant -- BAS-LLM10-012's new exclude_if: constant_path clause (added 2026-09-24 to fix 6 of 7 report false positives, all the module-level __file__-derived-constant shape) does not, and by design cannot without interprocedural call-site analysis, prove a bare parameter safe, so this must still fire."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 9
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the query is f-string interpolated directly into execute(), with no variable-name gate needed."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 12
+rule     = "BAS-LLM10-018"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "archive_stale_ticket(): sql = f\"UPDATE ...{ticket_id}\"; cursor.execute(sql) with nothing after the execute() call -- a fire-and-forget write, the most common real shape for INSERT/UPDATE/DELETE. Regression fixture for a 2026-09-23 review finding: BAS-LLM10-018's def-wrapped pattern required its trailing $$$REST capture to bind at least one statement after execute(), so this exact shape (execute() as the function's literal last statement) produced no finding until the rule gained sibling any: variants with no $$$REST tail (see bastyn.yml's comment on BAS-LLM10-018). Reported at the def line (12), same as this rule's other entries, since the matched root is still the whole enclosing function."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 27
+rule     = "BAS-LLM10-018"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "plain_parameter_sql_through_local_variable(): moved here from clean/near_misses.py on 2026-09-23, where it had originally proved BAS-LLM10-008 stays silent on a bare, non-tool function parameter (Origin::Parameter, never Origin::Call{...}, so it can never classify as model_output). That is still true and BAS-LLM10-008 does not fire here. But BAS-LLM10-018 has no provenance gate at all -- it fires on the interpolate-then-execute shape alone, exactly like BAS-LLM10-017 and BAS-LLM10-009 do, regardless of where the value came from -- so once the last-statement parsing gap above was fixed, this became a genuine BAS-LLM10-018 true positive and the function no longer belonged in a file whose whole point is that nothing in it should fire."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 53
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "find_ticket_by_customer(): customer_email is interpolated as a query *value* into a WHERE clause, not a schema identifier -- the 2026-09-24 metavariable_not_matches DDL-keyword exclusion (added to fix all 4 BAS-LLM10-017 report false positives, all PRAGMA table_info(...)/ALTER TABLE ... ADD COLUMN ... identifier interpolation) only excludes an f-string that opens with PRAGMA/ALTER TABLE/CREATE TABLE/DROP TABLE/CREATE INDEX/DROP INDEX, and this f-string opens with SELECT, so it must still fire -- proving the exclusion does not over-broadly swallow real injections."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 65
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "materialize_filtered_table(): opens with CREATE TABLE, but also interpolates user_filter as a real query value (quoted with the opposite quote character) in a WHERE clause appended to the DDL. Regression fixture for a 2026-09-24 final-review finding: the DDL exclusion originally checked only the opening keyword, not whether a quoted value literal appeared anywhere in the rest of the string, so this was wrongly excluded before the exclusion regex was tightened to require the whole remainder be quote-free."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 73
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "add_column_with_default(): opens with ALTER TABLE, but DEFAULT '{user_filter}' interpolates a real query value, not a schema identifier -- the ADD COLUMN counterpart to materialize_filtered_table() above, same 2026-09-24 regression and same tightened exclusion."
+
+[[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
 line     = 13
 rule     = "BAS-ZT1-001"
@@ -307,6 +424,15 @@ severity = "critical"
 why      = "sql = f\"...{refined_query}%'\"; cursor.execute(sql) -- the model's reply reaches SQL through one local f-string reassignment. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-LLM10-003's name-gate never sees a variable named `sql`, so this was silently missed; BAS-LLM10-008 asks the flow graph instead of guessing from the variable's name."
 
 [[expect]]
+file     = "vulnerable/real_misses/sql_through_local_variable.py"
+line     = 29
+rule     = "BAS-LLM10-018"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "the same interpolate-then-execute shape BAS-LLM10-018 catches unconditionally, co-firing alongside the existing model-output-gated BAS-LLM10-008 finding at the same location. BAS-LLM10-018's matched pattern is the whole enclosing function (def $FN($$$ARGS) -> $RET:\\n    $$$PRE\\n    $SQL = f\"...\"\\n    $CUR.execute($SQL)\\n    $$$REST, needed because ast_grep_core's Pattern::try_new refuses a two-statement pattern with no shared parent as 'Multiple AST nodes'), so the reported location is the def line (29), not the assignment (40) or execute() (41) line."
+
+[[expect]]
 file     = "vulnerable/real_misses/eval_expression_tool.js"
 line     = 26
 rule     = "BAS-LLM10-005"
@@ -330,11 +456,32 @@ line     = 29
 category = "LLM03"
 why      = "The model is instructed to emit an EXECUTE_SIGNAL{...} marker; the app re.search()es for it and dispatches the embedded JSON with no confirmation. BAS-LLM03-001 only matches a destructive-named @tool function with a missing guard clause -- there is no tool function here at all, just free text parsed for a marker."
 
-[[known_gap]]
+[[expect]]
 file     = "vulnerable/real_misses/sql_from_tool_parameter.py"
-line     = 39
+line     = 33
+rule     = "BAS-LLM10-018"
 category = "LLM10"
-why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter -- agent-controlled once you know it's a tool handler, but the flow graph resolves a bare parameter to Origin::Parameter, never Origin::Call{...}, and has no concept that a decorated tool function's parameters are untrusted. Would need a new SourceKind plus a decorator-recognition pass; genuinely separate, larger engine work, not attempted here."
+kind     = "defect"
+severity = "critical"
+why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter. Promoted from known_gap on 2026-09-23: BAS-LLM10-018 catches the interpolate-then-execute shape unconditionally, without needing the new SourceKind plus decorator-recognition pass that flow-based Origin::Parameter tracking would have required -- it never asks where `query` came from, only whether an f-string-built local is executed on the very next line. BAS-LLM10-018's matched pattern is the whole enclosing function (see BAS-LLM10-018's comment in bastyn.yml for why: ast_grep_core's Pattern::try_new refuses a bare two-statement pattern as 'Multiple AST nodes', since the two statements share no parent node outside of one), so the reported location is the def line (33), not the known_gap's previously recorded line (39, the execute() call)."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/path_traversal_bare_parameter.py"
+line     = 25
+category = "LLM10"
+why      = "open(filename) with no join/f-string/concat shape for BAS-LLM10-012's ARG gate to match; needs a bare-parameter variant or dataflow tracing."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/path_traversal_variable_then_open.py"
+line     = 35
+category = "LLM10"
+why      = "path = os.path.join(RUNBOOK_DIR, filename) on the line above, then open(path) -- the join is genuinely there, but in a separate statement. BAS-LLM10-012's metavariable_matches only ever inspects the literal text of the captured $ARG node at the open() call site itself (RegexMatcher has no dataflow/definition resolution), so a bare `path` identifier can never match the os.path.join(/f-string/concat regex no matter what it was assigned to a line earlier. Distinct from path_traversal_bare_parameter.py, where the path is never assembled at all -- here it is assembled, just not inline."
+
+[[known_gap]]
+file     = "vulnerable/real_misses/shell_command_via_mutated_registry.py"
+line     = 44
+category = "LLM10"
+why      = "subprocess.run(COMMANDS[component], shell=True), where COMMANDS is a module-level dict genuinely mutated elsewhere in the file (COMMANDS[name] = cmd inside register()). crates/bastyn-core/src/flow/graph.rs's Analyzer::bind_targets only records a binding for a plain-identifier assignment target -- a subscript target (COMMANDS[name] = cmd) or an attribute-call receiver (CMDS.append(x)) both fall through its `_ => {}` arm and record nothing, so the graph never learns COMMANDS holds anything beyond its own dict-of-literals initializer. BAS-LLM10-009's exclude_if: closed_value clause therefore still resolves COMMANDS[component] as `closed: true` and wrongly suppresses this finding. Fixing this needs the graph to track mutated container names, a materially larger change than tracking a plain-identifier reassignment -- out of scope for this fix wave; recorded here rather than attempted."
 
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
@@ -372,6 +519,45 @@ file     = "vulnerable/real_misses/eval_guarded_by_local_check.py"
 line     = 81
 category = "LLM10"
 why      = "eval(f\"torch.{torch_dtype}\") guarded one line above by an exact-match check against a 3-item whitelist that raises before eval() is ever reached. The guard is a sibling if/raise statement, not part of the eval() call's own node, so `none:` (same-node exclusion) and `inside:` (ancestor constraint) both structurally cannot express it."
+
+# ---------------------------------------------------------------------
+# The four remaining false positives from the community precision report
+# that Tasks 4-7 did not close, each because closing it properly needs an
+# analysis materially larger than that round's scope (reachability,
+# dead-branch/constant-propagation, interprocedural call-site analysis,
+# and call-context distinction, respectively). Recorded here rather than
+# silently left out, same practice as every other entry in this file.
+# ---------------------------------------------------------------------
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/shell_command_via_unreachable_function.py"
+line     = 21
+category = "LLM10"
+why      = "subprocess.check_output(command, shell=True, ...) inside a function nothing in this file calls. BAS-LLM10-009 has no reachability analysis -- whether anything calls run_raw_command is a whole-program question a file-local structural rule cannot answer, so it reports the shape regardless of whether the function is ever invoked."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/shell_command_behind_disabled_flag.py"
+line     = 25
+category = "LLM10"
+why      = "subprocess.run(command, shell=True, ...) reachable only when the module-level SECURE_MODE constant is False, which it never is in this file. BAS-LLM10-009 has no constant-propagation or dead-branch analysis, so it cannot prove the branch containing the sink is unreachable in the shipped version."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/path_traversal_parameter_with_literal_callers.py"
+line     = 21
+category = "LLM10"
+why      = "os.path.join(RESULTS, name) where name is a bare function parameter, but every call site in the file happens to pass a literal. BAS-LLM10-012's exclude_if: constant_path only resolves a module-level name's own assignment chain; proving every caller of a parameter passes a literal needs interprocedural call-site analysis, which is materially larger and out of scope here."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/credential_default_echoed_as_client_credential.py"
+line     = 30
+category = "ZT1"
+why      = "(Low confidence -- borderline.) A credential-shaped os.environ.get() default sent as a client credential in a login request body, not compared against or stored. BAS-ZT1-020 cannot distinguish a client script echoing a server's own documented default account from a program defending its own weak default secret -- both are the identical os.environ.get(CREDENTIAL_KEY, \"real-looking-default\") shape, and only this file's own docstring says which one it is."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/sql_ddl_via_local_variable.py"
+line     = 23
+category = "LLM10"
+why      = "ensure_column(): sql = f\"ALTER TABLE {table} ADD COLUMN {column} TEXT\"; conn.execute(sql) -- a genuine schema-identifier interpolation split across a local variable, the same DDL shape Finding 2 of the 2026-09-24 final review fixed for BAS-LLM10-017's same-node case. BAS-LLM10-018 matches the f-string's inner text as $$$FSTR, a variadic capture; a metavariable_not_matches clause mirroring -017's fix was tried and confirmed empirically to never exclude anything, because this engine's metavariable_not_matches only ever reads MetaVarEnv's single_matched map via env.get_match(), never multi_matched where a $$$-bound capture is stored -- the same limitation already documented for metavariable_matches against three_interpolation_override.py's $$$OVERRIDE capture. See bastyn.yml's comment on BAS-LLM10-018 for the full investigation."
 
 # ---------------------------------------------------------------------
 # vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not
@@ -539,7 +725,7 @@ why  = "A public, unauthenticated chat endpoint (correct for a public chatbot) w
 
 [[expect_none]]
 file = "clean/near_misses.py"
-why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens."
+why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens. Plus two 2026-09-24 additions proving BAS-LLM10-009's new exclude_if: closed_value clause: restart_worker_via_variable() (moved here from vulnerable/real_misses/shell_command_via_local_variable.py once the Tier-2 dataflow graph could resolve a literal held in a local variable back to the closed literal it holds) and restart_component() (a shell command looked up in a dict of literal commands after a membership check, provably one of the dict's own values regardless of the identifier's name). Plus a third 2026-09-24 addition proving the widened exclude_if: [closed_value, shell_quoted] clause: run_playbook_fully_quoted(), where every interpolated segment of the shell command is wrapped in shlex.quote(), safe as shell input regardless of content -- see vulnerable/llm10_shell_injection_tool.py's run_playbook_partially_quoted() for the must-still-fire sibling with one unquoted segment. Plus a fourth 2026-09-24 addition proving BAS-LLM10-012's new exclude_if: constant_path clause: read_bundled_config() (moved here from vulnerable/real_misses/path_traversal_safe_local_constant.py once the Tier-2 dataflow graph could resolve HERE, a module-level constant built from os.path.dirname(__file__), back to a provable constant_path) -- see vulnerable/llm10_path_traversal_tool.py's read_bundled_asset() for the must-still-fire sibling where the same os.path.join(root, filename) shape uses a bare function parameter instead of a __file__-derived module constant."
 
 [[expect_none]]
 file = "clean/mcp/mcp.json"
@@ -825,3 +1011,75 @@ kind     = "defect"
 severity = "critical"
 why      = "Complete, well-formed frontmatter, but the body's classic instruction-override phrase (\"ignore all previous instructions\") is word-wrapped across a Markdown line break (\"IGNORE ALL PREVIOUS\\nINSTRUCTIONS\"). Regression fixture for a bug where scan_phrases only did a literal substring match and silently missed phrases split by a line break; the same phrasing on one line was already caught (see log-analyzer above)."
 
+[[expect]]
+file     = "vulnerable/zt1_secret_shapes.py"
+line     = 13
+rule     = "BAS-ZT1-018"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "a live-looking JWT is hardcoded directly in source."
+
+[[expect]]
+file     = "vulnerable/zt1_secret_shapes.py"
+line     = 21
+rule     = "BAS-ZT1-019"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "an AWS access key ID in the exact AKIA-prefixed shape is hardcoded."
+
+[[expect]]
+file     = "vulnerable/zt1_secret_shapes.py"
+line     = 26
+rule     = "BAS-ZT1-020"
+category = "ZT1"
+kind     = "defect"
+severity = "high"
+why      = "the admin password's environment lookup has a real, source-visible default."
+
+# ---------------------------------------------------------------------
+# vulnerable/zt1_jwt_credential_shaped_key.py -- a final-review regression
+# fixture (2026-09-23, finding I2). zt1_secret_shapes.py's JWT-holding key
+# was renamed from the realistic `service_token` to `issued_jwt`
+# specifically to avoid this co-firing; this file documents it instead as
+# intentional, correct behavior: a realistically-named credential-shaped
+# variable whose value also has the exact JWT shape legitimately produces
+# two independent, correct findings at the same line.
+# ---------------------------------------------------------------------
+
+[[expect]]
+file     = "vulnerable/zt1_jwt_credential_shaped_key.py"
+line     = 26
+rule     = "BAS-ZT1-010"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "session_token is a realistic, credential-shaped variable name holding a high-entropy literal -- BAS-ZT1-010's generic credential-shaped-key signal, independent of the value's specific shape."
+
+[[expect]]
+file     = "vulnerable/zt1_jwt_credential_shaped_key.py"
+line     = 26
+rule     = "BAS-ZT1-018"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "the same literal also has the exact eyJ.<payload>.<signature> JWT shape -- BAS-ZT1-018's more specific signal, co-firing at the same line as BAS-ZT1-010 above. Both are correct, independent true positives, not a duplicate: one flags the name, the other flags the value's own structure."
+
+[[expect]]
+file     = "vulnerable/llm01_tool_poisoning.py"
+line     = 11
+rule     = "BAS-LLM01-002"
+category = "LLM01"
+kind     = "defect"
+severity = "high"
+why      = "the docstring contains an <IMPORTANT> tag instructing the model to read an SSH key and not mention doing so."
+
+[[expect]]
+file     = "vulnerable/llm01_tool_poisoning.py"
+line     = 22
+rule     = "BAS-LLM01-003"
+category = "LLM01"
+kind     = "observation"
+severity = "low"
+why      = "the docstring contains \"ignore previous instructions\" phrasing, a lower-confidence lexical signal."
