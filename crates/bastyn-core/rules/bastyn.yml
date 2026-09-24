@@ -410,15 +410,19 @@ rules:
   # tests/corpus/clean/near_misses.py's all_literal_join_is_not_flagged
   # for the regression proof.
   #
-  # This does NOT close the case where every os.path.join(...) argument is
-  # either a literal or a *safe local constant* (e.g. HERE =
-  # os.path.dirname(__file__); open(os.path.join(HERE, "data.json"))) --
-  # HERE is a bare identifier, a genuine non-literal, so the rule's own
-  # contract says it should fire, and same-node regex matching over the
-  # join's argument text cannot tell a safe local constant from an
-  # attacker-controlled variable without real dataflow analysis. Recorded
-  # as a known_false_positive rather than narrowed further -- see
-  # tests/corpus/vulnerable/real_misses/path_traversal_safe_local_constant.py.
+  # 2026-09-24: the case above -- every os.path.join(...) argument either a
+  # literal or a *safe local constant* built once at module level from
+  # __file__ (e.g. HERE = os.path.dirname(__file__); open(os.path.join(HERE,
+  # "data.json"))) -- is now closed. The Tier-2 dataflow graph's
+  # constant_path fact (crates/bastyn-core/src/flow/graph.rs) proves such a
+  # value is built only from literals, __file__, and calls to a whitelisted
+  # set of pure os.path.* functions, resolving through the module-scope
+  # assignment that same-node regex matching could never see on its own.
+  # exclude_if: constant_path drops the match when that proof holds. See
+  # tests/corpus/clean/near_misses.py's read_bundled_config() for the
+  # regression proof (moved from vulnerable/real_misses/
+  # path_traversal_safe_local_constant.py, now confirmed safe rather than a
+  # known_false_positive).
   #
   # Known gaps, documented rather than papered over:
   #   - a bare-parameter call (open(filename), with no join/f-string/concat
@@ -429,6 +433,19 @@ rules:
   #     open(path)) is also not caught -- metavariable_matches only inspects
   #     $ARG's own text at the open() call site, never an earlier assignment.
   #     See tests/corpus/vulnerable/real_misses/path_traversal_variable_then_open.py.
+  #   - a function *parameter* joined the same way (os.path.join(root,
+  #     filename) where root is a parameter, not a module-level __file__
+  #     chain) still fires even when every call site in the file happens to
+  #     pass a literal for that parameter -- constant_path only proves a
+  #     value from its own definition forward, never across a call
+  #     boundary, and telling "every caller happens to pass a literal
+  #     today" apart from "a real caller-supplied path" would need genuine
+  #     interprocedural call-site analysis, out of scope here (report FP
+  #     #6). This corpus has no fixture for that specific shape; see
+  #     tests/corpus/vulnerable/llm10_path_traversal_tool.py's
+  #     read_bundled_asset() for the adjacent, correctly-still-firing case
+  #     of a parameter reaching os.path.join with no literal-callers-only
+  #     guarantee at all.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-012
@@ -454,6 +471,9 @@ rules:
       ARG: '(os\.path\.join\(|^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27])'
     metavariable_not_matches:
       ARG: '^os\.path\.join\(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*,\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*\)$'
+    exclude_if:
+      variable: ARG
+      kind: constant_path
     description: >
       A file is opened at a path built inline, directly inside the
       open(...) call, by os.path.join, f-string interpolation, or string
@@ -471,7 +491,11 @@ rules:
       argument; a path assembled the same way in a prior statement and
       then passed in as a variable (path = os.path.join(...); open(path))
       is not detected — the matcher only inspects the argument's own text
-      at the call site, not any earlier assignment.
+      at the call site, not any earlier assignment. Also excluded when the
+      joined path is built only from literals, __file__, and calls to
+      os.path.dirname/abspath/realpath/normpath/join/os.getcwd — a
+      module-level path root the file derives from its own location on
+      disk, not from anything a caller supplies.
     remediation: >
       Resolve the joined path with os.path.realpath (not just
       os.path.abspath, which does not follow symlinks) before using it,

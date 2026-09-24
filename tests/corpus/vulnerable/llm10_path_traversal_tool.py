@@ -27,3 +27,12 @@ def read_runbook_prefix_checked(filename: str) -> str:
         raise PermissionError("outside runbook directory")
     with open(f"{RUNBOOK_DIR}/{filename}") as handle:
         return handle.read()
+
+
+def read_bundled_asset(asset_root: str, filename: str) -> str:
+    """LLM10 (BAS-LLM10-012): asset_root is a function parameter, not a
+    module-level __file__-derived constant -- exclude_if: constant_path
+    does not (and by design cannot, without interprocedural call-site
+    analysis) prove it safe, so this must still fire."""
+    with open(os.path.join(asset_root, filename)) as handle:
+        return handle.read()
