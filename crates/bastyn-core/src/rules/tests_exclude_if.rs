@@ -145,3 +145,33 @@ rules:
         "{error:?}"
     );
 }
+
+/// An empty `kind: []` list would compile into an exclusion that never
+/// excludes anything -- no kind is ever "in" an empty set -- with nothing in
+/// the report to say so. A load error catches it instead, the same contract
+/// `flow.source: []` already keeps via `EmptyFlowSources`.
+#[test]
+fn exclude_if_rejects_an_empty_kind_list() {
+    let yaml = r"
+rules:
+  - id: TEST-EXCLUDE-EMPTY-KIND
+    title: test
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    exclude_if:
+      variable: ARG
+      kind: []
+    description: test
+    remediation: test
+";
+    let error = RuleSet::from_yaml(yaml).unwrap_err();
+    assert!(
+        matches!(error, RuleError::EmptyExcludeIfKinds { .. }),
+        "{error:?}"
+    );
+}

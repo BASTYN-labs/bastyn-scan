@@ -402,10 +402,16 @@ fn compile_exclude_if(
             id: id.to_string(),
             language: format!("{language:?}").to_lowercase(),
         }),
-        Some(exclude) => Ok(Some(CompiledExcludeIf {
-            variable: exclude.variable,
-            kinds: exclude.kind.kinds(),
-        })),
+        Some(exclude) => {
+            let kinds = exclude.kind.kinds();
+            if kinds.is_empty() {
+                return Err(RuleError::EmptyExcludeIfKinds { id: id.to_string() });
+            }
+            Ok(Some(CompiledExcludeIf {
+                variable: exclude.variable,
+                kinds,
+            }))
+        }
     }
 }
 
