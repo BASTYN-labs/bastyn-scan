@@ -136,6 +136,17 @@ pub(crate) struct Resolved {
     /// literal, a name-of-a-class attribute, a tuple of literals. Consumed by
     /// [`super::guards`].
     pub(crate) closed: bool,
+    /// Whether every non-literal segment of this value, if it is a string or
+    /// a concatenation, is wrapped directly in a shell-escaping call
+    /// (`shlex.quote`/`shlex.join`) -- safe as one shell argument no matter
+    /// what it contains. Consumed by an `exclude_if: shell_quoted` rule
+    /// clause (`BAS-LLM10-009`).
+    pub(crate) shell_quoted: bool,
+    /// Whether this value is a path expression built only from literals,
+    /// `__file__`, and calls to a whitelisted set of pure path-construction
+    /// functions ([`PATH_CONST_FUNCTIONS`]). Consumed by an `exclude_if:
+    /// constant_path` rule clause (`BAS-LLM10-012`).
+    pub(crate) constant_path: bool,
 }
 
 impl Resolved {
@@ -143,6 +154,8 @@ impl Resolved {
         Self {
             prov: Prov::Unknown,
             closed: false,
+            shell_quoted: false,
+            constant_path: false,
         }
     }
 
@@ -150,6 +163,8 @@ impl Resolved {
         Self {
             prov: Prov::Literal,
             closed: true,
+            shell_quoted: true,
+            constant_path: true,
         }
     }
 
@@ -157,6 +172,8 @@ impl Resolved {
         Self {
             prov: self.prov.combine(other.prov),
             closed: self.closed && other.closed,
+            shell_quoted: self.shell_quoted && other.shell_quoted,
+            constant_path: self.constant_path && other.constant_path,
         }
     }
 }
@@ -243,6 +260,41 @@ impl FlowGraph {
         self.resolved
             .get(&node_id)
             .is_some_and(|resolved| resolved.closed)
+    }
+
+    /// Whether the value at `node_id` is a path expression built only from
+    /// literals, `__file__`, and calls to a whitelisted set of pure
+    /// path-construction functions.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "not yet called from non-test code in this crate -- wired into the \
+                      rule engine's `exclude_if: constant_path` clause in a later task of \
+                      this round; this file's own tests already exercise it"
+        )
+    )]
+    pub(crate) fn is_constant_path(&self, node_id: usize) -> bool {
+        self.resolved
+            .get(&node_id)
+            .is_some_and(|resolved| resolved.constant_path)
+    }
+
+    /// Whether the value at `node_id` has every non-literal segment wrapped
+    /// directly in a shell-escaping call (`shlex.quote`/`shlex.join`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "not yet called from non-test code in this crate -- wired into the \
+                      rule engine's `exclude_if: shell_quoted` clause in a later task of \
+                      this round; this file's own tests already exercise it"
+        )
+    )]
+    pub(crate) fn is_shell_quoted(&self, node_id: usize) -> bool {
+        self.resolved
+            .get(&node_id)
+            .is_some_and(|resolved| resolved.shell_quoted)
     }
 
     /// Whether a guard dominates the call argument at `node_id`.
@@ -517,6 +569,22 @@ const LITERAL_KINDS: &[&str] = &["integer", "float", "true", "false", "none", "e
 /// `class_name = step.__class__.__name__`.
 const CLOSED_ATTRIBUTES: &[&str] = &["__name__", "__class__", "__qualname__", "__module__"];
 
+/// Callee paths that escape a value for safe use as one shell argument, no
+/// matter what it contains. Consumed by [`Resolved::shell_quoted`].
+const SHELL_QUOTE_CALLEES: &[&str] = &["shlex.quote", "shlex.join"];
+
+/// Callee paths this module accepts as pure functions of their own
+/// arguments when computing [`Resolved::constant_path`] -- no environment,
+/// no attacker input, deterministic given the module's own file location.
+const PATH_CONST_FUNCTIONS: &[&str] = &[
+    "os.path.dirname",
+    "os.path.abspath",
+    "os.path.realpath",
+    "os.path.normpath",
+    "os.path.join",
+    "os.getcwd",
+];
+
 /// Expression node kinds the graph indexes. A kind absent from this list gets
 /// no entry, and [`FlowGraph::origin_of`] answers `None` for it -- which is
 /// how a rule capturing a non-expression is told the graph has nothing to
@@ -677,6 +745,8 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                         fixed: Some(Resolved {
                             prov: Prov::Parameter(name),
                             closed: false,
+                            shell_quoted: false,
+                            constant_path: false,
                         }),
                         scope: inner,
                         branches: Vec::new(),
@@ -763,13 +833,28 @@ impl<'r, D: Doc> Analyzer<'r, D> {
         answer
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a flat per-node-kind dispatch, not nested logic"
+    )]
     fn compute(&mut self, node: &Node<'r, D>, scope: usize, depth: usize) -> Resolved {
         let kind = node.kind();
         if LITERAL_KINDS.contains(&kind.as_ref()) {
             return Resolved::literal();
         }
         match kind.as_ref() {
-            "identifier" => self.lookup(&node.text(), node.range().start, scope, node, depth),
+            "identifier" => {
+                // `__file__` is never bound by an assignment this graph
+                // would see -- it is an implicit module attribute -- so a
+                // plain lookup would answer Unknown. Its value is fixed at
+                // import time and never attacker-influenced, so it is
+                // treated exactly like a literal.
+                if node.text().as_ref() == "__file__" {
+                    Resolved::literal()
+                } else {
+                    self.lookup(&node.text(), node.range().start, scope, node, depth)
+                }
+            }
             "string" => {
                 // An f-string carries whatever its interpolations carry; a
                 // plain string is a literal.
@@ -813,8 +898,27 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     .field("function")
                     .map(|f| callee_path(&f))
                     .unwrap_or_default();
+                // Only walked for a callee already on the whitelist: every
+                // other call in the file (the overwhelming majority) skips
+                // argument resolution entirely, so this costs nothing on
+                // files with no os.path chain.
+                let constant_path = PATH_CONST_FUNCTIONS.contains(&callee.as_str())
+                    && node.field("arguments").is_some_and(|arguments| {
+                        arguments.named_children().all(|argument| {
+                            let value = if argument.kind() == "keyword_argument" {
+                                argument.field("value")
+                            } else {
+                                Some(argument)
+                            };
+                            value.is_some_and(|value| {
+                                self.resolve(&value, scope, depth + 1).constant_path
+                            })
+                        })
+                    });
                 Resolved {
                     closed: callee == "type",
+                    shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
+                    constant_path,
                     prov: Prov::Call { callee },
                 }
             }
@@ -948,10 +1052,14 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                 Some(previous) if previous.prov == resolved.prov => Resolved {
                     prov: previous.prov,
                     closed: previous.closed && resolved.closed,
+                    shell_quoted: previous.shell_quoted && resolved.shell_quoted,
+                    constant_path: previous.constant_path && resolved.constant_path,
                 },
                 Some(previous) => Resolved {
                     prov: Prov::Unknown,
                     closed: previous.closed && resolved.closed,
+                    shell_quoted: previous.shell_quoted && resolved.shell_quoted,
+                    constant_path: previous.constant_path && resolved.constant_path,
                 },
             });
         }
@@ -1360,5 +1468,110 @@ def run_snippet(code):
                 .wrapper_sink_parameters("run_snippet", SinkKind::CodeExecution)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_module_level_file_derived_path_root_is_a_constant_path() {
+        let source = "\
+import os
+
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), \"results\")
+
+
+def load_summary():
+    with open(os.path.join(RESULTS_DIR, \"summary.json\")) as handle:
+        return handle.read()
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "open");
+
+        assert!(
+            graph.is_constant_path(arg),
+            "expected the joined path to be a constant path"
+        );
+    }
+
+    #[test]
+    fn a_parameter_derived_path_is_not_a_constant_path() {
+        let source = "\
+import os
+
+
+def load_named(name):
+    with open(os.path.join(\"/data\", name)) as handle:
+        return handle.read()
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "open");
+
+        assert!(!graph.is_constant_path(arg));
+    }
+
+    #[test]
+    fn a_dict_of_literals_looked_up_by_a_checked_key_is_closed() {
+        let source = "\
+COMMANDS = {\"restart\": \"systemctl restart worker\", \"status\": \"systemctl status worker\"}
+
+
+def run(component):
+    if component not in COMMANDS:
+        return \"unknown\"
+    command = COMMANDS[component]
+    return command
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find(|node| node.text().contains("command"))
+            .and_then(|stmt| stmt.named_children().next())
+            .expect("a return statement returning `command`");
+
+        assert!(graph.is_closed(return_value.node_id()));
+    }
+
+    #[test]
+    fn every_interpolation_wrapped_in_shlex_quote_is_shell_quoted() {
+        let source = "\
+import shlex
+
+
+def build(playbook, target_host):
+    command = f\"{shlex.quote(playbook)} --target {shlex.quote(target_host)}\"
+    return command
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find(|node| node.text().contains("command"))
+            .and_then(|stmt| stmt.named_children().next())
+            .expect("a return statement returning `command`");
+
+        assert!(graph.is_shell_quoted(return_value.node_id()));
+    }
+
+    #[test]
+    fn one_unquoted_interpolation_is_not_shell_quoted() {
+        let source = "\
+import shlex
+
+
+def build(playbook, extra_args):
+    command = f\"{shlex.quote(playbook)} {extra_args}\"
+    return command
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find(|node| node.text().contains("command"))
+            .and_then(|stmt| stmt.named_children().next())
+            .expect("a return statement returning `command`");
+
+        assert!(!graph.is_shell_quoted(return_value.node_id()));
     }
 }
