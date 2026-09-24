@@ -265,15 +265,6 @@ impl FlowGraph {
     /// Whether the value at `node_id` is a path expression built only from
     /// literals, `__file__`, and calls to a whitelisted set of pure
     /// path-construction functions.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "not yet called from non-test code in this crate -- wired into the \
-                      rule engine's `exclude_if: constant_path` clause in a later task of \
-                      this round; this file's own tests already exercise it"
-        )
-    )]
     pub(crate) fn is_constant_path(&self, node_id: usize) -> bool {
         self.resolved
             .get(&node_id)
@@ -282,15 +273,6 @@ impl FlowGraph {
 
     /// Whether the value at `node_id` has every non-literal segment wrapped
     /// directly in a shell-escaping call (`shlex.quote`/`shlex.join`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "not yet called from non-test code in this crate -- wired into the \
-                      rule engine's `exclude_if: shell_quoted` clause in a later task of \
-                      this round; this file's own tests already exercise it"
-        )
-    )]
     pub(crate) fn is_shell_quoted(&self, node_id: usize) -> bool {
         self.resolved
             .get(&node_id)
