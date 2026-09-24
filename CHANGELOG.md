@@ -48,13 +48,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `PRAGMA`/`ALTER TABLE`/`CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX` statement — SQL
   has no way to bind an identifier as a query parameter, so interpolating one there is correct. A
   value interpolated into a `WHERE`/`SELECT` clause still fires.
-- New `exclude_if:` rule clause (`closed_value` | `constant_path` | `shell_quoted`), backing all
-  three fixes above, extends the Python dataflow graph (`crate::flow`) with two new per-expression
-  facts (`shell_quoted`, `constant_path`) computed through its existing scoping and def-use
-  resolution.
+- New `exclude_if:` rule clause (`closed_value` | `constant_path` | `shell_quoted`), backing the
+  `BAS-LLM10-009` and `BAS-LLM10-012` fixes above, extends the Python dataflow graph (`crate::flow`)
+  with two new per-expression facts (`shell_quoted`, `constant_path`) computed through its existing
+  scoping and def-use resolution. The `BAS-LLM10-017` fix above is a plain `metavariable_not_matches`
+  regex, and the `BAS-INFRA-006` fix is Rust-native config-file matching; neither uses `exclude_if:`.
 
-Found by an independent benchmark re-run against the same 5-repository corpus `[Unreleased]`'s
-new rules were measured against; see
+Found by an independent benchmark re-run against the same 5-repository corpus this release's own
+new rules (listed under `### Added` above) were measured against; see
 `~/dev/bastyn-community-benchmarks/results/bastyn-0.1.7rc/labels/BASTYN_PRECISION_REGRESSIONS.md`.
 
 ## [0.1.6] - 2026-09-22
@@ -448,7 +449,7 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.6...HEAD
+[0.1.7]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.6...HEAD
 [0.1.6]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.4
