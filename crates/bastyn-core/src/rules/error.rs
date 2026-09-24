@@ -134,6 +134,19 @@ pub enum RuleError {
         id: String,
     },
 
+    /// A rule declared an `exclude_if:` clause with no kinds in it.
+    ///
+    /// Such a clause would silently compile into a no-op exclusion --
+    /// `kinds.iter().any(...)` over an empty list is always `false`, so
+    /// nothing would ever be excluded, with nothing in the report to say
+    /// so. Rejecting it at load time is the same contract `flow.source`
+    /// already keeps via `EmptyFlowSources`.
+    #[error("rule `{id}`: `exclude_if.kind` must name at least one kind")]
+    EmptyExcludeIfKinds {
+        /// The offending rule's id.
+        id: String,
+    },
+
     /// A `metavariable_not_matches` regular expression failed to compile.
     ///
     /// Kept distinct from [`Self::InvalidRegex`] rather than sharing one
