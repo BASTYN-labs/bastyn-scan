@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Pre-1.0, the minor version may carry breaking changes; they will always be listed here.
 
-## [Unreleased]
+## [0.1.7] - 2026-09-24
 
 ### Added
 
@@ -32,6 +32,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   inside a tool's docstring that a human reviewer approving the tool would never read as an
   instruction. Python only for now — no JS/TS twin ships in this change. Found via the same
   benchmark-corpus recall pass.
+
+### Fixed
+
+- **`BAS-INFRA-006`** no longer flags a storage-mode/enum value (`local`, `sqlite`, `redis`, ...)
+  sitting on a credential-shaped key; a real secret two lines away is unaffected.
+- **`BAS-LLM10-009`** no longer flags a shell command looked up in a dict of literals after a
+  membership check, a fixed literal held in a local variable, or a command built entirely from
+  `shlex.quote()`/`shlex.join()`-wrapped segments. A command with even one unquoted segment still
+  fires.
+- **`BAS-LLM10-012`** no longer flags a path built from a module-level constant derived from
+  `__file__` (the common `HERE = os.path.dirname(os.path.abspath(__file__))` pattern). A path
+  built from a function parameter still fires.
+- **`BAS-LLM10-017`** no longer flags a SQL identifier (table/column name) interpolated into a
+  `PRAGMA`/`ALTER TABLE`/`CREATE TABLE`/`DROP TABLE`/`CREATE INDEX`/`DROP INDEX` statement — SQL
+  has no way to bind an identifier as a query parameter, so interpolating one there is correct. A
+  value interpolated into a `WHERE`/`SELECT` clause still fires.
+- New `exclude_if:` rule clause (`closed_value` | `constant_path` | `shell_quoted`), backing all
+  three fixes above, extends the Python dataflow graph (`crate::flow`) with two new per-expression
+  facts (`shell_quoted`, `constant_path`) computed through its existing scoping and def-use
+  resolution.
+
+Found by an independent benchmark re-run against the same 5-repository corpus `[Unreleased]`'s
+new rules were measured against; see
+`~/dev/bastyn-community-benchmarks/results/bastyn-0.1.7rc/labels/BASTYN_PRECISION_REGRESSIONS.md`.
 
 ## [0.1.6] - 2026-09-22
 
