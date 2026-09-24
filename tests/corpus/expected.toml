@@ -103,7 +103,7 @@ why      = "The model's reply is concatenated straight into an INSERT statement 
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 16
+line     = 25
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -112,7 +112,7 @@ why      = "host is interpolated into a shell command with no validation at all.
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 25
+line     = 34
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -121,12 +121,21 @@ why      = "the allowlist only inspects the command's first token, then the whol
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 36
+line     = 45
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
 why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 59
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted."
 
 [[expect]]
 file     = "vulnerable/llm10_path_traversal_tool.py"
@@ -656,7 +665,7 @@ why  = "A public, unauthenticated chat endpoint (correct for a public chatbot) w
 
 [[expect_none]]
 file = "clean/near_misses.py"
-why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens. Plus two 2026-09-24 additions proving BAS-LLM10-009's new exclude_if: closed_value clause: restart_worker_via_variable() (moved here from vulnerable/real_misses/shell_command_via_local_variable.py once the Tier-2 dataflow graph could resolve a literal held in a local variable back to the closed literal it holds) and restart_component() (a shell command looked up in a dict of literal commands after a membership check, provably one of the dict's own values regardless of the identifier's name)."
+why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens. Plus two 2026-09-24 additions proving BAS-LLM10-009's new exclude_if: closed_value clause: restart_worker_via_variable() (moved here from vulnerable/real_misses/shell_command_via_local_variable.py once the Tier-2 dataflow graph could resolve a literal held in a local variable back to the closed literal it holds) and restart_component() (a shell command looked up in a dict of literal commands after a membership check, provably one of the dict's own values regardless of the identifier's name). Plus a third 2026-09-24 addition proving the widened exclude_if: [closed_value, shell_quoted] clause: run_playbook_fully_quoted(), where every interpolated segment of the shell command is wrapped in shlex.quote(), safe as shell input regardless of content -- see vulnerable/llm10_shell_injection_tool.py's run_playbook_partially_quoted() for the must-still-fire sibling with one unquoted segment."
 
 [[expect_none]]
 file = "clean/mcp/mcp.json"

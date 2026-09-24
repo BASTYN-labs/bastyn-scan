@@ -7,7 +7,9 @@ it: `expect_none` on the whole file.
 """
 
 import os
+import shlex
 import subprocess
+import sys
 
 from langchain.tools import tool
 
@@ -29,6 +31,13 @@ max_tokens = 500
 # Correct credential handling: subscript / getenv, never a string literal.
 openai_key = os.environ["OPENAI_API_KEY"]
 anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+# Scaffolding for run_playbook_fully_quoted() below -- mirrored in
+# tests/corpus/vulnerable/llm10_shell_injection_tool.py's
+# run_playbook_partially_quoted() must-still-fire counterpart.
+SAFE_PLAYBOOKS = ("deploy", "rollback")
+SAFE_HOSTS = ("prod-1", "prod-2")
+RUNNER_PATH = "/opt/opsbot/run_playbook.py"
 
 
 def build_greeting(name: str) -> str:
@@ -215,3 +224,18 @@ def restart_component(component: str) -> str:
         return f"unknown component: {component}"
     command = commands[component]
     return subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT).decode()
+
+
+def run_playbook_fully_quoted(playbook: str, target_host: str, extra_args: str) -> dict:
+    """near_miss (LLM10): every interpolated value is wrapped in
+    shlex.quote(), so the shell sees each one as a single argument no
+    matter what it contains -- BAS-LLM10-009's exclude_if: shell_quoted
+    clause suppresses this."""
+    if playbook not in SAFE_PLAYBOOKS or target_host not in SAFE_HOSTS:
+        return {"ok": False, "error": "not allowed"}
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(RUNNER_PATH)} "
+        f"{shlex.quote(playbook)} --target {shlex.quote(target_host)} {shlex.quote(extra_args)}"
+    )
+    completed = subprocess.run(command, shell=True, capture_output=True)
+    return {"ok": completed.returncode == 0}

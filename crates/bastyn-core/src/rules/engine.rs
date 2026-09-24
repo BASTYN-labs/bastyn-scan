@@ -220,8 +220,9 @@ impl CompiledFlow {
 struct CompiledExcludeIf {
     /// Which captured metavariable to test.
     variable: String,
-    /// Which Tier-2 predicate to test it with.
-    kind: ExcludeIfKind,
+    /// Which Tier-2 predicate(s) to test it with; the match is dropped if
+    /// *any* proves the value safe.
+    kinds: Vec<ExcludeIfKind>,
 }
 
 impl CompiledRule {
@@ -403,7 +404,7 @@ fn compile_exclude_if(
         }),
         Some(exclude) => Ok(Some(CompiledExcludeIf {
             variable: exclude.variable,
-            kind: exclude.kind,
+            kinds: exclude.kind.kinds(),
         })),
     }
 }
@@ -736,11 +737,11 @@ fn scan_with<L: LanguageExt + Copy>(
             {
                 let graph =
                     graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
-                let excluded = match exclude.kind {
+                let excluded = exclude.kinds.iter().any(|kind| match kind {
                     ExcludeIfKind::ClosedValue => graph.is_closed(captured.node_id()),
                     ExcludeIfKind::ConstantPath => graph.is_constant_path(captured.node_id()),
                     ExcludeIfKind::ShellQuoted => graph.is_shell_quoted(captured.node_id()),
-                };
+                });
                 if excluded {
                     continue;
                 }

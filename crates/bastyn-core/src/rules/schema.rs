@@ -216,7 +216,8 @@ fn default_flow_variable() -> String {
 /// ```yaml
 /// exclude_if:
 ///   variable: ARG          # which capture to test; defaults to ARG
-///   kind: constant_path    # closed_value | constant_path | shell_quoted
+///   kind: constant_path    # closed_value | constant_path | shell_quoted,
+///                          # one kind or a list of them
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -225,8 +226,28 @@ pub(crate) struct ExcludeIfDef {
     /// the same default `flow:` uses and for the same reason.
     #[serde(default = "default_flow_variable")]
     pub(crate) variable: String,
-    /// Which Tier-2 structural predicate to test.
-    pub(crate) kind: ExcludeIfKind,
+    /// Which Tier-2 structural predicate(s) to test.
+    pub(crate) kind: ExcludeIfKindSpec,
+}
+
+/// One `exclude_if:` kind or several, so a rule author writes `kind:
+/// closed_value` when one predicate is enough and `kind: [closed_value,
+/// shell_quoted]` when the match should be dropped if *any* of them proves
+/// the value safe.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ExcludeIfKindSpec {
+    One(ExcludeIfKind),
+    Many(Vec<ExcludeIfKind>),
+}
+
+impl ExcludeIfKindSpec {
+    pub(crate) fn kinds(&self) -> Vec<ExcludeIfKind> {
+        match self {
+            Self::One(kind) => vec![*kind],
+            Self::Many(kinds) => kinds.clone(),
+        }
+    }
 }
 
 /// Which Python-only structural predicate `exclude_if:` tests. See
