@@ -201,6 +201,24 @@ severity = "critical"
 why      = "find_ticket_by_customer(): customer_email is interpolated as a query *value* into a WHERE clause, not a schema identifier -- the 2026-09-24 metavariable_not_matches DDL-keyword exclusion (added to fix all 4 BAS-LLM10-017 report false positives, all PRAGMA table_info(...)/ALTER TABLE ... ADD COLUMN ... identifier interpolation) only excludes an f-string that opens with PRAGMA/ALTER TABLE/CREATE TABLE/DROP TABLE/CREATE INDEX/DROP INDEX, and this f-string opens with SELECT, so it must still fire -- proving the exclusion does not over-broadly swallow real injections."
 
 [[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 65
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "materialize_filtered_table(): opens with CREATE TABLE, but also interpolates user_filter as a real query value (quoted with the opposite quote character) in a WHERE clause appended to the DDL. Regression fixture for a 2026-09-24 final-review finding: the DDL exclusion originally checked only the opening keyword, not whether a quoted value literal appeared anywhere in the rest of the string, so this was wrongly excluded before the exclusion regex was tightened to require the whole remainder be quote-free."
+
+[[expect]]
+file     = "vulnerable/llm10_unparameterized_sql_tool.py"
+line     = 73
+rule     = "BAS-LLM10-017"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "add_column_with_default(): opens with ALTER TABLE, but DEFAULT '{user_filter}' interpolates a real query value, not a schema identifier -- the ADD COLUMN counterpart to materialize_filtered_table() above, same 2026-09-24 regression and same tightened exclusion."
+
+[[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
 line     = 13
 rule     = "BAS-ZT1-001"
@@ -459,6 +477,12 @@ line     = 35
 category = "LLM10"
 why      = "path = os.path.join(RUNBOOK_DIR, filename) on the line above, then open(path) -- the join is genuinely there, but in a separate statement. BAS-LLM10-012's metavariable_matches only ever inspects the literal text of the captured $ARG node at the open() call site itself (RegexMatcher has no dataflow/definition resolution), so a bare `path` identifier can never match the os.path.join(/f-string/concat regex no matter what it was assigned to a line earlier. Distinct from path_traversal_bare_parameter.py, where the path is never assembled at all -- here it is assembled, just not inline."
 
+[[known_gap]]
+file     = "vulnerable/real_misses/shell_command_via_mutated_registry.py"
+line     = 44
+category = "LLM10"
+why      = "subprocess.run(COMMANDS[component], shell=True), where COMMANDS is a module-level dict genuinely mutated elsewhere in the file (COMMANDS[name] = cmd inside register()). crates/bastyn-core/src/flow/graph.rs's Analyzer::bind_targets only records a binding for a plain-identifier assignment target -- a subscript target (COMMANDS[name] = cmd) or an attribute-call receiver (CMDS.append(x)) both fall through its `_ => {}` arm and record nothing, so the graph never learns COMMANDS holds anything beyond its own dict-of-literals initializer. BAS-LLM10-009's exclude_if: closed_value clause therefore still resolves COMMANDS[component] as `closed: true` and wrongly suppresses this finding. Fixing this needs the graph to track mutated container names, a materially larger change than tracking a plain-identifier reassignment -- out of scope for this fix wave; recorded here rather than attempted."
+
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
 # below run in the *opposite* direction from every `[[known_gap]]` above,
@@ -528,6 +552,12 @@ file     = "vulnerable/real_misses/credential_default_echoed_as_client_credentia
 line     = 30
 category = "ZT1"
 why      = "(Low confidence -- borderline.) A credential-shaped os.environ.get() default sent as a client credential in a login request body, not compared against or stored. BAS-ZT1-020 cannot distinguish a client script echoing a server's own documented default account from a program defending its own weak default secret -- both are the identical os.environ.get(CREDENTIAL_KEY, \"real-looking-default\") shape, and only this file's own docstring says which one it is."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/sql_ddl_via_local_variable.py"
+line     = 23
+category = "LLM10"
+why      = "ensure_column(): sql = f\"ALTER TABLE {table} ADD COLUMN {column} TEXT\"; conn.execute(sql) -- a genuine schema-identifier interpolation split across a local variable, the same DDL shape Finding 2 of the 2026-09-24 final review fixed for BAS-LLM10-017's same-node case. BAS-LLM10-018 matches the f-string's inner text as $$$FSTR, a variadic capture; a metavariable_not_matches clause mirroring -017's fix was tried and confirmed empirically to never exclude anything, because this engine's metavariable_not_matches only ever reads MetaVarEnv's single_matched map via env.get_match(), never multi_matched where a $$$-bound capture is stored -- the same limitation already documented for metavariable_matches against three_interpolation_override.py's $$$OVERRIDE capture. See bastyn.yml's comment on BAS-LLM10-018 for the full investigation."
 
 # ---------------------------------------------------------------------
 # vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not

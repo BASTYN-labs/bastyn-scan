@@ -319,6 +319,19 @@ rules:
   #     a guard like `if SECURE_MODE: return ...` makes the sink below it
   #     unreachable. See
   #     tests/corpus/vulnerable/real_misses/shell_command_behind_disabled_flag.py.
+  #
+  # Known gaps, documented rather than papered over:
+  #   - a module-level dict/list that is genuinely mutated elsewhere in the
+  #     file (COMMANDS[name] = cmd) still resolves as permanently
+  #     `closed: true` by exclude_if: closed_value, wrongly suppressing a
+  #     real finding -- crates/bastyn-core/src/flow/graph.rs's
+  #     Analyzer::bind_targets only records a binding for a plain-identifier
+  #     assignment target; a subscript target or an attribute-call receiver
+  #     both record nothing, so the graph never learns the container was
+  #     mutated after its own literal initializer. Tracking mutated
+  #     container names through the graph is a materially larger change
+  #     than this fix wave's scope. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_via_mutated_registry.py.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-009
@@ -527,6 +540,21 @@ rules:
   # commands -- interpolating any non-literal value into a query string
   # instead of binding it as a parameter is wrong regardless of what the
   # value is named or where it came from.
+  #
+  # metavariable_not_matches (added 2026-09-24 to fix all 4 BAS-LLM10-017
+  # report false positives) originally excluded any f-string that merely
+  # *opened* with a DDL keyword (PRAGMA/ALTER TABLE/...), without checking
+  # the rest of the string -- so f"CREATE TABLE {name} AS SELECT * FROM
+  # src WHERE owner = '{user_filter}'" and f"ALTER TABLE t ADD COLUMN c
+  # TEXT DEFAULT '{user_filter}'" were both wrongly excluded, even though
+  # each interpolates a real query *value* (wrapped in the opposite quote
+  # character) alongside the DDL keyword. Tightened the same day, final
+  # review: the exclusion now also requires no quote character (of either
+  # kind) anywhere between the DDL keyword and the closing delimiter --
+  # a genuine SQL identifier never needs quoting in DDL, a value literal
+  # always does. See tests/corpus/vulnerable/llm10_unparameterized_sql_tool.py's
+  # materialize_filtered_table() / add_column_with_default() for the
+  # regression fixtures.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-017
@@ -548,19 +576,22 @@ rules:
       CUR: "(?i)(cursor|cur|db|conn|connection)"
       ARG: '(^f["\x27]|["\x27]\s*\+\s*\w|\w\s*\+\s*["\x27]|%\s*\()'
     metavariable_not_matches:
-      ARG: '(?i)^f["\x27]\s*(PRAGMA|ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+TABLE|CREATE\s+INDEX|DROP\s+INDEX)\b'
+      ARG: '(?i)^f["\x27]\s*(PRAGMA|ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+TABLE|CREATE\s+INDEX|DROP\s+INDEX)\b[^"\x27]*["\x27]$'
     description: >
       A database cursor executes a query string built by f-string
       interpolation, concatenation, or %-formatting, with the
       interpolated value passed inline rather than as a separate bind
       parameter. This reports the composition unconditionally rather
       than gating on the interpolated value's name or provenance.
-      Excluded when the interpolated text is a schema-definition
-      statement (PRAGMA, ALTER TABLE, CREATE TABLE, DROP TABLE,
-      CREATE/DROP INDEX) — SQL identifiers such as table and column
+      Excluded when the string opens with a schema-definition keyword
+      (PRAGMA, ALTER TABLE, CREATE TABLE, DROP TABLE, CREATE/DROP INDEX)
+      and no interpolated value literal (quoted) appears anywhere in the
+      rest of the statement — SQL identifiers such as table and column
       names cannot be bound as query parameters at all, so interpolating
-      them here is the correct way to write this, unlike interpolating a
-      value into a WHERE/SELECT clause.
+      one here is the correct way to write this. A DDL statement that
+      also interpolates a quoted value (for example a WHERE/DEFAULT
+      clause built onto a CREATE/ALTER) still fires, since that value
+      could have been bound as a parameter and was not.
     remediation: >
       Never interpolate a value into a SQL string. Use parameterized
       queries (cursor.execute(sql, params)) and keep every dynamic value
@@ -596,6 +627,27 @@ rules:
   # mirroring how BAS-LLM03-001 in this same file expresses its
   # `-> $RET` / no-return-type variants as separate `any:` entries
   # rather than one pattern trying to cover both shapes.
+  #
+  # 2026-09-24 final review: this rule has the same DDL-identifier false
+  # positive Finding 2 fixed for BAS-LLM10-017 above (sql = f"ALTER TABLE
+  # {table} ADD COLUMN {column} TEXT"; conn.execute(sql) is a genuine
+  # schema-identifier interpolation, not a value injection, and should not
+  # fire). Tried the -017-style fix here: a `metavariable_not_matches:
+  # {FSTR: '(?i)^(PRAGMA|ALTER\s+TABLE|...)\b[^"\x27]*$'}` clause against
+  # $$$FSTR, the variadic capture this rule's `any:` patterns bind the
+  # f-string's inner text to. Confirmed empirically (built the scanner
+  # with the clause added and ran it against both a DDL-only fixture and
+  # an existing true-positive fixture) that it compiles but never excludes
+  # anything -- the DDL-only fixture still fired. Root cause traced to
+  # ast_grep_core::meta_var::MetaVarEnv: a `$$$`-prefixed capture is stored
+  # in `multi_matched`, but both `metavariable_matches` and
+  # `metavariable_not_matches` in this engine's CompiledRule only ever
+  # call `env.get_match(var)`, which reads `single_matched` -- the same
+  # limitation already documented for `metavariable_matches` against
+  # `$$$OVERRIDE`-shaped captures (see the vulnerable/real_misses/
+  # three_interpolation_override.py known_gap). Not attempted as a rule
+  # fix; recorded instead as a known_false_positive. See
+  # tests/corpus/vulnerable/real_misses/sql_ddl_via_local_variable.py.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-018

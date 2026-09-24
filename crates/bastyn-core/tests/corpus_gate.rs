@@ -116,7 +116,23 @@ struct KnownFalsePositive {
 ///
 /// Entries marked `requires_network` are excluded: they are measurement limits
 /// of an offline gate, not things the scanner cannot detect.
-const MAX_KNOWN_GAPS: usize = 14;
+const MAX_KNOWN_GAPS: usize = 15;
+// Raised from 14 to 15 on 2026-09-24, admitting one deliberate new gap: a
+// known_gap entry for vulnerable/real_misses/shell_command_via_mutated_registry.py,
+// found during the final review of this round's precision fixes.
+// BAS-LLM10-009's exclude_if: closed_value clause resolves a module-level
+// dict/list as permanently `closed: true` once it sees the literal
+// initializer, because crates/bastyn-core/src/flow/graph.rs's
+// Analyzer::bind_targets only records a binding for a plain-identifier
+// assignment target -- a subscript target (COMMANDS[name] = cmd) or an
+// attribute-call receiver (CMDS.append(x)) both fall through its `_ => {}`
+// arm and record no binding at all, so the graph never learns the
+// container is mutated after its own definition. Fixing this properly
+// needs the graph to track mutated container names through subscript and
+// attribute-call targets, a materially larger change than this fix wave's
+// scope (which was five specific, bounded review findings) -- recorded
+// here rather than attempted.
+//
 // Lowered from 15 to 14 on 2026-09-23, the direction this constant exists to
 // reward: the known_gap entry for vulnerable/real_misses/sql_from_tool_parameter.py
 // (sql = f"...{query}%'"; cursor.execute(sql), where `query` is an
@@ -287,7 +303,20 @@ const MAX_KNOWN_GAPS: usize = 14;
 /// Raising it means a rule started over-triggering on a new case that
 /// cannot currently be excluded precisely -- that needs a human decision in
 /// the PR description, not a silent bump, exactly like `MAX_KNOWN_GAPS`.
-const MAX_KNOWN_FALSE_POSITIVES: usize = 6;
+const MAX_KNOWN_FALSE_POSITIVES: usize = 7;
+// Raised from 6 to 7 on 2026-09-24 (final review of this same round),
+// admitting one more deliberate precision debt: a known_false_positive
+// entry for vulnerable/real_misses/sql_ddl_via_local_variable.py.
+// BAS-LLM10-018 has the same DDL-identifier false positive Finding 2 of
+// this review fixed for BAS-LLM10-017's same-node case, but -018 matches
+// the f-string's inner text as $$$FSTR, a variadic capture -- and a
+// metavariable_not_matches clause mirroring -017's fix was tried and
+// confirmed empirically (built and scanned) to never exclude anything,
+// because this engine's metavariable_not_matches only ever reads
+// MetaVarEnv's single_matched map, never multi_matched where a
+// $$$-bound capture lives. See bastyn.yml's comment on BAS-LLM10-018 for
+// the full investigation.
+//
 // Raised from 4 to 6 on 2026-09-24, admitting four new deliberate
 // precision debts: the four remaining false positives from the community
 // precision report that Tasks 4-7 did not close, each because closing it
