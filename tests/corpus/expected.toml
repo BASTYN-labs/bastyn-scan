@@ -491,22 +491,6 @@ category = "LLM10"
 why      = "open(os.path.join(HERE, \"data.json\")) where HERE = os.path.dirname(__file__) at module level -- a fixed, local, never-attacker-influenceable constant, not a caller-supplied value. BAS-LLM10-012's ARG-shape gate cannot tell a safe local constant apart from a real non-literal without dataflow analysis, so it fires exactly as its contract says it should on a bare-identifier argument."
 
 # ---------------------------------------------------------------------
-# vulnerable/real_misses/shell_command_via_local_variable.py -- final
-# review, 2026-09-23 (finding I1). The identical sibling-statement
-# blindness already documented for BAS-LLM10-004 above (and for
-# BAS-LLM10-012's own known_gap entries): a fixed literal command held in
-# a local variable one line above the sink cannot be excluded by `none:`,
-# which only ever matches alternate shapes of the matched node itself, not
-# a prior sibling assignment.
-# ---------------------------------------------------------------------
-
-[[known_false_positive]]
-file     = "vulnerable/real_misses/shell_command_via_local_variable.py"
-line     = 32
-category = "LLM10"
-why      = "cmd = \"systemctl restart opsbot-worker\"; subprocess.run(cmd, shell=True) -- a fixed literal command, but assigned to a local variable one line above the call rather than passed inline. BAS-LLM10-009's `none:` exclusion for a bare string-literal argument (same-node only) cannot see the prior assignment."
-
-# ---------------------------------------------------------------------
 # vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not
 # expressed in application source at all. ZT3 had no rule until the infra
 # analyser read container configuration.
@@ -672,7 +656,7 @@ why  = "A public, unauthenticated chat endpoint (correct for a public chatbot) w
 
 [[expect_none]]
 file = "clean/near_misses.py"
-why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens."
+why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens. Plus two 2026-09-24 additions proving BAS-LLM10-009's new exclude_if: closed_value clause: restart_worker_via_variable() (moved here from vulnerable/real_misses/shell_command_via_local_variable.py once the Tier-2 dataflow graph could resolve a literal held in a local variable back to the closed literal it holds) and restart_component() (a shell command looked up in a dict of literal commands after a membership check, provably one of the dict's own values regardless of the identifier's name)."
 
 [[expect_none]]
 file = "clean/mcp/mcp.json"
