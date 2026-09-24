@@ -497,6 +497,39 @@ category = "LLM10"
 why      = "eval(f\"torch.{torch_dtype}\") guarded one line above by an exact-match check against a 3-item whitelist that raises before eval() is ever reached. The guard is a sibling if/raise statement, not part of the eval() call's own node, so `none:` (same-node exclusion) and `inside:` (ancestor constraint) both structurally cannot express it."
 
 # ---------------------------------------------------------------------
+# The four remaining false positives from the community precision report
+# that Tasks 4-7 did not close, each because closing it properly needs an
+# analysis materially larger than that round's scope (reachability,
+# dead-branch/constant-propagation, interprocedural call-site analysis,
+# and call-context distinction, respectively). Recorded here rather than
+# silently left out, same practice as every other entry in this file.
+# ---------------------------------------------------------------------
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/shell_command_via_unreachable_function.py"
+line     = 21
+category = "LLM10"
+why      = "subprocess.check_output(command, shell=True, ...) inside a function nothing in this file calls. BAS-LLM10-009 has no reachability analysis -- whether anything calls run_raw_command is a whole-program question a file-local structural rule cannot answer, so it reports the shape regardless of whether the function is ever invoked."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/shell_command_behind_disabled_flag.py"
+line     = 25
+category = "LLM10"
+why      = "subprocess.run(command, shell=True, ...) reachable only when the module-level SECURE_MODE constant is False, which it never is in this file. BAS-LLM10-009 has no constant-propagation or dead-branch analysis, so it cannot prove the branch containing the sink is unreachable in the shipped version."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/path_traversal_parameter_with_literal_callers.py"
+line     = 21
+category = "LLM10"
+why      = "os.path.join(RESULTS, name) where name is a bare function parameter, but every call site in the file happens to pass a literal. BAS-LLM10-012's exclude_if: constant_path only resolves a module-level name's own assignment chain; proving every caller of a parameter passes a literal needs interprocedural call-site analysis, which is materially larger and out of scope here."
+
+[[known_false_positive]]
+file     = "vulnerable/real_misses/credential_default_echoed_as_client_credential.py"
+line     = 30
+category = "ZT1"
+why      = "(Low confidence -- borderline.) A credential-shaped os.environ.get() default sent as a client credential in a login request body, not compared against or stored. BAS-ZT1-020 cannot distinguish a client script echoing a server's own documented default account from a program defending its own weak default secret -- both are the identical os.environ.get(CREDENTIAL_KEY, \"real-looking-default\") shape, and only this file's own docstring says which one it is."
+
+# ---------------------------------------------------------------------
 # vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not
 # expressed in application source at all. ZT3 had no rule until the infra
 # analyser read container configuration.

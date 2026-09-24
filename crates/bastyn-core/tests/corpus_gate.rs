@@ -287,9 +287,53 @@ const MAX_KNOWN_GAPS: usize = 14;
 /// Raising it means a rule started over-triggering on a new case that
 /// cannot currently be excluded precisely -- that needs a human decision in
 /// the PR description, not a silent bump, exactly like `MAX_KNOWN_GAPS`.
-const MAX_KNOWN_FALSE_POSITIVES: usize = 4;
-// Raised from 2 to 4 on 2026-09-23, admitting two deliberate new precision
-// debts, both found and fixed in the same final-review pass:
+const MAX_KNOWN_FALSE_POSITIVES: usize = 6;
+// Raised from 4 to 6 on 2026-09-24, admitting four new deliberate
+// precision debts: the four remaining false positives from the community
+// precision report that Tasks 4-7 did not close, each because closing it
+// properly needs an analysis materially larger than that round's scope --
+//
+//   - vulnerable/real_misses/shell_command_via_unreachable_function.py:21.
+//     BAS-LLM10-009 has no reachability analysis: whether anything in the
+//     program calls a function is a whole-program question this
+//     file-local structural rule cannot answer.
+//   - vulnerable/real_misses/shell_command_behind_disabled_flag.py:25.
+//     BAS-LLM10-009 has no constant-propagation or dead-branch analysis:
+//     it cannot prove a module-level boolean constant makes the branch
+//     containing the sink unreachable in the shipped version.
+//   - vulnerable/real_misses/path_traversal_parameter_with_literal_callers.py:21.
+//     BAS-LLM10-012's exclude_if: constant_path only resolves a
+//     module-level name's own assignment chain forward from its
+//     definition; proving that every caller of a function parameter
+//     passes a literal needs interprocedural call-site analysis, which
+//     it does not have.
+//   - vulnerable/real_misses/credential_default_echoed_as_client_credential.py:30
+//     (low confidence -- borderline, per the report itself). BAS-ZT1-020
+//     cannot tell a client script echoing a server's own documented
+//     default credential apart from a program defending its own weak
+//     default secret -- both are the identical
+//     os.environ.get(KEY, "real-looking-default") shape, and only
+//     call-context analysis (is the value sent, or compared/stored?)
+//     could tell them apart.
+//
+// This same pass also corrects the "Raised from 2 to 4 on 2026-09-23"
+// entry immediately below, which had gone stale: it names
+// vulnerable/real_misses/path_traversal_safe_local_constant.py and
+// vulnerable/real_misses/shell_command_via_local_variable.py as
+// currently-admitted precision debts and calls them unfixable without
+// real dataflow tracing. Both claims are now false -- Task 6 (commit
+// ec0fbdf) added BAS-LLM10-012's exclude_if: constant_path and Task 4
+// (commit 028d58c) added BAS-LLM10-009's exclude_if: [closed_value,
+// shell_quoted], and once the Tier-2 dataflow graph could prove each
+// value safe, both entries moved out of known_false_positive entirely --
+// see their `why` text under [[expect]] in tests/corpus/expected.toml.
+// Left uncorrected below for the historical record, per this constant's
+// own practice of not rewriting past entries (see the MAX_KNOWN_GAPS
+// 14-to-12 entry for the same pattern).
+//
+// Raised from 2 to 4 on 2026-09-23 (later corrected -- see the 4-to-6
+// entry above), admitting two deliberate new precision debts, both found
+// and fixed in the same final-review pass:
 //
 //   - vulnerable/real_misses/path_traversal_safe_local_constant.py:40
 //     (finding C1, part 2). BAS-LLM10-012's metavariable_not_matches
@@ -312,11 +356,13 @@ const MAX_KNOWN_FALSE_POSITIVES: usize = 4;
 //     alternate shapes of the matched node itself, never a prior sibling
 //     assignment.
 //
-// Neither is fixable without either narrowing the rule in a way that risks
-// swallowing a real non-literal command/path, or real dataflow tracing --
-// not attempted here, consistent with this whole rule batch's deliberate
-// unconditional/structural design (see the plan's Architecture note in
-// docs/superpowers/plans/2026-09-23-recall-gap-detection-rules.md).
+// Neither was fixable without either narrowing the rule in a way that
+// risked swallowing a real non-literal command/path, or real dataflow
+// tracing -- not attempted in that pass, consistent with this whole rule
+// batch's deliberate unconditional/structural design (see the plan's
+// Architecture note in
+// docs/superpowers/plans/2026-09-23-recall-gap-detection-rules.md). Both
+// were fixed later regardless -- see the correction note above.
 //
 // 2 on 2026-08-28: split out of MAX_KNOWN_GAPS (see that constant's 14-to-12
 // history entry). Both entries are BAS-LLM10-004 flagging an eval()/exec()
