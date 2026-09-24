@@ -79,6 +79,45 @@ def run(user_command):
     assert_eq!(findings.len(), 1, "{findings:#?}");
 }
 
+/// An `exclude_if:` gate on a metavariable the matching pattern never bound
+/// has no evidence to exclude with, and fails open -- the finding stays --
+/// the opposite direction from `tests_flow.rs`'s
+/// `a_flow_gate_on_an_unbound_metavariable_fails_closed`, where a `flow:`
+/// gate on an unbound metavariable drops the finding instead.
+#[test]
+fn an_exclude_if_gate_on_an_unbound_metavariable_fails_open() {
+    let yaml = r"
+rules:
+  - id: TEST-EXCLUDE-UNBOUND
+    title: test
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - subprocess.run($ARG, shell=True)
+    exclude_if:
+      variable: NEVER_BOUND
+      kind: closed_value
+    description: test
+    remediation: test
+";
+    let rules = RuleSet::from_yaml(yaml).unwrap();
+    let source = "\
+COMMANDS = {\"restart\": \"systemctl restart worker\"}
+
+
+def run(component):
+    if component not in COMMANDS:
+        return \"unknown\"
+    command = COMMANDS[component]
+    subprocess.run(command, shell=True)
+";
+    let findings = scan_source(&rules, Path::new("t.py"), source);
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+}
+
 /// The graph is Python-only. An `exclude_if:` rule in a language it cannot
 /// analyse is a load error, not a rule that quietly never excludes.
 #[test]
