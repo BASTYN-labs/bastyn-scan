@@ -306,6 +306,19 @@ rules:
   # of the string open to injection — this rule reports the composition
   # itself, not the absence of a check, so a bypassable check does not
   # suppress it. Matches docs/rule-catalogue.md's LLM10.12.
+  #
+  # Known false positives, documented rather than papered over:
+  #   - a sink inside a function nothing in the file calls still fires --
+  #     this rule has no reachability analysis, and "does anything call
+  #     this" is a whole-program question a file-local structural rule
+  #     cannot answer. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_via_unreachable_function.py.
+  #   - a sink reachable only when a module-level boolean constant is
+  #     flipped from its shipped value still fires -- this rule has no
+  #     constant-propagation or dead-branch analysis, so it cannot prove
+  #     a guard like `if SECURE_MODE: return ...` makes the sink below it
+  #     unreachable. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_behind_disabled_flag.py.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-009
@@ -441,8 +454,11 @@ rules:
   #     boundary, and telling "every caller happens to pass a literal
   #     today" apart from "a real caller-supplied path" would need genuine
   #     interprocedural call-site analysis, out of scope here (report FP
-  #     #6). This corpus has no fixture for that specific shape; see
-  #     tests/corpus/vulnerable/llm10_path_traversal_tool.py's
+  #     #6). Recorded as a known_false_positive (a precision debt, not a
+  #     recall gap -- the rule fires exactly as its own contract says it
+  #     should) at
+  #     tests/corpus/vulnerable/real_misses/path_traversal_parameter_with_literal_callers.py;
+  #     see tests/corpus/vulnerable/llm10_path_traversal_tool.py's
   #     read_bundled_asset() for the adjacent, correctly-still-firing case
   #     of a parameter reaching os.path.join with no literal-callers-only
   #     guarantee at all.
