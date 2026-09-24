@@ -51,3 +51,23 @@ def find_ticket_by_customer(conn, customer_email: str):
     *value* in a WHERE clause, not a schema identifier -- the DDL-keyword
     exclusion does not apply here, and this must still fire."""
     return conn.execute(f"SELECT * FROM tickets WHERE customer_email = '{customer_email}'").fetchall()
+
+
+def materialize_filtered_table(conn, name: str, user_filter: str) -> None:
+    """LLM10 (BAS-LLM10-017): opens with CREATE TABLE, a DDL keyword the
+    exclusion's opening check alone would have swallowed -- but the rest
+    of the string also interpolates user_filter as a real query *value*,
+    quoted with the opposite quote character. Regression fixture for a
+    2026-09-24 final-review finding: the DDL exclusion originally only
+    checked the opening keyword, not whether a quoted value literal
+    appeared anywhere in the remainder, so this was wrongly excluded.
+    Must still fire."""
+    conn.execute(f"CREATE TABLE {name} AS SELECT * FROM src WHERE owner = '{user_filter}'")
+
+
+def add_column_with_default(conn, table: str, column: str, user_filter: str) -> None:
+    """LLM10 (BAS-LLM10-017): opens with ALTER TABLE, but DEFAULT
+    '{user_filter}' interpolates a real query value, not a schema
+    identifier -- same 2026-09-24 regression as materialize_filtered_table()
+    above, the ADD COLUMN counterpart. Must still fire."""
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT DEFAULT '{user_filter}'")
