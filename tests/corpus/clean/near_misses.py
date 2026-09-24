@@ -183,3 +183,35 @@ def get_current_time() -> str:
     Always confirm with the user before changing the system clock.
     """
     return "12:00:00 UTC"
+
+
+def restart_worker_via_variable() -> None:
+    """Confirmed safe (LLM10): moved here from
+    vulnerable/real_misses/shell_command_via_local_variable.py on
+    2026-09-24, where it had been recorded as a known_false_positive --
+    cmd is a fixed literal, but assigned one line above the
+    subprocess.run() call rather than passed inline, so BAS-LLM10-009's
+    same-node `none:` exclusion (which can only match alternate shapes of
+    the matched node itself, never a prior sibling statement) could not
+    see it and reported an incorrect critical finding. The Tier-2
+    dataflow graph added 2026-09-24 resolves $ARG back through the local
+    assignment to the literal it holds, so BAS-LLM10-009's new
+    `exclude_if: closed_value` clause now proves cmd is closed and
+    correctly suppresses this."""
+    cmd = "systemctl restart opsbot-worker"
+    subprocess.run(cmd, shell=True)
+
+
+def restart_component(component: str) -> str:
+    """near_miss (LLM10): the shell command is looked up in a dict of
+    literal commands after a membership check that returns on failure --
+    `command` can only ever be one of the dict's own literal values, so
+    BAS-LLM10-009's exclude_if: closed_value clause suppresses this."""
+    commands = {
+        "worker": "systemctl restart opsbot-worker",
+        "scheduler": "systemctl restart opsbot-scheduler",
+    }
+    if component not in commands:
+        return f"unknown component: {component}"
+    command = commands[component]
+    return subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT).decode()

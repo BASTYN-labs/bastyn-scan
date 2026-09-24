@@ -360,6 +360,9 @@ rules:
       - subprocess.Popen('$LIT', shell=True)
       - subprocess.Popen("$LIT", shell=True, $$$REST)
       - subprocess.Popen('$LIT', shell=True, $$$REST)
+    exclude_if:
+      variable: ARG
+      kind: closed_value
     description: >
       A command string that is not a fixed literal reaches a shell
       (subprocess...shell=True, os.system, or os.popen). A shell
@@ -368,7 +371,10 @@ rules:
       first-token allowlist, a substring denylist — is bypassable. This
       rule reports the composition itself: a non-literal command reaching
       a shell is a defect independent of whatever check happens to
-      precede it.
+      precede it. An argument provably drawn from a fixed set the file
+      itself defines — for example a dict of literal commands looked up
+      by a key already checked for membership — is excluded: nothing in
+      it can be attacker-influenced regardless of the identifier's name.
     remediation: >
       Never build a shell command string from anything other than a fixed
       literal. Call the target program directly with an argv list and
