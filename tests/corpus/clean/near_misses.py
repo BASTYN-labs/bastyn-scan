@@ -239,3 +239,24 @@ def run_playbook_fully_quoted(playbook: str, target_host: str, extra_args: str) 
     )
     completed = subprocess.run(command, shell=True, capture_output=True)
     return {"ok": completed.returncode == 0}
+
+
+HERE = os.path.dirname(__file__)
+
+
+def read_bundled_config() -> str:
+    """Confirmed safe (LLM10): moved here from
+    vulnerable/real_misses/path_traversal_safe_local_constant.py on
+    2026-09-24, where it had been recorded as a known_false_positive --
+    HERE is a bare identifier, a genuine non-literal by BAS-LLM10-012's own
+    ARG-shape gate, but same-node regex matching (metavariable_matches /
+    metavariable_not_matches) had no way to see how HERE was assigned, so
+    it could not tell this apart from a real attacker-controlled variable.
+    The Tier-2 dataflow graph added 2026-09-24 resolves HERE back through
+    its module-level assignment and proves it is a constant_path: built
+    only from __file__ (fixed at import time, never attacker-influenced)
+    and a call to os.path.dirname, one of the whitelisted pure
+    path-construction functions. BAS-LLM10-012's new
+    exclude_if: constant_path clause now suppresses this correctly."""
+    with open(os.path.join(HERE, "data.json")) as handle:
+        return handle.read()
