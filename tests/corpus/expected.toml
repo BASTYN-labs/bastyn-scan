@@ -163,6 +163,15 @@ severity = "critical"
 why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted."
 
 [[expect]]
+file     = "vulnerable/shell_command_not_stdin_sourced.py"
+line     = 10
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "command is read from a config file, not stdin -- must still fire after the stdin_dispatch narrowing added to BAS-LLM10-009's exclude_if clause; guards against is_stdin_dispatch() being implemented too broadly."
+
+[[expect]]
 file     = "vulnerable/llm10_path_traversal_tool.py"
 line     = 16
 rule     = "BAS-LLM10-012"
@@ -844,6 +853,10 @@ why  = "A multi-stage build whose builder stage runs USER root and whose shipped
 [[expect_none]]
 file = "clean/docker-compose.yml"
 why  = "privileged: false, network_mode: bridge, a project-relative bind mount and a named volume -- every shape BAS-INFRA-003/004/005 must walk past. Plus every BAS-INFRA-006 near-miss: an interpolated MYSQL_PASSWORD, a credentials-file path on GOOGLE_APPLICATION_CREDENTIALS, a boolean flag on MYSQL_ALLOW_EMPTY_PASSWORD, an empty MYSQL_PASSWORD, and a documented placeholder on MYSQL_ROOT_PASSWORD."
+
+[[expect_none]]
+file = "clean/stdin_dispatch_hook.py"
+why = "command traces to an unprocessed sys.stdin read (json.load(sys.stdin)) -- the hook/skill-runner dispatch shape, excluded via exclude_if: stdin_dispatch."
 
 # ---------------------------------------------------------------------
 # Shapes measured on a real application that the corpus did not originally

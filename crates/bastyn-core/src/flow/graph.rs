@@ -131,6 +131,10 @@ impl Prov {
 
 /// What one expression resolved to.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent structural fact a rule's exclude_if: can test; a state machine would obscure which ones held"
+)]
 pub(crate) struct Resolved {
     pub(crate) prov: Prov,
     /// Whether the value is drawn from a set this file itself fixes -- a
@@ -148,6 +152,13 @@ pub(crate) struct Resolved {
     /// functions ([`PATH_CONST_FUNCTIONS`]). Consumed by an `exclude_if:
     /// constant_path` rule clause (`BAS-LLM10-012`).
     pub(crate) constant_path: bool,
+    /// Whether every non-literal segment of this value traces to a direct,
+    /// unprocessed read of `sys.stdin` (`sys.stdin.read()`, `json.load(
+    /// sys.stdin)`, `input()`) -- the command-dispatch trust boundary a
+    /// hook/skill runner uses, analogous to trusting `argv`, not
+    /// attacker-reachable input. Consumed by an `exclude_if: stdin_dispatch`
+    /// rule clause (`BAS-LLM10-009`).
+    pub(crate) stdin_dispatch: bool,
 }
 
 impl Resolved {
@@ -157,6 +168,7 @@ impl Resolved {
             closed: false,
             shell_quoted: false,
             constant_path: false,
+            stdin_dispatch: false,
         }
     }
 
@@ -166,6 +178,7 @@ impl Resolved {
             closed: true,
             shell_quoted: true,
             constant_path: true,
+            stdin_dispatch: true,
         }
     }
 
@@ -175,6 +188,7 @@ impl Resolved {
             closed: self.closed && other.closed,
             shell_quoted: self.shell_quoted && other.shell_quoted,
             constant_path: self.constant_path && other.constant_path,
+            stdin_dispatch: self.stdin_dispatch && other.stdin_dispatch,
         }
     }
 }
@@ -278,6 +292,18 @@ impl FlowGraph {
         self.resolved
             .get(&node_id)
             .is_some_and(|resolved| resolved.shell_quoted)
+    }
+
+    /// Whether the value at `node_id` traces, with no other non-literal
+    /// segment along the way, to a direct, unprocessed read of `sys.stdin`
+    /// (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`) -- the
+    /// command-dispatch trust boundary a hook/skill runner uses, not
+    /// attacker-reachable input. Consumed by an `exclude_if: stdin_dispatch`
+    /// rule clause (`BAS-LLM10-009`).
+    pub(crate) fn is_stdin_dispatch(&self, node_id: usize) -> bool {
+        self.resolved
+            .get(&node_id)
+            .is_some_and(|resolved| resolved.stdin_dispatch)
     }
 
     /// Whether a guard dominates the call argument at `node_id`.
@@ -580,6 +606,13 @@ const PATH_CONST_FUNCTIONS: &[&str] = &[
     "os.getcwd",
 ];
 
+/// Callee paths that, called with no argument, are themselves a direct,
+/// unprocessed read of `sys.stdin` -- the hook/skill-runner control-channel
+/// shape `stdin_dispatch` recognizes. `json.load(sys.stdin)` is the same
+/// shape but needs its argument inspected, so it is handled separately in
+/// [`FlowGraph::resolve_call`] rather than listed here.
+const STDIN_READ_CALLEES: &[&str] = &["sys.stdin.read", "input"];
+
 /// Expression node kinds the graph indexes. A kind absent from this list gets
 /// no entry, and [`FlowGraph::origin_of`] answers `None` for it -- which is
 /// how a rule capturing a non-expression is told the graph has nothing to
@@ -742,6 +775,7 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                             closed: false,
                             shell_quoted: false,
                             constant_path: false,
+                            stdin_dispatch: false,
                         }),
                         scope: inner,
                         branches: Vec::new(),
@@ -963,10 +997,34 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     value.is_some_and(|value| self.resolve(&value, scope, depth + 1).constant_path)
                 })
             });
+        // `sys.stdin.read()`/`input()` need no argument check: the call
+        // itself is the read. `json.load(sys.stdin)` is the same shape but
+        // only when its sole argument is `sys.stdin` written exactly that
+        // way -- not a name that merely holds it, and not one argument among
+        // several -- so this stays a narrow syntactic match rather than a
+        // resolved-value check.
+        let stdin_dispatch = STDIN_READ_CALLEES.contains(&callee.as_str())
+            || (callee == "json.load"
+                && node.field("arguments").is_some_and(|arguments| {
+                    let mut args = arguments.named_children();
+                    let Some(first) = args.next() else {
+                        return false;
+                    };
+                    if args.next().is_some() {
+                        return false;
+                    }
+                    let value = if first.kind() == "keyword_argument" {
+                        first.field("value")
+                    } else {
+                        Some(first)
+                    };
+                    value.is_some_and(|value| is_sys_stdin_expr(&value))
+                }));
         Resolved {
             closed: callee == "type",
             shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
             constant_path,
+            stdin_dispatch,
             prov: Prov::Call { callee },
         }
     }
@@ -1091,12 +1149,14 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     closed: previous.closed && resolved.closed,
                     shell_quoted: previous.shell_quoted && resolved.shell_quoted,
                     constant_path: previous.constant_path && resolved.constant_path,
+                    stdin_dispatch: previous.stdin_dispatch && resolved.stdin_dispatch,
                 },
                 Some(previous) => Resolved {
                     prov: Prov::Unknown,
                     closed: previous.closed && resolved.closed,
                     shell_quoted: previous.shell_quoted && resolved.shell_quoted,
                     constant_path: previous.constant_path && resolved.constant_path,
+                    stdin_dispatch: previous.stdin_dispatch && resolved.stdin_dispatch,
                 },
             });
         }
@@ -1158,6 +1218,24 @@ pub(crate) fn parameter_names<D: Doc>(parameters: &Node<'_, D>) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// Whether `node` is written exactly as `sys.stdin` -- an `attribute` node
+/// whose object is the bare identifier `sys` and whose attribute is
+/// `stdin`. Deliberately narrower than [`callee_path`]: a name that merely
+/// holds `sys.stdin`, or a call/subscript result that happens to collapse to
+/// the same dotted path, must not qualify, so this checks node shape
+/// directly rather than reusing `callee_path`'s collapsing. Used by
+/// [`FlowGraph::resolve_call`] to recognize `json.load(sys.stdin)` for
+/// [`Resolved::stdin_dispatch`].
+fn is_sys_stdin_expr<D: Doc>(node: &Node<'_, D>) -> bool {
+    node.kind() == "attribute"
+        && node
+            .field("object")
+            .is_some_and(|object| object.kind() == "identifier" && object.text() == "sys")
+        && node
+            .field("attribute")
+            .is_some_and(|attribute| attribute.text() == "stdin")
 }
 
 /// The dotted path of a callee, as written, with subscripts and call results

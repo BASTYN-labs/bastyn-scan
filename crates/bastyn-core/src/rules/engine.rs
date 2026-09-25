@@ -957,6 +957,7 @@ fn scan_with<L: LanguageExt + Copy>(
                     ExcludeIfKind::ClosedValue => graph.is_closed(captured.node_id()),
                     ExcludeIfKind::ConstantPath => graph.is_constant_path(captured.node_id()),
                     ExcludeIfKind::ShellQuoted => graph.is_shell_quoted(captured.node_id()),
+                    ExcludeIfKind::StdinDispatch => graph.is_stdin_dispatch(captured.node_id()),
                 });
                 if excluded {
                     continue;

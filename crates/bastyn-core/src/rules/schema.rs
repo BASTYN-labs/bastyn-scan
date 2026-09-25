@@ -266,8 +266,8 @@ fn default_flow_variable() -> String {
 /// ```yaml
 /// exclude_if:
 ///   variable: ARG          # which capture to test; defaults to ARG
-///   kind: constant_path    # closed_value | constant_path | shell_quoted,
-///                          # one kind or a list of them
+///   kind: constant_path    # closed_value | constant_path | shell_quoted |
+///                          # stdin_dispatch, one kind or a list of them
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -315,4 +315,7 @@ pub(crate) enum ExcludeIfKind {
     /// Every non-literal segment is wrapped directly in
     /// `shlex.quote(...)`/`shlex.join(...)`.
     ShellQuoted,
+    /// Every non-literal segment traces to a direct, unprocessed read of
+    /// `sys.stdin` (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`).
+    StdinDispatch,
 }
