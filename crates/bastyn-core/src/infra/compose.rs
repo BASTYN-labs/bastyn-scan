@@ -577,7 +577,9 @@ mod tests {
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert_eq!(findings[0].rule_id, "BAS-INFRA-006");
         assert!(
-            findings[0].description.contains("AGENT_SECRETKEY_OVERWRITE"),
+            findings[0]
+                .description
+                .contains("AGENT_SECRETKEY_OVERWRITE"),
             "{findings:#?}"
         );
     }

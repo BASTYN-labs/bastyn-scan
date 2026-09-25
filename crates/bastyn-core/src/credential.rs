@@ -54,9 +54,29 @@ pub(crate) fn looks_like_credential_key(name: &str) -> bool {
 /// but the value is a mode setting a deployment chooses from a small fixed
 /// set, not something anyone types in as a password.
 const ENUM_MODE_VALUES: &[&str] = &[
-    "local", "remote", "memory", "disk", "file", "none", "disabled", "enabled", "default",
-    "standard", "basic", "simple", "sqlite", "postgres", "postgresql", "mysql", "mariadb",
-    "redis", "mongodb", "s3", "gcs", "azure", "cloud",
+    "local",
+    "remote",
+    "memory",
+    "disk",
+    "file",
+    "none",
+    "disabled",
+    "enabled",
+    "default",
+    "standard",
+    "basic",
+    "simple",
+    "sqlite",
+    "postgres",
+    "postgresql",
+    "mysql",
+    "mariadb",
+    "redis",
+    "mongodb",
+    "s3",
+    "gcs",
+    "azure",
+    "cloud",
 ];
 
 /// Value fragments — matched case-insensitively — that mark a value as an

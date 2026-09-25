@@ -398,10 +398,12 @@ fn compile_exclude_if(
 ) -> Result<Option<CompiledExcludeIf>> {
     match exclude_if {
         None => Ok(None),
-        Some(_) if language != RuleLanguage::Python => Err(RuleError::ExcludeIfUnsupportedLanguage {
-            id: id.to_string(),
-            language: format!("{language:?}").to_lowercase(),
-        }),
+        Some(_) if language != RuleLanguage::Python => {
+            Err(RuleError::ExcludeIfUnsupportedLanguage {
+                id: id.to_string(),
+                language: format!("{language:?}").to_lowercase(),
+            })
+        }
         Some(exclude) => {
             let kinds = exclude.kind.kinds();
             if kinds.is_empty() {
