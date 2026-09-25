@@ -18,6 +18,14 @@ pub enum CveStatus {
         /// How many dependencies were resolved and looked up.
         dependencies: usize,
     },
+    /// Queried, but some follow-up requests failed or came back unreadable,
+    /// so some dependencies' results may be missing.
+    Partial {
+        /// How many dependencies were looked up.
+        dependencies: usize,
+        /// How many of them may have advisories missing from this report.
+        incomplete: usize,
+    },
     /// Skipped because no dependency manifest was found.
     NoManifest,
     /// Skipped on purpose, via `--offline`.

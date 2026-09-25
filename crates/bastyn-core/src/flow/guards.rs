@@ -67,21 +67,39 @@ pub(crate) fn is_guarded(graph: &FlowGraph, sink_node: usize) -> bool {
     graph.guard_dominates(sink_node)
 }
 
-/// Every call argument in the file that a guard dominates.
+/// Every call argument, and every f-string interpolation, in the file that a
+/// guard dominates.
 ///
-/// Call arguments only: they are where a sink consumes a value, and computing
-/// this for every expression node would cost far more than it could ever be
-/// asked about.
+/// Those are the only two positions a `flow:` rule's captured metavariable
+/// can sit in: a sink call's argument (`eval($ARG)`, `$CUR.execute($ARG)`),
+/// or the `{...}` slot of an f-string a rule matches piecewise
+/// (`f"$$$A{$VAR}$$$B"`, as `BAS-ZT4-001`/`-002` do). The latter needs its
+/// own case rather than falling out of the `argument_list` walk: the
+/// captured node there is the interpolation's own expression, not the whole
+/// f-string -- the same node `super::graph`'s string-resolution case reads
+/// the value from -- so guard dominance has to be checked against that same
+/// node. Computing this for every expression node in the file would cost far
+/// more than it could ever be asked about, so the walk stays limited to
+/// these two positions.
 pub(crate) fn collect_guarded<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -> HashSet<usize> {
     let mut guarded = HashSet::new();
     for node in root.dfs() {
-        if node.kind() != "argument_list" {
-            continue;
-        }
-        for argument in node.named_children() {
-            if argument_is_guarded(&argument, graph) {
-                guarded.insert(argument.node_id());
+        match node.kind().as_ref() {
+            "argument_list" => {
+                for argument in node.named_children() {
+                    if argument_is_guarded(&argument, graph) {
+                        guarded.insert(argument.node_id());
+                    }
+                }
             }
+            "interpolation" => {
+                if let Some(expression) = node.named_children().next()
+                    && argument_is_guarded(&expression, graph)
+                {
+                    guarded.insert(expression.node_id());
+                }
+            }
+            _ => {}
         }
     }
     guarded

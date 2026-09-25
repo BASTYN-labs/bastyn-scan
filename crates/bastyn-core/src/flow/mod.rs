@@ -43,6 +43,7 @@
 pub(crate) mod catalogue;
 pub(crate) mod graph;
 pub(crate) mod guards;
+pub(crate) mod shadow;
 
 pub(crate) use catalogue::{SinkKind, SourceKind};
 pub(crate) use graph::{FlowGraph, FlowLanguage};

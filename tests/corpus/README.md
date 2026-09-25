@@ -37,6 +37,8 @@ vulnerable/NOT_DETECTABLE.md
                why LLM05, LLM07, ZT7, ZT8, ZT9 have no rule and never should
 mcp/           MCP server configuration shapes: auth on streamable HTTP,
                filesystem scope on stdio servers, JSON/YAML/TOML parity
+observations/  files whose correct output is observations only, because the
+               language has no dataflow graph to prove a literal safe
 clean/         the same OpsBot app, done safely, plus every near-miss shape
                that is known to fool naive rules
 ```

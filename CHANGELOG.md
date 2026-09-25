@@ -6,8 +6,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Breaking (library API)
+
+- `CveStatus` gains a `Partial` variant; a `match` on `CveStatus` outside this crate that is not
+  already exhaustive-with-a-wildcard must add an arm for it.
+- `bastyn_core::infra::inspect` now returns `Result<Vec<Finding>, InfraError>` instead of
+  `Vec<Finding>`, so an unparseable Compose file can be reported as skipped instead of scanned.
+
+### Changed
+
+- **Defects now require traced provenance.** `BAS-LLM10-002`, `-003`, `-004`, `BAS-ZT4-001` and
+  `-002` ask the Python flow graph where a value came from. A value traced to an untrusted source is
+  a defect. A literal, a value built only from literals, and one already limited by a fixed-set check
+  are not reported. A value whose origin cannot be traced in the file is reported as a low-confidence
+  observation: for `BAS-LLM10-004` always, for the others only when its name matches the rule's
+  former name list. Model output reaching a shell or SQL is now found under any variable name when
+  the file itself shows the value came from a model call.
+- **Observation-only rules.** `BAS-LLM10-005`, `-006`, `-007` and `BAS-ZT4-003` (TypeScript and
+  JavaScript, which have no dataflow graph yet) and `BAS-LLM03-001`/`-002` (tool name only) now
+  report observations. They appear with `--show-observations` and never affect the exit code.
+- `BAS-LLM10-001` and `-004` skip a call to a locally defined `eval`/`exec`. `BAS-ZT4-001` to `-003`
+  skip a prompt the same file sends in the user role.
+- The corpus gate accounts for every finding, enforces each expected finding's kind and severity, and
+  counts known false positives against defect precision.
+
 ### Added
 
+- `CveStatus::Partial`: an OSV lookup whose later page or advisory requests failed now reports how
+  many dependencies may have incomplete results, in the terminal, JSON (`"status": "partial"`) and
+  SARIF (a tool-execution warning, also emitted for an unreachable lookup). Exit codes are unchanged.
+- Rule schema: `flow.unproven`, `flow.builtin_callee`, and `none_in_file`.
 - **`BAS-LLM10-009`: non-literal command run through a shell, regardless of any allowlist/denylist
   check.** Flags a `subprocess`/`os.system`/`os.popen` shell call fed a non-literal command even when
   the surrounding code has an allowlist or denylist gate, since neither actually prevents the shell
@@ -32,6 +60,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   inside a tool's docstring that a human reviewer approving the tool would never read as an
   instruction. Python only for now — no JS/TS twin ships in this change. Found via the same
   benchmark-corpus recall pass.
+
+### Fixed
+
+- A Compose file that is not valid YAML is listed as skipped instead of counted as scanned.
 
 ## [0.1.7] - 2026-09-25
 

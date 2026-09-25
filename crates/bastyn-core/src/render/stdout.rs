@@ -175,6 +175,19 @@ fn render_steps(out: &mut String, report: &Report, options: StdoutOptions) {
             ),
             options,
         ),
+        CveStatus::Partial {
+            dependencies,
+            incomplete,
+        } => step(
+            out,
+            false,
+            &format!(
+                "OSV vulnerability lookup incomplete — {} checked, results may be missing for {}",
+                plural(*dependencies, "dependency", "dependencies"),
+                plural(*incomplete, "dependency", "dependencies")
+            ),
+            options,
+        ),
         CveStatus::NoManifest => step(
             out,
             false,
@@ -661,6 +674,14 @@ fn cve_sentence(status: &CveStatus) -> String {
         CveStatus::Checked { dependencies } => format!(
             "{} checked against the OSV vulnerability database.",
             plural(*dependencies, "dependency was", "dependencies were")
+        ),
+        CveStatus::Partial {
+            dependencies,
+            incomplete,
+        } => format!(
+            "{} checked against the OSV vulnerability database, but results for {} may be incomplete because not every OSV response could be read.",
+            plural(*dependencies, "dependency was", "dependencies were"),
+            plural(*incomplete, "dependency", "dependencies")
         ),
         CveStatus::NoManifest => {
             "CVEs were not checked because no dependency manifest was found.".to_owned()
@@ -1278,7 +1299,11 @@ fn ellipsise(text: &str, width: usize, glyphs: Glyphs) -> String {
 ///
 /// Worth the eight lines: a security tool that prints "1 files" invites the
 /// reader to wonder what else it did not check.
-fn plural(count: usize, one: &str, many: &str) -> String {
+///
+/// `pub(super)` rather than private: `render::sarif`'s own CVE-incomplete
+/// notification counts dependencies the same way and reuses this rather than
+/// growing a second copy.
+pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
     if count == 1 {
         format!("{count} {one}")
     } else {
@@ -1910,6 +1935,18 @@ mod tests {
         assert!(
             unreachable.contains("CVEs were not checked: no network connection."),
             "Unreachable must be visible, got: {unreachable}"
+        );
+
+        let partial = summarised(
+            &report_with(CveStatus::Partial {
+                dependencies: 9,
+                incomplete: 2,
+            }),
+            false,
+        );
+        assert!(
+            partial.contains("may be incomplete"),
+            "Partial must be visible, got: {partial}"
         );
     }
 

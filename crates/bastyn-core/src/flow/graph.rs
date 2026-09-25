@@ -48,6 +48,7 @@ use std::collections::{HashMap, HashSet};
 use ast_grep_core::{Doc, Node};
 
 use super::catalogue::{SinkKind, SourceKind, classify_sink, classify_source};
+use super::shadow::bare_callee_is_shadowed;
 
 /// A language the flow graph can be built for.
 ///
@@ -434,6 +435,18 @@ fn collect_wrapper_sinks<D: Doc>(
                 .filter(|node| node.kind() == "call")
                 .collect::<Vec<_>>()
         }) {
+            // A call through a bare name this file rebinds itself (a local
+            // `def eval`) is not a call to the catalogued builtin sink,
+            // whatever it is named -- the same fact `bare_callee_is_shadowed`
+            // already keeps a direct match from reporting. `wrapper_sinks`
+            // has no per-rule `builtin_callee` flag to consult here, and
+            // does not need one: a rebound bare name is not the catalogued
+            // sink whatever its `SinkKind` (`eval`, `system`, `open`, ...),
+            // and the check never fires for a qualified sink (`os.system`,
+            // `subprocess.run`, ...), whose callee is an attribute.
+            if bare_callee_is_shadowed(root, &call) {
+                continue;
+            }
             let Some(kind) = call
                 .field("function")
                 .and_then(|callee| classify_sink(&callee_path(&callee)))
@@ -815,10 +828,6 @@ impl<'r, D: Doc> Analyzer<'r, D> {
         answer
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat per-node-kind dispatch, not nested logic"
-    )]
     fn compute(&mut self, node: &Node<'r, D>, scope: usize, depth: usize) -> Resolved {
         let kind = node.kind();
         if LITERAL_KINDS.contains(&kind.as_ref()) {
@@ -875,35 +884,7 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             "subscript" => node.field("value").map_or_else(Resolved::unknown, |value| {
                 self.resolve(&value, scope, depth + 1)
             }),
-            "call" => {
-                let callee = node
-                    .field("function")
-                    .map(|f| callee_path(&f))
-                    .unwrap_or_default();
-                // Only walked for a callee already on the whitelist: every
-                // other call in the file (the overwhelming majority) skips
-                // argument resolution entirely, so this costs nothing on
-                // files with no os.path chain.
-                let constant_path = PATH_CONST_FUNCTIONS.contains(&callee.as_str())
-                    && node.field("arguments").is_some_and(|arguments| {
-                        arguments.named_children().all(|argument| {
-                            let value = if argument.kind() == "keyword_argument" {
-                                argument.field("value")
-                            } else {
-                                Some(argument)
-                            };
-                            value.is_some_and(|value| {
-                                self.resolve(&value, scope, depth + 1).constant_path
-                            })
-                        })
-                    });
-                Resolved {
-                    closed: callee == "type",
-                    shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
-                    constant_path,
-                    prov: Prov::Call { callee },
-                }
-            }
+            "call" => self.resolve_call(node, scope, depth),
             "parenthesized_expression" | "await" => node
                 .named_children()
                 .next()
@@ -954,6 +935,80 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             // costs a finding; guessing would cost a false one.
             _ => Resolved::unknown(),
         }
+    }
+
+    /// Resolve a `call` node: `.format` on a string literal is handled
+    /// specially so it carries its arguments' provenance; anything else
+    /// resolves to the return value of the callee named as written.
+    fn resolve_call(&mut self, node: &Node<'r, D>, scope: usize, depth: usize) -> Resolved {
+        if let Some(formatted) = self.string_format(node, scope, depth) {
+            return formatted;
+        }
+        let callee = node
+            .field("function")
+            .map(|f| callee_path(&f))
+            .unwrap_or_default();
+        // Only walked for a callee already on the whitelist: every other
+        // call in the file (the overwhelming majority) skips argument
+        // resolution entirely, so this costs nothing on files with no
+        // os.path chain.
+        let constant_path = PATH_CONST_FUNCTIONS.contains(&callee.as_str())
+            && node.field("arguments").is_some_and(|arguments| {
+                arguments.named_children().all(|argument| {
+                    let value = if argument.kind() == "keyword_argument" {
+                        argument.field("value")
+                    } else {
+                        Some(argument)
+                    };
+                    value.is_some_and(|value| self.resolve(&value, scope, depth + 1).constant_path)
+                })
+            });
+        Resolved {
+            closed: callee == "type",
+            shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
+            constant_path,
+            prov: Prov::Call { callee },
+        }
+    }
+
+    /// `"...{}".format(a, b=c)`: the result is text built from the template
+    /// and every argument, so it carries all of their provenance.
+    ///
+    /// `None` for any other call, including `.format` on a receiver that is
+    /// not a string literal, whose type this graph cannot know.
+    fn string_format(
+        &mut self,
+        node: &Node<'r, D>,
+        scope: usize,
+        depth: usize,
+    ) -> Option<Resolved> {
+        let function = node.field("function")?;
+        if function.kind() != "attribute" || function.field("attribute")?.text() != "format" {
+            return None;
+        }
+        let receiver = function.field("object")?;
+        if !matches!(receiver.kind().as_ref(), "string" | "concatenated_string") {
+            return None;
+        }
+        let mut answer = self.resolve(&receiver, scope, depth + 1);
+        let Some(arguments) = node.field("arguments") else {
+            return Some(answer);
+        };
+        if arguments.kind() != "argument_list" {
+            return Some(answer.combine(Resolved::unknown()));
+        }
+        for argument in arguments.named_children() {
+            let value = match argument.kind().as_ref() {
+                "keyword_argument" => argument.field("value"),
+                "list_splat" | "dictionary_splat" => None,
+                _ => Some(argument),
+            };
+            let inner = value.map_or_else(Resolved::unknown, |value| {
+                self.resolve(&value, scope, depth + 1)
+            });
+            answer = answer.combine(inner);
+        }
+        Some(answer)
     }
 
     /// Resolve a name against the bindings visible at `offset` in `scope`.
@@ -1555,5 +1610,65 @@ def build(playbook, extra_args):
             .expect("a return statement returning `command`");
 
         assert!(!graph.is_shell_quoted(return_value.node_id()));
+    }
+
+    #[test]
+    fn str_format_carries_the_provenance_of_its_arguments() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM {}\".format(reply))
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(
+            matches!(graph.origin_of(arg), Some(Origin::Call { callee }) if callee.contains("create")),
+            "{:?}",
+            graph.origin_of(arg)
+        );
+    }
+
+    #[test]
+    fn str_format_with_a_keyword_argument_carries_its_provenance() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM {t}\".format(t=reply))
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
+    }
+
+    #[test]
+    fn str_format_of_literals_only_is_closed() {
+        let (root, graph) =
+            build_python_graph("def f(cursor):\n    cursor.execute(\"SELECT {}\".format(1))\n");
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(graph.is_closed(arg));
+    }
+
+    #[test]
+    fn percent_formatting_carries_the_provenance_of_its_operand() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM %s\" % reply)
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
+    }
+
+    #[test]
+    fn concatenation_carries_the_provenance_of_its_operand() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM \" + reply)
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
     }
 }

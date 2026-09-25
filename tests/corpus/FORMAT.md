@@ -90,12 +90,19 @@ removed rather than silently going out of date.
 ## What the harness reports
 
 ```
-corpus: 18/22 expected findings present   (recall 82%)
-        0 unexpected findings             (precision 100%)
-        4 known gaps
-        1 known false positive (precision debt -- tracked separately from known gaps)
+corpus: 55/55 expected defects found        (recall on this corpus 100%)
+        8/8 expected observations found
+        55/57 defects returned are expected   (defect precision on this corpus 96%, known false positives included)
+        0 unaccounted findings
+        13 known gaps (+8 reachable only with a network connection)
+        2 known false positives (precision debt -- tracked separately from known gaps, see MAX_KNOWN_FALSE_POSITIVES)
 ```
 
+The figures describe this corpus only: every fixture was written alongside
+the rules, so they are a regression gate, not an estimate of real-world
+precision or recall.
+
 It fails the build on a missing `expect`, on any finding in an `expect_none`
-file, on a `known_gap` count that has grown, or on a `known_false_positive`
-count that has grown.
+file, on an `[[expect]]` whose finding has a different kind or severity, on
+any finding no entry accounts for, on a `known_gap` count that has grown, or
+on a `known_false_positive` count that has grown.

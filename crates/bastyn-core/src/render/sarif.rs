@@ -31,9 +31,10 @@ use serde::Serialize;
 use crate::category::Category;
 use crate::compliance::Framework;
 use crate::finding::{Confidence, Finding, Kind, Severity};
-use crate::report::Report;
+use crate::report::{CveStatus, Report};
 
 use super::error::Result;
+use super::stdout::plural;
 
 const SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
@@ -73,6 +74,7 @@ pub(crate) fn render(report: &Report) -> Result<String> {
             },
             results,
             taxonomies,
+            invocations: build_invocations(report),
         }],
     };
 
@@ -217,6 +219,35 @@ fn kind_label(kind: Kind) -> &'static str {
     }
 }
 
+/// Notifications about the CVE lookup, when it did not complete.
+///
+/// Empty for every other status, so a normal run's log gains no `invocations`
+/// key and existing SARIF output stays byte-identical.
+fn build_invocations(report: &Report) -> Vec<Invocation> {
+    let text = match &report.cve {
+        CveStatus::Partial {
+            dependencies,
+            incomplete,
+        } => format!(
+            "OSV vulnerability lookup incomplete: {} checked, results may be missing for {incomplete}.",
+            plural(*dependencies, "dependency", "dependencies")
+        ),
+        CveStatus::Unreachable { reason } => {
+            format!("OSV vulnerability lookup skipped: {reason}.")
+        }
+        CveStatus::Checked { .. } | CveStatus::NoManifest | CveStatus::SkippedOffline => {
+            return Vec::new();
+        }
+    };
+    vec![Invocation {
+        execution_successful: true,
+        tool_execution_notifications: vec![Notification {
+            level: "warning",
+            message: Text { text },
+        }],
+    }]
+}
+
 fn build_rule(finding: &Finding) -> Rule {
     let level = level_for(finding);
     Rule {
@@ -334,6 +365,26 @@ struct Run<'a> {
     /// carries none, so a report with nothing to say says nothing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     taxonomies: Vec<Taxonomy>,
+    /// SARIF 2.1.0 §3.14.11. Present only when the scan has something to say
+    /// about its own execution (an incomplete or unreachable CVE lookup), so a
+    /// normal run's log is unchanged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    invocations: Vec<Invocation>,
+}
+
+/// SARIF 2.1.0 §3.20.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Invocation {
+    execution_successful: bool,
+    tool_execution_notifications: Vec<Notification>,
+}
+
+/// SARIF 2.1.0 §3.58.
+#[derive(Serialize)]
+struct Notification {
+    level: &'static str,
+    message: Text,
 }
 
 /// A `toolComponent` acting as a taxonomy, per SARIF 2.1.0 §3.19.3.
@@ -979,6 +1030,61 @@ mod tests {
                 taxonomy["name"]
             );
         }
+    }
+
+    #[test]
+    fn a_partial_cve_lookup_is_a_warning_notification() {
+        let value = parse(&report_with(CveStatus::Partial {
+            dependencies: 9,
+            incomplete: 2,
+        }));
+        let notes = &value["runs"][0]["invocations"][0]["toolExecutionNotifications"];
+        assert_eq!(notes[0]["level"], "warning");
+        assert!(
+            notes[0]["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("incomplete")
+        );
+        assert_eq!(
+            value["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+    }
+
+    /// A single checked dependency reads as singular, not `"1 dependencies"`.
+    #[test]
+    fn a_partial_cve_lookup_with_one_dependency_is_singular() {
+        let value = parse(&report_with(CveStatus::Partial {
+            dependencies: 1,
+            incomplete: 2,
+        }));
+        let text =
+            value["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["message"]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        assert!(text.contains("1 dependency checked"), "{text}");
+        assert!(!text.contains("1 dependencies"), "{text}");
+    }
+
+    #[test]
+    fn an_unreachable_cve_lookup_is_a_warning_notification() {
+        let value = parse(&report_with(CveStatus::Unreachable {
+            reason: "connection refused".to_owned(),
+        }));
+        let text =
+            value["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["message"]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        assert!(text.contains("connection refused"), "{text}");
+    }
+
+    #[test]
+    fn a_completed_cve_lookup_adds_no_invocations_key() {
+        let value = parse(&report_with(CveStatus::NoManifest));
+        assert!(value["runs"][0].get("invocations").is_none());
     }
 
     #[test]
