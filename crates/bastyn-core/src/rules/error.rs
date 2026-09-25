@@ -212,4 +212,20 @@ pub enum RuleError {
         /// The offending rule's id.
         id: String,
     },
+
+    /// A rule declared `flow.unproven` with no `flow.source` at all.
+    ///
+    /// `unproven:` only means something when a `source:` list exists for a
+    /// value's origin to fail against. With no `source:`, the flow clause
+    /// treats every value that clears the closed/guard checks as `Proven`
+    /// outright -- there is no untraceable path left for `unproven:` to
+    /// redirect, so the combination is a load error rather than a clause
+    /// that silently never fires.
+    #[error(
+        "rule `{id}`: `flow.unproven` has no effect without `flow.source`; drop one or the other"
+    )]
+    UnprovenWithoutSource {
+        /// The offending rule's id.
+        id: String,
+    },
 }

@@ -328,6 +328,119 @@ rules:
     );
 }
 
+/// A `flow:` clause that omits `source:` entirely does not gate on
+/// provenance at all -- `BAS-LLM10-004`'s own new shape. Everything else in
+/// [`crate::flow`]'s composition (closed values, guards, builtin shadowing)
+/// still applies; only the "where did this come from" question is gone.
+const UNCONDITIONAL_FLOW_RULE: &str = r"
+rules:
+  - id: BAS-FLOW-030
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      unguarded: true
+      builtin_callee: true
+    description: eval() runs a non-literal argument.
+    remediation: Do not.
+";
+
+/// The measurement this clause exists to fix: a value traced to a
+/// catalogued source and a value with no known origin at all must be
+/// treated identically -- both `Proven` -- since there is no source list
+/// left to tell them apart.
+#[test]
+fn a_sourceless_flow_clause_proves_a_traced_value() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    let source = "def handle(ticket):\n    plan = client.chat.completions.create(prompt=ticket).choices[0].message.content\n    eval(plan)\n";
+    let findings = scan_source(&ruleset, Path::new("app/handler.py"), source);
+    let finding = only(&findings);
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
+}
+
+#[test]
+fn a_sourceless_flow_clause_proves_an_untraceable_value_too() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    // `mystery` is an untraced function parameter -- no assignment, no call,
+    // nothing the flow graph can classify. With a `source:` list this would
+    // be `Unproven` or `Drop`; with none, it is `Proven`, exactly like the
+    // traced value above.
+    let findings = scan_source(
+        &ruleset,
+        Path::new("app/handler.py"),
+        "def handle(mystery):\n    eval(mystery)\n",
+    );
+    let finding = only(&findings);
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
+}
+
+/// `unguarded: true` still means what it says with no `source:`: a value
+/// already checked against a fixed set before reaching the sink is still not
+/// reported.
+#[test]
+fn a_sourceless_unguarded_flow_clause_still_drops_a_guarded_value() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    let source = "\
+ALLOWED = (\"a\", \"b\")
+
+
+def handle(value):
+    if value not in ALLOWED:
+        raise ValueError(value)
+    eval(value)
+";
+    assert!(!fires(&ruleset, source));
+}
+
+/// `builtin_callee: true` still means what it says with no `source:`: a call
+/// through a name this file rebinds itself is not the builtin, and is still
+/// not reported.
+#[test]
+fn a_sourceless_flow_clause_still_drops_a_call_through_a_shadowed_builtin() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    let source =
+        "def eval(value):\n    return value\n\n\ndef handle(mystery):\n    return eval(mystery)\n";
+    assert!(!fires(&ruleset, source));
+}
+
+/// `unproven:` only means something when there is a `source:` list for a
+/// value's origin to fail against -- with none, every non-closed, non-guarded
+/// value is already `Proven`, so the combination is a meaningless
+/// configuration, rejected at load time.
+#[test]
+fn unproven_without_source_fails_to_load() {
+    let yaml = r"
+rules:
+  - id: BAS-FLOW-031
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      unguarded: true
+      unproven:
+        kind: observation
+    description: eval() runs a non-literal argument.
+    remediation: Do not.
+";
+    let error = RuleSet::from_yaml(yaml).unwrap_err();
+    assert!(
+        matches!(error, RuleError::UnprovenWithoutSource { .. }),
+        "{error:?}"
+    );
+}
+
 #[test]
 fn an_unknown_flow_field_is_a_load_error() {
     let yaml = r"

@@ -157,6 +157,9 @@ pub(crate) struct RuleDef {
 
 /// A rule's `flow:` clause, exactly as written in YAML.
 ///
+/// Provenance-gated, the common case -- a value must trace to one of the
+/// listed sources:
+///
 /// ```yaml
 /// flow:
 ///   variable: ARG          # whose provenance to test; defaults to ARG
@@ -169,6 +172,23 @@ pub(crate) struct RuleDef {
 ///     requires:
 ///       ARG: "(?i)(response|reply)"
 /// ```
+///
+/// Unconditional, when `source:` is left out entirely -- every non-closed,
+/// non-guarded value is proven regardless of where it came from, the same
+/// composition-is-the-defect philosophy `BAS-LLM10-009`/`-017`/`-018` already
+/// use without going through `flow:` at all:
+///
+/// ```yaml
+/// flow:
+///   variable: ARG
+///   unguarded: true        # a guard may still dominate the sink
+///   builtin_callee: true   # a locally rebound name is still not the builtin
+/// ```
+///
+/// `unproven:` only means something when there is a source requirement to
+/// fail: with no `source:`, every value that is not closed or guarded is
+/// already `Proven`, so pairing `unproven:` with an omitted `source:` is a
+/// load error (see [`super::error::RuleError::UnprovenWithoutSource`]).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FlowDef {
@@ -181,7 +201,14 @@ pub(crate) struct FlowDef {
     pub(crate) variable: String,
     /// The source kinds the captured value must have come from. Written as a
     /// single kind or a list of them.
-    pub(crate) source: SourceSpec,
+    ///
+    /// Absent entirely, this clause does not gate on provenance at all: any
+    /// value that is not closed over literals this file fixes and (with
+    /// `unguarded: true`) not already dominated by a guard is proven,
+    /// whatever produced it. See this struct's own docs for when to reach
+    /// for this over a `source:` list.
+    #[serde(default)]
+    pub(crate) source: Option<SourceSpec>,
     /// Require that no guard dominates the sink.
     ///
     /// Off by default, because a rule that has not thought about guards

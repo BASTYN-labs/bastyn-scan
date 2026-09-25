@@ -461,18 +461,27 @@ file     = "vulnerable/real_misses/eval_compile_rce.py"
 line     = 37
 rule     = "BAS-LLM10-004"
 category = "LLM10"
-kind     = "observation"
+kind     = "defect"
 severity = "high"
-why      = "eval(compile(model_reply, ...)) -- the taint is one hop away from the model reply through a local variable named `compiled`. BAS-LLM10-004 drops the response/reply/... name requirement and flags eval()/exec() on any non-literal argument. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
+why      = "eval(compile(model_reply, ...)) -- the taint is one hop away from the model reply through a local variable named `compiled`. BAS-LLM10-004 drops the response/reply/... name requirement and flags eval()/exec() on any non-literal argument. Reported as a defect: since 2026-09-25 this rule no longer gates on provenance at all, so an untraceable origin (a parameter, or a value one hop from one) no longer downgrades or drops the finding."
 
 [[expect]]
 file     = "vulnerable/real_misses/exec_with_globals_dict.py"
 line     = 32
 rule     = "BAS-LLM10-004"
 category = "LLM10"
-kind     = "observation"
+kind     = "defect"
 severity = "high"
-why      = "exec(manifest[\"setup_code\"], namespace) -- an explicit globals dict as the second argument. BAS-LLM10-004 used to match only the single-argument shape, so the 2-arg call was silently missed. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
+why      = "exec(manifest[\"setup_code\"], namespace) -- an explicit globals dict as the second argument. BAS-LLM10-004 used to match only the single-argument shape, so the 2-arg call was silently missed. Reported as a defect: since 2026-09-25 this rule no longer gates on provenance at all, so an untraceable origin (a parameter, or a value one hop from one) no longer downgrades or drops the finding."
+
+[[expect]]
+file     = "vulnerable/real_misses/eval_on_untraceable_parameter.py"
+line     = 32
+rule     = "BAS-LLM10-004"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "eval(expression) on a bare function parameter with no catalogued source at all -- not one hop from a known source, just entirely unclassifiable. Before 2026-09-25 this was the canonical `unproven` case: hidden behind flow.unproven as an observation, invisible without --show-observations. BAS-LLM10-004 now drops the source gate entirely, so this reports as a defect."
 
 [[expect]]
 file     = "vulnerable/real_misses/overridable_system_prompt.py"

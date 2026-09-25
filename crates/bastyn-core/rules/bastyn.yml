@@ -63,9 +63,12 @@ rules:
     # rather than eval.
     #
     # `builtin_callee: true` drops a call through a name this file rebinds
-    # (a local `def eval`), which is not the builtin. BAS-LLM10-004 still
-    # reports eval()/exec() on any non-literal: as a defect when the value
-    # traces to a catalogued untrusted source, otherwise as an observation.
+    # (a local `def eval`), which is not the builtin. BAS-LLM10-004 (below)
+    # reports eval()/exec() on any non-literal unconditionally, without this
+    # rule's `source: model_output` gate or its `sink: code_execution`
+    # wrapper-forwarding reach -- the two rules stay distinct because this one
+    # additionally follows the value one call outward through a local
+    # wrapper, which BAS-LLM10-004 does not attempt.
     flow:
       variable: ARG
       source: model_output
@@ -1113,22 +1116,40 @@ rules:
       - eval("$LIT", $GLOBALS, $LOCALS)
       - exec("$LIT", $GLOBALS)
       - exec("$LIT", $GLOBALS, $LOCALS)
-    # A value closed over names this program fixes (class_name =
-    # self.__class__.__name__) and one already limited by a `not in (...)`
-    # check against literals are both dropped by the flow graph. See
-    # tests/corpus/vulnerable/real_misses/eval_guarded_by_local_check.py.
+    # No `source:` here, deliberately, since 2026-09-25: this rule no longer
+    # gates on where the argument's value came from at all, the same
+    # unconditional-composition philosophy BAS-LLM10-009/-017/-018 already
+    # use. Legitimate eval()/exec() on a variable (as opposed to a fixed
+    # literal) is rare enough that catalogued-source provenance was buying
+    # little precision while actively hiding real findings: three real
+    # eval()/exec() calls on an untraceable value (a function parameter, or a
+    # value one hop from one) used to be dropped or, at best, buried as a
+    # hidden observation behind `unproven:` and `--show-observations`, purely
+    # because the engine could not name which catalogued source produced the
+    # value -- not because the call was any safer. A value closed over names
+    # this program fixes (class_name = self.__class__.__name__) and one
+    # already limited by a `not in (...)` check against literals are still
+    # dropped by the flow graph's closed/guard checks, and `builtin_callee`
+    # still drops a call through a name this file rebinds itself (a local
+    # `def eval`) -- those are the protections worth keeping; provenance was
+    # not. See tests/corpus/vulnerable/real_misses/eval_guarded_by_local_check.py
+    # for the guard/closed cases that still do not fire, and
+    # tests/corpus/vulnerable/real_misses/eval_compile_rce.py and
+    # exec_with_globals_dict.py for the untraceable-origin calls that now
+    # correctly report as defects instead of hidden observations.
     flow:
       variable: ARG
-      source: [model_output, http_request, retrieved_context, tool_output, file_read, network_read]
       unguarded: true
       builtin_callee: true
-      unproven:
-        kind: observation
     description: >
       eval()/exec() is called with an argument that is not a string literal.
-      Whatever produced this value -- a model reply, a compiled code object
-      derived from one, a config file, a network response -- the moment its
-      contents are attacker-influenceable this is arbitrary code execution.
+      Whatever produced this value, running it is arbitrary code execution
+      the moment its contents are attacker-influenceable, and there is no way
+      to prove from the repository alone that they never are. This is
+      reported unconditionally, the same way a non-literal command reaching a
+      shell (BAS-LLM10-009) is: a check the flow graph can prove closes over
+      fixed literals, or a guard that already dominates the call, still drops
+      the match, but an untraceable origin no longer does.
     remediation: >
       Never run eval()/exec() on anything other than a fixed literal. If the
       agent needs to run model-suggested logic, parse it into a constrained,

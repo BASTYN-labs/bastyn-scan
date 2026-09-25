@@ -237,8 +237,13 @@ impl CompiledUnproven {
 struct CompiledFlow {
     /// Which captured metavariable to test.
     variable: String,
-    /// The source kinds that satisfy the gate. Non-empty, enforced at load.
-    sources: Vec<SourceKind>,
+    /// The source kinds that satisfy the gate, when the rule has one.
+    ///
+    /// `Some(non_empty)` when the rule wrote a `source:` list (non-empty,
+    /// enforced at load); `None` when it left `source:` out entirely, which
+    /// means there is no provenance requirement at all -- every value that
+    /// clears the closed/guard checks below is `Proven`.
+    sources: Option<Vec<SourceKind>>,
     /// Whether a guard dominating the sink suppresses the match.
     unguarded: bool,
     /// When set, calls to a local function forwarding the value into a sink of
@@ -263,8 +268,14 @@ impl CompiledFlow {
         if self.unguarded && guards::is_guarded(graph, node_id) {
             return FlowVerdict::Drop;
         }
+        // No `source:` list means no provenance requirement: a value that
+        // reached this point is not closed and (if `unguarded`) not guarded,
+        // so it is proven regardless of where it came from.
+        let Some(sources) = &self.sources else {
+            return FlowVerdict::Proven;
+        };
         match graph.source_kind_of(node_id) {
-            Some(kind) if self.sources.contains(&kind) => FlowVerdict::Proven,
+            Some(kind) if sources.contains(&kind) => FlowVerdict::Proven,
             // An untraced value takes the unproven path when this clause
             // has one; a value traced to a source this rule does not list
             // is known not to be what the rule is about, so it is dropped
@@ -476,9 +487,27 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
             language: format!("{:?}", def.language).to_lowercase(),
         });
     }
-    let sources = flow.source.kinds();
-    if sources.is_empty() {
-        return Err(RuleError::EmptyFlowSources { id: def.id.clone() });
+    // `source:` is optional: a rule may skip the provenance gate entirely and
+    // rely only on the closed/guard/shadow checks below (the same
+    // unconditional-composition philosophy `BAS-LLM10-009`/`-017`/`-018`
+    // already use). Only when the rule wrote a `source:` list is that list
+    // validated -- there is nothing to validate about its absence.
+    let sources = match &flow.source {
+        None => None,
+        Some(spec) => {
+            let kinds = spec.kinds();
+            if kinds.is_empty() {
+                return Err(RuleError::EmptyFlowSources { id: def.id.clone() });
+            }
+            Some(kinds)
+        }
+    };
+    // `unproven:` only changes what happens to a value whose source *cannot*
+    // be traced against a `source:` list. With no `source:` at all, every
+    // value that clears the closed/guard checks is already `Proven`, so
+    // there is no untraceable path for `unproven:` to change anything about.
+    if sources.is_none() && flow.unproven.is_some() {
+        return Err(RuleError::UnprovenWithoutSource { id: def.id.clone() });
     }
     // The wrapper-sink pass `flow.sink` turns on builds its findings
     // straight from `wrapper_sink_calls`, never through
