@@ -198,6 +198,8 @@ Test code is held to the same rules and reported differently. A password invente
 
 An execution error outranks findings, so a scan that could not run never returns a `1` you might read as "the code merely has issues". Only defects can produce a `1`; observations never can.
 
+A CVE lookup that could not run, or that ran only partly, does not change the exit code. Every output format says so: the terminal summary, the JSON `cve.status` field (`unreachable` or `partial`), and a SARIF tool-execution notification.
+
 ### What it checks
 
 **44 rule ids** over the Python, TypeScript and JavaScript ASTs, via [`ast-grep`](https://ast-grep.github.io), loaded from `crates/bastyn-core/rules/*.yml`. A rule written for JavaScript is compiled against the JavaScript, TypeScript and TSX grammars alike, which is what "JS/TS" means below. Each rule's severity, description and remediation text live in those files, which are the reference this table summarises.

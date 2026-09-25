@@ -10,7 +10,7 @@
 //! [`CveStatus::Unreachable`](crate::CveStatus::Unreachable) — see
 //! [`check`] for why that matters.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -459,14 +459,14 @@ fn first_cve(vuln: &VulnDetail) -> Option<&str> {
 // Query + hydrate
 // ---------------------------------------------------------------------
 
+/// Each matched advisory id mapped to the indices (into the queried
+/// dependency slice) of every dependency it affects, plus the indices of
+/// dependencies whose remaining pages were never read.
+type QueryOutcome = (HashMap<String, Vec<usize>>, BTreeSet<usize>);
+
 /// POST the initial batch, then follow `next_page_token` until every query
-/// has yielded all its pages or the round cap is hit. Returns each matched
-/// advisory id mapped to the indices (into `deps`) of every dependency it
-/// affects.
-fn query_osv(
-    deps: &[Dependency],
-    transport: &dyn OsvTransport,
-) -> Result<HashMap<String, Vec<usize>>, String> {
+/// has yielded all its pages or the round cap is hit.
+fn query_osv(deps: &[Dependency], transport: &dyn OsvTransport) -> Result<QueryOutcome, String> {
     let queries: Vec<Query<'_>> = deps
         .iter()
         .map(|d| Query {
@@ -512,15 +512,14 @@ fn query_osv(
             })
             .collect();
 
+        // A pagination round that fails is not a total lookup failure: the
+        // initial batch succeeded, so the API is reachable. The dependencies
+        // still pending are reported as incomplete instead.
         let Ok(body) = serde_json::to_string(&QueryBatchRequest {
             queries: &paged_queries,
         }) else {
             break;
         };
-        // A pagination round that fails, or comes back unparseable, is not
-        // treated as a total lookup failure: the initial batch already
-        // succeeded, so the API is reachable. The tail of results for the
-        // still-pending packages is simply missing from this run.
         let Ok(response_text) = transport.post(QUERYBATCH_URL, &body) else {
             break;
         };
@@ -539,7 +538,8 @@ fn query_osv(
         pending = next_pending;
     }
 
-    Ok(id_to_indices)
+    let incomplete: BTreeSet<usize> = pending.iter().map(|(i, _)| *i).collect();
+    Ok((id_to_indices, incomplete))
 }
 
 fn record_result(
@@ -583,6 +583,7 @@ fn build_findings(
     deps: &[Dependency],
     id_to_indices: &HashMap<String, Vec<usize>>,
     transport: &dyn OsvTransport,
+    incomplete: &mut BTreeSet<usize>,
 ) -> Vec<Finding> {
     // Sorted, not `HashMap` order. Advisory ids reached in a random order
     // produce findings in a random order, and a scan whose output changes
@@ -598,11 +599,15 @@ fn build_findings(
             continue;
         };
         let url = format!("{VULNS_URL}/{osv_id}");
-        // One un-hydratable advisory should not sink the whole batch.
+        // One un-hydratable advisory should not sink the whole batch, but the
+        // dependencies it would have affected are marked incomplete rather
+        // than silently reported as clean.
         let Ok(body) = transport.get(&url) else {
+            incomplete.extend(indices.iter().copied());
             continue;
         };
         let Ok(vuln) = serde_json::from_str::<VulnDetail>(&body) else {
+            incomplete.extend(indices.iter().copied());
             continue;
         };
 
@@ -796,6 +801,14 @@ fn group_remediation(
 /// reports nothing because the lookup could not run reads as "clean", which
 /// is the worst possible failure for a security tool.
 ///
+/// The initial batch succeeding is not the same as every result being
+/// complete: a later pagination request that fails or comes back unreadable,
+/// an advisory-detail fetch that fails, or hitting the pagination round cap
+/// all leave some dependencies' results missing. When that happens, this
+/// reports [`CveStatus::Partial`] instead of [`CveStatus::Checked`], with the
+/// number of dependencies whose results may be incomplete, rather than
+/// silently reporting a lookup that only partly ran as fully clean.
+///
 /// `deps` is expected to be every dependency resolved across every manifest
 /// found in the scanned tree — [`check`] reports a single [`CveStatus`] for
 /// the whole scan, not one per manifest. An empty slice returns
@@ -830,14 +843,19 @@ fn check_with_transport(
     }
 
     match query_osv(deps, transport) {
-        Ok(id_to_indices) => {
-            let findings = build_findings(deps, &id_to_indices, transport);
-            (
-                findings,
+        Ok((id_to_indices, mut incomplete)) => {
+            let findings = build_findings(deps, &id_to_indices, transport, &mut incomplete);
+            let status = if incomplete.is_empty() {
                 CveStatus::Checked {
                     dependencies: deps.len(),
-                },
-            )
+                }
+            } else {
+                CveStatus::Partial {
+                    dependencies: deps.len(),
+                    incomplete: incomplete.len(),
+                }
+            };
+            (findings, status)
         }
         Err(reason) => (Vec::new(), CveStatus::Unreachable { reason }),
     }
@@ -970,7 +988,8 @@ mod tests {
                 Ok(detail("OSV-C", "CVE-1111-0003", "LOW", "41.0.0")),
             );
 
-        let findings = build_findings(&deps, &ids, &transport);
+        let mut incomplete = BTreeSet::new();
+        let findings = build_findings(&deps, &ids, &transport, &mut incomplete);
 
         assert_eq!(
             findings.len(),
@@ -1126,10 +1145,82 @@ mod tests {
         let (findings, status) = check_with_transport(&deps, false, &transport);
 
         assert!(findings.is_empty());
-        assert_eq!(status, CveStatus::Checked { dependencies: 1 });
+        // Hitting the round cap leaves pages unread, so the result is
+        // incomplete.
+        assert_eq!(
+            status,
+            CveStatus::Partial {
+                dependencies: 1,
+                incomplete: 1
+            }
+        );
         // One initial call, then MAX_PAGINATION_ROUNDS more before the round
         // cap stops the loop.
         assert_eq!(*transport.calls.borrow(), 1 + MAX_PAGINATION_ROUNDS);
+    }
+
+    #[test]
+    fn a_failed_pagination_request_is_partial() {
+        let deps = vec![dependency("requests", "2.19.1")];
+        let transport = FakeTransport::new()
+            .with_post_response(Ok(
+                r#"{"results":[{"vulns":[],"next_page_token":"more"}]}"#.to_string()
+            ))
+            .with_post_response(Err("timed out".to_string()));
+        let (_, status) = check_with_transport(&deps, false, &transport);
+        assert_eq!(
+            status,
+            CveStatus::Partial {
+                dependencies: 1,
+                incomplete: 1
+            }
+        );
+    }
+
+    #[test]
+    fn an_unparseable_page_is_partial() {
+        let deps = vec![dependency("requests", "2.19.1")];
+        let transport = FakeTransport::new()
+            .with_post_response(Ok(
+                r#"{"results":[{"vulns":[],"next_page_token":"more"}]}"#.to_string()
+            ))
+            .with_post_response(Ok("<html>".to_string()));
+        let (_, status) = check_with_transport(&deps, false, &transport);
+        assert_eq!(
+            status,
+            CveStatus::Partial {
+                dependencies: 1,
+                incomplete: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_advisory_detail_marks_every_dependency_it_affects_once() {
+        let deps = vec![
+            dependency("requests", "2.19.1"),
+            dependency("urllib3", "1.26.14"),
+        ];
+        let querybatch = r#"{"results":[{"vulns":[{"id":"GHSA-a"},{"id":"GHSA-b"}]},{"vulns":[{"id":"GHSA-a"}]}]}"#;
+        let transport = FakeTransport::new()
+            .with_post_response(Ok(querybatch.to_string()))
+            .with_get_response(
+                "https://api.osv.dev/v1/vulns/GHSA-a",
+                Err("503".to_string()),
+            )
+            .with_get_response(
+                "https://api.osv.dev/v1/vulns/GHSA-b",
+                Err("503".to_string()),
+            );
+        let (findings, status) = check_with_transport(&deps, false, &transport);
+        assert!(findings.is_empty());
+        assert_eq!(
+            status,
+            CveStatus::Partial {
+                dependencies: 2,
+                incomplete: 2
+            }
+        );
     }
 
     #[test]

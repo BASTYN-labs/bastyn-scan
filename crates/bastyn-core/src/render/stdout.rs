@@ -175,6 +175,19 @@ fn render_steps(out: &mut String, report: &Report, options: StdoutOptions) {
             ),
             options,
         ),
+        CveStatus::Partial {
+            dependencies,
+            incomplete,
+        } => step(
+            out,
+            false,
+            &format!(
+                "OSV vulnerability lookup incomplete — {} checked, results may be missing for {}",
+                plural(*dependencies, "dependency", "dependencies"),
+                plural(*incomplete, "dependency", "dependencies")
+            ),
+            options,
+        ),
         CveStatus::NoManifest => step(
             out,
             false,
@@ -651,6 +664,14 @@ fn cve_sentence(status: &CveStatus) -> String {
         CveStatus::Checked { dependencies } => format!(
             "{} checked against the OSV vulnerability database.",
             plural(*dependencies, "dependency was", "dependencies were")
+        ),
+        CveStatus::Partial {
+            dependencies,
+            incomplete,
+        } => format!(
+            "{} checked against the OSV vulnerability database, but results for {} may be incomplete because not every OSV response could be read.",
+            plural(*dependencies, "dependency was", "dependencies were"),
+            plural(*incomplete, "dependency", "dependencies")
         ),
         CveStatus::NoManifest => {
             "CVEs were not checked because no dependency manifest was found.".to_owned()
@@ -1868,6 +1889,18 @@ mod tests {
         assert!(
             unreachable.contains("CVEs were not checked: no network connection."),
             "Unreachable must be visible, got: {unreachable}"
+        );
+
+        let partial = summarised(
+            &report_with(CveStatus::Partial {
+                dependencies: 9,
+                incomplete: 2,
+            }),
+            false,
+        );
+        assert!(
+            partial.contains("may be incomplete"),
+            "Partial must be visible, got: {partial}"
         );
     }
 
