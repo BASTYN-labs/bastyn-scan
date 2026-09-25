@@ -132,4 +132,36 @@ pub enum RuleError {
         #[source]
         source: RegexMatcherError,
     },
+
+    /// A rule declared `kind: observation` and also `flow.unproven`, which
+    /// only changes what a defect rule reports.
+    #[error("rule `{id}`: `flow.unproven` is only meaningful on a `kind: defect` rule")]
+    UnprovenOnObservation {
+        /// The offending rule's id.
+        id: String,
+    },
+
+    /// A field names a metavariable that none of the rule's `any` patterns
+    /// binds, so it could never be tested.
+    #[error("rule `{id}`: `{field}` names `${var}`, which no `any` pattern binds")]
+    UnboundMetavariable {
+        /// The offending rule's id.
+        id: String,
+        /// The field that named the unbound metavariable.
+        field: String,
+        /// The metavariable name that no `any` pattern binds.
+        var: String,
+    },
+
+    /// A `flow.unproven.requires` regular expression failed to compile.
+    #[error("rule `{id}`: invalid flow.unproven.requires regex for `{var}`: {source}")]
+    InvalidUnprovenRegex {
+        /// The offending rule's id.
+        id: String,
+        /// The metavariable name the regex was attached to.
+        var: String,
+        /// The underlying regex-compilation failure.
+        #[source]
+        source: RegexMatcherError,
+    },
 }

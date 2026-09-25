@@ -25,10 +25,6 @@ const OWN_SCOPE_KINDS: &[&str] = &[
 ];
 
 /// Whether `call` calls a bare name this file binds in a scope enclosing it.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the rule engine from the next change")
-)]
 pub(crate) fn bare_callee_is_shadowed<D: Doc>(root: &Node<'_, D>, call: &Node<'_, D>) -> bool {
     if call.kind() != "call" {
         return false;

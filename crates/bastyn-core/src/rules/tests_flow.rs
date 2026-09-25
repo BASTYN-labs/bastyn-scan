@@ -3,6 +3,7 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::expect_used,
     reason = "a failed assumption in a test should fail the test"
 )]
 
@@ -389,4 +390,258 @@ rules:
         fires(&ruleset, &shadowed),
         "missed a wrapper next to `execute_all`"
     );
+}
+
+/// A `flow:` rule with an unproven path, parameterised by its extra flow
+/// keys and its declared kind.
+fn unproven_rule(kind: &str, extra_flow: &str) -> String {
+    format!(
+        r"
+rules:
+  - id: BAS-FLOW-020
+    title: Model output run as a shell command
+    kind: {kind}
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - os.system($ARG)
+    flow:
+      variable: ARG
+      source: model_output
+      unguarded: true
+{extra_flow}
+    description: A value reaches os.system().
+    remediation: Do not.
+"
+    )
+}
+
+const UNPROVEN_WITH_REQUIRES: &str = "      unproven:
+        kind: observation
+        requires:
+          ARG: \"(?i)(response|reply)\"";
+
+fn only(findings: &[crate::finding::Finding]) -> &crate::finding::Finding {
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+    &findings[0]
+}
+
+#[test]
+fn a_proven_source_keeps_the_declared_kind() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    let source = "def run(client):\n    command = client.chat.completions.create(prompt='x').choices[0].message.content\n    os.system(command)\n";
+    let findings = scan_source(&rules, Path::new("app/run.py"), source);
+    let finding = only(&findings);
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
+    assert_eq!(finding.confidence, crate::finding::Confidence::High);
+    assert!(!finding.description.contains("could not be traced"));
+}
+
+#[test]
+fn an_untraceable_value_with_a_matching_name_is_an_observation() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    let findings = scan_source(
+        &rules,
+        Path::new("app/run.py"),
+        "def run(response):\n    os.system(response)\n",
+    );
+    let finding = only(&findings);
+    assert_eq!(finding.kind, crate::finding::Kind::Observation);
+    assert_eq!(finding.confidence, crate::finding::Confidence::Low);
+    assert!(finding.description.ends_with(
+        "The origin of this value could not be traced within this file, so this is reported as an observation rather than a defect."
+    ), "{}", finding.description);
+}
+
+#[test]
+fn an_untraceable_value_whose_name_fails_requires_is_dropped() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    assert!(
+        scan_source(
+            &rules,
+            Path::new("app/run.py"),
+            "def run(command):\n    os.system(command)\n"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_value_from_a_different_known_source_is_dropped_not_observed() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    let source = "def run(path):\n    response = json.load(open(path))\n    os.system(response)\n";
+    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+}
+
+#[test]
+fn a_closed_value_is_dropped_even_with_an_unproven_path() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    assert!(
+        scan_source(
+            &rules,
+            Path::new("app/run.py"),
+            "response = \"printf hello\"\nos.system(response)\n"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_guarded_value_is_dropped_even_with_an_unproven_path() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    let source = "def run(response):\n    if response not in (\"ls\", \"pwd\"):\n        raise ValueError(response)\n    os.system(response)\n";
+    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+}
+
+#[test]
+fn an_unproven_path_without_requires_reports_any_untraceable_value() {
+    let rules = RuleSet::from_yaml(&unproven_rule(
+        "defect",
+        "      unproven:\n        kind: observation",
+    ))
+    .unwrap();
+    let findings = scan_source(
+        &rules,
+        Path::new("app/run.py"),
+        "def run(anything):\n    os.system(anything)\n",
+    );
+    assert_eq!(only(&findings).kind, crate::finding::Kind::Observation);
+}
+
+#[test]
+fn unproven_on_an_observation_rule_fails_to_load() {
+    let err =
+        RuleSet::from_yaml(&unproven_rule("observation", UNPROVEN_WITH_REQUIRES)).unwrap_err();
+    assert!(
+        matches!(err, RuleError::UnprovenOnObservation { .. }),
+        "{err}"
+    );
+}
+
+#[test]
+fn unproven_kind_other_than_observation_fails_to_load() {
+    let err = RuleSet::from_yaml(&unproven_rule(
+        "defect",
+        "      unproven:\n        kind: defect",
+    ))
+    .unwrap_err();
+    assert!(matches!(err, RuleError::Yaml(_)), "{err}");
+}
+
+#[test]
+fn requires_naming_an_unbound_metavariable_fails_to_load() {
+    let err = RuleSet::from_yaml(&unproven_rule(
+        "defect",
+        "      unproven:\n        kind: observation\n        requires:\n          NOPE: \"x\"",
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(err, RuleError::UnboundMetavariable { ref var, .. } if var == "NOPE"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_invalid_requires_regex_fails_to_load() {
+    let err = RuleSet::from_yaml(&unproven_rule(
+        "defect",
+        "      unproven:\n        kind: observation\n        requires:\n          ARG: \"(\"",
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(err, RuleError::InvalidUnprovenRegex { .. }),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_unproven_observation_in_a_test_path_is_still_an_observation() {
+    let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
+    let findings = scan_source(
+        &rules,
+        Path::new("tests/test_run.py"),
+        "def run(response):\n    os.system(response)\n",
+    );
+    assert_eq!(only(&findings).kind, crate::finding::Kind::Observation);
+}
+
+const BUILTIN_RULE: &str = r"
+rules:
+  - id: BAS-FLOW-021
+    title: Model output executed as code
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      source: model_output
+      builtin_callee: true
+    description: Model output reaches eval().
+    remediation: Do not.
+";
+
+#[test]
+fn builtin_callee_drops_a_call_to_a_shadowed_eval() {
+    let rules = RuleSet::from_yaml(BUILTIN_RULE).unwrap();
+    let source = "def eval(value):\n    return value\n\ndef run(client):\n    text = client.responses.create(model='m', input='x').output_text\n    return eval(text)\n";
+    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+}
+
+#[test]
+fn builtin_callee_keeps_a_call_to_the_real_eval() {
+    let rules = RuleSet::from_yaml(BUILTIN_RULE).unwrap();
+    let source = "def run(client):\n    text = client.responses.create(model='m', input='x').output_text\n    return eval(text)\n";
+    assert_eq!(
+        scan_source(&rules, Path::new("app/run.py"), source).len(),
+        1
+    );
+}
+
+#[test]
+fn the_wrapper_pass_reports_an_unproven_argument_only_without_requires() {
+    let with_requires = r"
+rules:
+  - id: BAS-FLOW-022
+    title: t
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - exec($ARG)
+    flow:
+      variable: ARG
+      source: model_output
+      sink: code_execution
+      unproven:
+        kind: observation
+        requires:
+          ARG: response
+    description: d
+    remediation: r
+";
+    let source =
+        "def runner(code):\n    exec(code)\n\ndef handle(response):\n    runner(response)\n";
+    let rules = RuleSet::from_yaml(with_requires).unwrap();
+    let findings = scan_source(&rules, Path::new("app/run.py"), source);
+    assert!(
+        findings.iter().all(|f| f.location.line != 5),
+        "no wrapper-call finding expected with requires: {findings:#?}"
+    );
+
+    let without = with_requires.replace("        requires:\n          ARG: response\n", "");
+    let rules = RuleSet::from_yaml(&without).unwrap();
+    let findings = scan_source(&rules, Path::new("app/run.py"), source);
+    let wrapper = findings
+        .iter()
+        .find(|f| f.location.line == 5)
+        .expect("a wrapper-call observation");
+    assert_eq!(wrapper.kind, crate::finding::Kind::Observation);
 }

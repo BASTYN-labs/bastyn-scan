@@ -143,6 +143,11 @@ pub(crate) struct RuleDef {
 ///   source: model_output   # one kind, or a list of them
 ///   unguarded: true        # and no guard may already dominate the sink
 ///   sink: code_execution   # also match calls to local wrappers of this sink
+///   builtin_callee: true   # drop a call through a locally rebound name
+///   unproven:               # report an untraceable value as an observation
+///     kind: observation
+///     requires:
+///       ARG: "(?i)(response|reply)"
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,6 +176,43 @@ pub(crate) struct FlowDef {
     /// describe. Bounded at one hop -- see [`crate::flow::graph`].
     #[serde(default)]
     pub(crate) sink: Option<SinkKind>,
+    /// What to report when the value's origin cannot be traced at all.
+    ///
+    /// Absent, such a match is dropped. Present, it is reported as an
+    /// observation instead of the rule's declared kind, provided every
+    /// `requires` regex matches its capture. A value traced to a catalogued
+    /// source the rule does not list is still dropped: it is known not to
+    /// be what the rule is about.
+    #[serde(default)]
+    pub(crate) unproven: Option<UnprovenDef>,
+    /// Drop a match whose callee is a bare name this file binds itself (a
+    /// local `def eval`, an `import ... as eval`), so a rule about a Python
+    /// builtin only ever reports the builtin.
+    #[serde(default)]
+    pub(crate) builtin_callee: bool,
+}
+
+/// A `flow.unproven:` clause, exactly as written in YAML.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnprovenDef {
+    /// The kind an unproven match is reported as. Only `observation`.
+    pub(crate) kind: UnprovenKind,
+    /// Captured metavariable name to a regex its text must match, applied
+    /// only on this path.
+    #[serde(default)]
+    pub(crate) requires: HashMap<String, String>,
+}
+
+/// The kinds an unproven match may be reported as.
+///
+/// One variant on purpose: a match whose origin is unknown is not evidence
+/// of a defect, so `kind: defect` here fails to load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum UnprovenKind {
+    /// Reported as [`Kind::Observation`].
+    Observation,
 }
 
 /// One source kind or several, so a rule author writes `source: model_output`
