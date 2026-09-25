@@ -48,6 +48,7 @@ use std::collections::{HashMap, HashSet};
 use ast_grep_core::{Doc, Node};
 
 use super::catalogue::{SinkKind, SourceKind, classify_sink, classify_source};
+use super::shadow::bare_callee_is_shadowed;
 
 /// A language the flow graph can be built for.
 ///
@@ -400,6 +401,19 @@ fn collect_wrapper_sinks<D: Doc>(
                 .filter(|node| node.kind() == "call")
                 .collect::<Vec<_>>()
         }) {
+            // A call through a bare name this file rebinds itself (a local
+            // `def eval`) is not a call to the catalogued builtin sink,
+            // whatever it is named -- the same fact `bare_callee_is_shadowed`
+            // already keeps a direct match from reporting. `wrapper_sinks`
+            // has no per-rule `builtin_callee` flag to consult here, but it
+            // does not need one: every bare-identifier sink this catalogue
+            // knows about (`eval`, `exec`, `compile`, ...) is
+            // `SinkKind::CodeExecution`, so this check is a no-op for the
+            // qualified sinks (`os.system`, `subprocess.run`, ...) a call
+            // through an attribute can never satisfy in the first place.
+            if bare_callee_is_shadowed(root, &call) {
+                continue;
+            }
             let Some(kind) = call
                 .field("function")
                 .and_then(|callee| classify_sink(&callee_path(&callee)))

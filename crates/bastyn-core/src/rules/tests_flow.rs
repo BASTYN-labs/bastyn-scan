@@ -603,6 +603,69 @@ fn builtin_callee_keeps_a_call_to_the_real_eval() {
     );
 }
 
+const BUILTIN_SINK_RULE: &str = r"
+rules:
+  - id: BAS-FLOW-023
+    title: Model output executed as code
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      source: model_output
+      sink: code_execution
+      builtin_callee: true
+    description: Model output reaches eval().
+    remediation: Do not.
+";
+
+/// The wrapper pass used to ignore `builtin_callee` entirely: it asked only
+/// whether a local function's body called something named `eval`, never
+/// whether that name still meant the real builtin by the time it ran. A file
+/// that shadows `eval` with its own identity function and then wraps *that*
+/// must not report a call through the wrapper, the same way a direct call to
+/// the shadowed name already does not.
+#[test]
+fn builtin_callee_drops_a_wrapper_call_through_a_shadowed_eval() {
+    let rules = RuleSet::from_yaml(BUILTIN_SINK_RULE).unwrap();
+    let source = "\
+def eval(v):
+    return v
+
+
+def run(code):
+    return eval(code)
+
+
+def handle(client):
+    model_text = client.responses.create(model='m', input='x').output_text
+    run(model_text)
+";
+    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+}
+
+/// The companion case: with no local `def eval`, the wrapper's `eval` really
+/// is the builtin, and the call through the wrapper is still reported.
+#[test]
+fn builtin_callee_keeps_a_wrapper_call_through_the_real_eval() {
+    let rules = RuleSet::from_yaml(BUILTIN_SINK_RULE).unwrap();
+    let source = "\
+def run(code):
+    return eval(code)
+
+
+def handle(client):
+    model_text = client.responses.create(model='m', input='x').output_text
+    run(model_text)
+";
+    let findings = scan_source(&rules, Path::new("app/run.py"), source);
+    assert_eq!(findings.len(), 1, "{findings:#?}");
+}
+
 #[test]
 fn the_wrapper_pass_reports_an_unproven_argument_only_without_requires() {
     let with_requires = r"
@@ -659,4 +722,18 @@ fn a_system_prompt_from_an_unclassified_request_attribute_is_an_observation() {
         .find(|f| f.rule_id == "BAS-ZT4-001")
         .expect("an observation");
     assert_eq!(zt4.kind, crate::finding::Kind::Observation);
+}
+
+/// `BAS-ZT4-001` has `unguarded: true`, so a value already checked against a
+/// fixed set before reaching the interpolation is not reported at all -- the
+/// same guard every other flow-gated rule already honours.
+#[test]
+fn bas_zt4_001_skips_a_value_already_limited_by_a_fixed_set_check() {
+    let rules = RuleSet::embedded().unwrap();
+    let source = "def handle(request):\n    user_input = request.get_json()[\"q\"]\n    if user_input not in (\"a\", \"b\"):\n        return None\n    system_prompt = f\"Context: {user_input}\"\n";
+    let findings = scan_source(&rules, Path::new("app/handler.py"), source);
+    assert!(
+        findings.iter().all(|f| f.rule_id != "BAS-ZT4-001"),
+        "a guarded value must not be reported: {findings:#?}"
+    );
 }

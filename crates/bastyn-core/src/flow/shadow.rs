@@ -71,7 +71,22 @@ fn binds_here<D: Doc>(node: &Node<'_, D>, name: &str) -> bool {
         }
         "lambda" => return false,
         "import_statement" | "import_from_statement" => return import_binds(node, name),
-        "assignment" | "augmented_assignment" | "for_statement" => {
+        "assignment" => {
+            // `eval = builtins.eval` re-binds the name to the very builtin
+            // it already names, so it does not shadow it -- unlike
+            // `eval = builtins.compile` or `eval = sandbox.evaluate`, which
+            // really do replace it with something else.
+            if reassigns_builtin_to_itself(node, name) {
+                return false;
+            }
+            if node
+                .field("left")
+                .is_some_and(|target| target_binds(&target, name))
+            {
+                return true;
+            }
+        }
+        "augmented_assignment" | "for_statement" => {
             if node
                 .field("left")
                 .is_some_and(|target| target_binds(&target, name))
@@ -98,6 +113,35 @@ fn binds_here<D: Doc>(node: &Node<'_, D>, name: &str) -> bool {
     node.children().any(|child| binds_here(&child, name))
 }
 
+/// Whether `node` (an `assignment`) is exactly `NAME = builtins.NAME`: a
+/// plain local re-bound to the very builtin it already names.
+///
+/// This is not shadowing -- the name still resolves to the real builtin --
+/// unlike `NAME = builtins.OTHER` or `NAME = other_module.NAME`, both of
+/// which really do replace it with something else and fall through to the
+/// ordinary target-binding check below.
+fn reassigns_builtin_to_itself<D: Doc>(node: &Node<'_, D>, name: &str) -> bool {
+    let Some(left) = node.field("left") else {
+        return false;
+    };
+    if left.kind() != "identifier" || left.text() != name {
+        return false;
+    }
+    let Some(right) = node.field("right") else {
+        return false;
+    };
+    if right.kind() != "attribute" {
+        return false;
+    }
+    let object_is_builtins = right
+        .field("object")
+        .is_some_and(|object| object.kind() == "identifier" && object.text() == "builtins");
+    let attribute_is_name = right
+        .field("attribute")
+        .is_some_and(|attribute| attribute.text() == name);
+    object_is_builtins && attribute_is_name
+}
+
 /// Whether an assignment target binds `name` as a plain local.
 fn target_binds<D: Doc>(target: &Node<'_, D>, name: &str) -> bool {
     match target.kind().as_ref() {
@@ -116,17 +160,36 @@ fn target_binds<D: Doc>(target: &Node<'_, D>, name: &str) -> bool {
 }
 
 /// Whether an `import` or `from ... import` statement binds `name`.
+///
+/// `from builtins import eval` (and `from builtins import eval as eval`)
+/// re-import the real builtin under its own name and so do not shadow it --
+/// unlike `from builtins import compile as eval` or `from sandbox import
+/// eval`, which really do bind `name` to something else.
 fn import_binds<D: Doc>(statement: &Node<'_, D>, name: &str) -> bool {
-    let module = statement.field("module_name").map(|m| m.node_id());
+    let module = statement.field("module_name");
+    let from_builtins = module
+        .as_ref()
+        .is_some_and(|module| module.text() == "builtins");
+    let module_id = module.map(|module| module.node_id());
     statement
         .named_children()
-        .filter(|child| Some(child.node_id()) != module)
+        .filter(|child| Some(child.node_id()) != module_id)
         .any(|child| match child.kind().as_ref() {
-            "aliased_import" => child
-                .field("alias")
-                .is_some_and(|alias| alias.text() == name),
+            "aliased_import" => {
+                let alias_matches = child
+                    .field("alias")
+                    .is_some_and(|alias| alias.text() == name);
+                let self_reimport = from_builtins
+                    && child
+                        .field("name")
+                        .is_some_and(|original| original.text() == name);
+                alias_matches && !self_reimport
+            }
             // `import a.b` binds `a`; `from m import x` binds `x`.
-            "dotted_name" => child.text().split('.').next() == Some(name),
+            "dotted_name" => {
+                let matches = child.text().split('.').next() == Some(name);
+                matches && !(from_builtins && child.text() == name)
+            }
             _ => false,
         })
 }
@@ -189,8 +252,43 @@ mod tests {
     }
 
     #[test]
+    fn a_reimport_of_the_builtin_under_its_own_name_does_not_shadow_it() {
+        assert!(!last_eval_is_shadowed(
+            "from builtins import eval\neval(x)\n"
+        ));
+    }
+
+    #[test]
+    fn a_reimport_of_the_builtin_aliased_to_itself_does_not_shadow_it() {
+        assert!(!last_eval_is_shadowed(
+            "from builtins import eval as eval\neval(x)\n"
+        ));
+    }
+
+    #[test]
+    fn renaming_a_different_builtin_to_eval_still_shadows_it() {
+        assert!(last_eval_is_shadowed(
+            "from builtins import compile as eval\neval(x)\n"
+        ));
+    }
+
+    #[test]
     fn an_assignment_shadows_it() {
         assert!(last_eval_is_shadowed("eval = sandbox.evaluate\neval(x)\n"));
+    }
+
+    #[test]
+    fn an_assignment_of_the_builtin_to_itself_does_not_shadow_it() {
+        assert!(!last_eval_is_shadowed(
+            "import builtins\neval = builtins.eval\neval(x)\n"
+        ));
+    }
+
+    #[test]
+    fn an_assignment_from_a_different_builtins_attribute_still_shadows_it() {
+        assert!(last_eval_is_shadowed(
+            "import builtins\neval = builtins.compile\neval(x)\n"
+        ));
     }
 
     #[test]

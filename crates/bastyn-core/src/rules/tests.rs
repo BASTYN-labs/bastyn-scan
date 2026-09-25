@@ -1153,3 +1153,37 @@ fn none_in_file_naming_an_unbound_metavariable_fails_to_load() {
         "{err}"
     );
 }
+
+/// `flow.sink` and `none_in_file` on the same rule fails to load: the
+/// wrapper-sink pass that `flow.sink` turns on builds its findings straight
+/// from `wrapper_sink_calls`, never through `CompiledRule::excluded_by_file`,
+/// so a `none_in_file` exclusion on such a rule would be silently skipped for
+/// every finding the wrapper pass reports.
+#[test]
+fn flow_sink_combined_with_none_in_file_fails_to_load() {
+    let yaml = r"
+rules:
+  - id: BAS-NIF-003
+    title: t
+    kind: defect
+    severity: critical
+    confidence: high
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      source: model_output
+      sink: code_execution
+    none_in_file:
+      - exec($ARG)
+    description: d
+    remediation: r
+";
+    let err = RuleSet::from_yaml(yaml).unwrap_err();
+    assert!(
+        matches!(err, RuleError::FlowSinkWithNoneInFile { ref id } if id == "BAS-NIF-003"),
+        "{err}"
+    );
+}

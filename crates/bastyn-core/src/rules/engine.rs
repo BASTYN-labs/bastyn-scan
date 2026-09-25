@@ -465,6 +465,15 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
     if sources.is_empty() {
         return Err(RuleError::EmptyFlowSources { id: def.id.clone() });
     }
+    // The wrapper-sink pass `flow.sink` turns on builds its findings
+    // straight from `wrapper_sink_calls`, never through
+    // `CompiledRule::excluded_by_file` -- see this module's `scan_with`. A
+    // `none_in_file` exclusion on such a rule would therefore be silently
+    // skipped for every wrapper-call finding, so the combination is rejected
+    // here rather than shipped half-working.
+    if flow.sink.is_some() && !def.none_in_file.is_empty() {
+        return Err(RuleError::FlowSinkWithNoneInFile { id: def.id.clone() });
+    }
     // `flow.unproven` only changes what a defect rule reports: an
     // observation rule already reports everything it matches as an
     // observation, so the field would be a no-op there.

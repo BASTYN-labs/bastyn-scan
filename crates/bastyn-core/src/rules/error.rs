@@ -164,4 +164,21 @@ pub enum RuleError {
         #[source]
         source: RegexMatcherError,
     },
+
+    /// A rule declared both `flow.sink` and `none_in_file`.
+    ///
+    /// The wrapper-sink pass `flow.sink` turns on (`rules::engine::scan_with`)
+    /// builds its findings directly from `wrapper_sink_calls`, never through
+    /// `CompiledRule::excluded_by_file`, so a `none_in_file` exclusion on such
+    /// a rule would be silently skipped for every finding the wrapper pass
+    /// reports -- a load error rather than a check that quietly does nothing
+    /// for half of what the rule can report.
+    #[error(
+        "rule `{id}`: `flow.sink` and `none_in_file` cannot be combined; the wrapper-sink pass \
+         `flow.sink` enables does not consult `none_in_file`"
+    )]
+    FlowSinkWithNoneInFile {
+        /// The offending rule's id.
+        id: String,
+    },
 }
