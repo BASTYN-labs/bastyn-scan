@@ -625,7 +625,7 @@ def handle():
         Target {
             rule_id: "BAS-LLM03-001",
             var: "FN",
-            kind: Kind::Defect,
+            kind: Kind::Observation,
             ext: "py",
             template: "@tool\ndef __FN__(args):\n    do_something(args)\n",
             placeholder: "__FN__",
@@ -651,7 +651,7 @@ def handle():
         Target {
             rule_id: "BAS-LLM10-006",
             var: "ARG",
-            kind: Kind::Defect,
+            kind: Kind::Observation,
             ext: "ts",
             template: "execSync(__ARG__);\n",
             placeholder: "__ARG__",
@@ -664,7 +664,7 @@ def handle():
         Target {
             rule_id: "BAS-LLM10-007",
             var: "ARG",
-            kind: Kind::Defect,
+            kind: Kind::Observation,
             ext: "ts",
             template: "db.query(`SELECT * FROM t WHERE id = ${__ARG__}`);\n",
             placeholder: "__ARG__",
@@ -677,7 +677,7 @@ def handle():
         Target {
             rule_id: "BAS-ZT4-003",
             var: "SYS",
-            kind: Kind::Defect,
+            kind: Kind::Observation,
             ext: "ts",
             // VAR pinned to "userInput", an in-gate value for VAR's own regex.
             template: "const __SYS__ = `Context: ${userInput}`;\n",
@@ -691,7 +691,7 @@ def handle():
         Target {
             rule_id: "BAS-ZT4-003",
             var: "VAR",
-            kind: Kind::Defect,
+            kind: Kind::Observation,
             ext: "ts",
             // SYS pinned to "systemPrompt", an in-gate value for SYS's own regex.
             template: "const systemPrompt = `Context: ${__VAR__}`;\n",
@@ -705,7 +705,7 @@ def handle():
         Target {
             rule_id: "BAS-LLM03-002",
             var: "NAME",
-            kind: Kind::Defect,
+            kind: Kind::Observation,
             ext: "ts",
             template: "const __NAME__ = tool({\n  description: \"does a thing\",\n  execute: async (params) => {\n    doSomething(params);\n  }\n});\n",
             placeholder: "__NAME__",

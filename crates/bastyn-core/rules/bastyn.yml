@@ -438,7 +438,9 @@ rules:
 
   - id: BAS-LLM03-001
     title: Unauthorized agent tool exposed without a confirmation guard
-    kind: defect
+    # An observation: the function's name is the only evidence that the tool
+    # changes state, and a name is not proof.
+    kind: observation
     severity: high
     confidence: medium
     categories: [LLM03]
@@ -482,7 +484,7 @@ rules:
     metavariable_matches:
       FN: "(?i)^(delete|drop|remove|transfer|withdraw|wire|drain|revoke|terminate|shutdown|sell_all|liquidate|send_funds|execute_trade|purge|wipe|create|update|edit|modify|insert|cancel|approve|reject|install|uninstall|register|grant|subscribe|schedule|submit|publish|deploy|charge|refund|send)"
     description: >
-      A tool exposed to the agent performs a privileged or state-changing
+      A tool exposed to the agent is named like a privileged or state-changing
       action (delete, transfer, create, update, ...) with no guard clause at
       the top of its body checking a confirmation or authorization condition
       before acting. If the agent decides to call it, it executes
@@ -791,7 +793,9 @@ rules:
   # came from.
   - id: BAS-LLM10-005
     title: eval() or new Function() run on a non-literal expression (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: high
     confidence: medium
     categories: [LLM10, ZT4]
@@ -819,7 +823,9 @@ rules:
 
   - id: BAS-LLM10-006
     title: Model output executed as a shell command (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: critical
     confidence: high
     categories: [LLM10]
@@ -878,11 +884,12 @@ rules:
     metavariable_matches:
       ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A model reply is passed straight to a shell via child_process.exec,
-      execSync, or interpolated into a template-literal command string.
-      Anything the model was tricked into saying -- including output planted
-      by content it read from the web or from a document -- now runs as a
-      shell command with the process's full privileges.
+      A value named like a model reply is passed straight to a shell via
+      child_process.exec, execSync, or interpolated into a template-literal
+      command string. If this value carries model output, anything the model
+      was tricked into saying -- including output planted by content it read
+      from the web or from a document -- runs as a shell command with the
+      process's full privileges.
     remediation: >
       Do not derive shell commands from model output. If the agent must run
       a fixed set of commands, dispatch on a whitelist of command names with
@@ -901,7 +908,9 @@ rules:
   # only thing making it precise, and it stays.
   - id: BAS-LLM10-007
     title: Model output concatenated into a SQL query (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: critical
     confidence: high
     categories: [LLM10]
@@ -911,11 +920,12 @@ rules:
     metavariable_matches:
       ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A database query is built by interpolating model output straight into
-      a template-literal SQL string. Since the model's reply is
-      attacker-influenceable (via prompt injection from any untrusted
-      document, tool result, or user message it has seen), this is SQL
-      injection with the model as the delivery mechanism.
+      A database query is built by interpolating a value named like model
+      output straight into a template-literal SQL string. If this value
+      carries the model's reply, and that reply is attacker-influenceable
+      (via prompt injection from any untrusted document, tool result, or
+      user message it has seen), this is SQL injection with the model as
+      the delivery mechanism.
     remediation: >
       Never interpolate model output into a SQL string. Use a parameterized
       query (db.query(sql, params)) and keep model output confined to
@@ -965,7 +975,9 @@ rules:
 
   - id: BAS-ZT4-003
     title: Raw user input folded directly into a template-literal system prompt (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: high
     confidence: high
     categories: [LLM01, ZT4]
@@ -975,11 +987,17 @@ rules:
     metavariable_matches:
       SYS: "(?i)(system|prompt|instruction|persona|template)"
       VAR: "(?i)(user|request|query|input|raw|message)"
+    none_in_file:
+      - '{role: "user", content: $SYS}'
+      - "{role: 'user', content: $SYS}"
+      - '{content: $SYS, role: "user"}'
+      - "{content: $SYS, role: 'user'}"
     description: >
       A system/instruction prompt is built by template-literal-interpolating
-      raw user input directly into the instruction text, with no delimiter
-      separating "what the model must do" from "what the user said." Any
-      user message can now rewrite the model's instructions.
+      a value named like user input directly into the instruction text, with
+      no delimiter separating "what the model must do" from "what the user
+      said." If this value carries user input, whoever controls it can
+      rewrite the model's instructions.
     remediation: >
       Keep untrusted input out of the instruction channel. Pass it as a
       separate user/tool message, or through a templating layer that keeps
@@ -988,7 +1006,9 @@ rules:
 
   - id: BAS-LLM03-002
     title: Unauthorized agent tool exposed without a confirmation guard (JS)
-    kind: defect
+    # An observation: the function's name is the only evidence that the tool
+    # changes state, and a name is not proof.
+    kind: observation
     severity: high
     confidence: medium
     categories: [LLM03]
@@ -1053,7 +1073,7 @@ rules:
     metavariable_matches:
       NAME: "(?i)^(delete|drop|remove|transfer|withdraw|wire|drain|revoke|terminate|shutdown|sell_all|liquidate|send_funds|execute_trade|purge|wipe|create|update|edit|modify|insert|cancel|approve|reject|install|uninstall|register|grant|subscribe|schedule|submit|publish|deploy|charge|refund|send)"
     description: >
-      A tool registered with the agent SDK's tool() helper performs a
+      A tool registered with the agent SDK's tool() helper is named like a
       privileged or state-changing action (delete, transfer, create, update,
       ...) and its execute handler has no guard clause at the top checking a
       confirmation or authorization condition before acting. If the agent

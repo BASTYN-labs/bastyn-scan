@@ -43,18 +43,18 @@ file     = "vulnerable/llm03_excessive_agency.py"
 line     = 9
 rule     = "BAS-LLM03-001"
 category = "LLM03"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "shutdown_server is a destructive tool exposed via @tool with no confirmation guard before it acts."
+why      = "shutdown_server is a destructive tool exposed via @tool with no confirmation guard before it acts. Reported as an observation: the tool's name is the only evidence it changes state."
 
 [[expect]]
 file     = "vulnerable/llm03_excessive_agency.py"
 line     = 29
 rule     = "BAS-LLM03-001"
 category = "LLM03"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "update_server_config is a state-changing tool exposed via @tool with no confirmation guard -- not named with a delete/drop/... verb, the exact gap the head-to-head benchmark against a Python prototype exposed: the prototype flagged all 8 undecorated tool functions in a real repository's file and Bastyn caught only the one destructively-named one."
+why      = "update_server_config is a state-changing tool exposed via @tool with no confirmation guard, not named with a delete/drop/... verb. Reported as an observation: the tool's name is the only evidence it changes state."
 
 [[expect]]
 file     = "vulnerable/llm06_unbounded_consumption.py"
@@ -371,18 +371,18 @@ file     = "vulnerable/real_misses/eval_expression_tool.js"
 line     = 26
 rule     = "BAS-LLM10-005"
 category = "LLM10"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "eval() on a model-supplied `expression` inside an agent tool. The variable is named for what the value is, which is what every real instance measured on 2026-08-28 did, so the old response/reply/... name gate could never fire -- BAS-LLM10-005 now gates on the argument not being a literal, exactly as BAS-LLM10-004 does for Python."
+why      = "eval() on a model-supplied `expression` inside an agent tool. The variable is named for what the value is, which is what every real instance measured on 2026-08-28 did, so the old response/reply/... name gate could never fire -- BAS-LLM10-005 now gates on the argument not being a literal, exactly as BAS-LLM10-004 does for Python. Reported as an observation: TypeScript/JavaScript has no dataflow graph to prove the value's origin."
 
 [[expect]]
 file     = "vulnerable/real_misses/eval_expression_tool.js"
 line     = 34
 rule     = "BAS-LLM10-005"
 category = "LLM10"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "new Function() on a template literal built from model-derived text. A template literal is not a fixed literal, so the `none:` exclusion does not cover it -- and should not."
+why      = "new Function() on a template literal built from model-derived text. A template literal is not a fixed literal, so the `none:` exclusion does not cover it -- and should not. Reported as an observation: TypeScript/JavaScript has no dataflow graph to prove the value's origin."
 
 [[known_gap]]
 file     = "vulnerable/real_misses/autonomous_action_from_model_text.py"
@@ -728,18 +728,18 @@ file     = "vulnerable/llm03_excessive_agency.js"
 line     = 22
 rule     = "BAS-LLM03-002"
 category = "LLM03"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "shutdownServer, a destructive tool registered via the Vercel AI SDK's tool(), has no confirmation guard in its execute() before calling infraClient.shutdown(). Promoted from known_gap on 2026-08-28: BAS-LLM03-002 used to require a `name:` property inside tool({...}), which that SDK's helper does not have -- the tool's name is the binding it is assigned to, which is what the rule now reads."
+why      = "shutdownServer, a destructive tool registered via the Vercel AI SDK's tool(), has no confirmation guard in its execute() before calling infraClient.shutdown(). Promoted from known_gap on 2026-08-28: BAS-LLM03-002 used to require a `name:` property inside tool({...}), which that SDK's helper does not have -- the tool's name is the binding it is assigned to, which is what the rule now reads. Reported as an observation: the tool's name is the only evidence it changes state."
 
 [[expect]]
 file     = "vulnerable/llm03_excessive_agency.js"
 line     = 49
 rule     = "BAS-LLM03-002"
 category = "LLM03"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "updateServerConfig is a state-changing tool with no confirmation guard, not named with a delete/drop/... verb -- the JS/TS twin of the same gap the head-to-head benchmark exposed on the Python side."
+why      = "updateServerConfig is a state-changing tool with no confirmation guard, not named with a delete/drop/... verb. Reported as an observation: the tool's name is the only evidence it changes state."
 
 [[known_gap]]
 file     = "vulnerable/llm03_excessive_agency.js"
@@ -807,9 +807,9 @@ file     = "vulnerable/llm10_eval_on_model_reply.ts"
 line     = 41
 rule     = "BAS-LLM10-005"
 category = "LLM10"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "runSuggestedExpression() passes the model's own reply straight to eval(), through a local variable named suggestion rather than response/reply/completion/...-shaped. Promoted from known_gap on 2026-08-28: BAS-LLM10-005 no longer gates on the argument's name, only on it not being a literal, so the naming that used to defeat it no longer does. Reported by the JavaScript rule rather than a TypeScript twin, because JS rules now compile against the TypeScript grammar too -- the twin was a byte-identical duplicate and was deleted."
+why      = "runSuggestedExpression() passes the model's own reply straight to eval(), through a local variable named suggestion rather than response/reply/completion/...-shaped. Promoted from known_gap on 2026-08-28: BAS-LLM10-005 no longer gates on the argument's name, only on it not being a literal, so the naming that used to defeat it no longer does. Reported by the JavaScript rule rather than a TypeScript twin, because JS rules now compile against the TypeScript grammar too -- the twin was a byte-identical duplicate and was deleted. Reported as an observation: TypeScript/JavaScript has no dataflow graph to prove the value's origin."
 
 [[known_gap]]
 file     = "vulnerable/llm10_eval_on_model_reply.ts"
@@ -822,9 +822,9 @@ file     = "vulnerable/llm10_eval_on_model_reply.ts"
 line     = 65
 rule     = "BAS-LLM10-006"
 category = "LLM10"
-kind     = "defect"
+kind     = "observation"
 severity = "critical"
-why      = "executeSuggestedShellCommandSync() runs the model's reply through cp.execSync(), child_process imported under the cp namespace alias. Proves BAS-LLM10-006 still catches real receiver-qualified child_process usage after its receiver gate was narrowed away from any object with an .exec/.execSync method (see clean/near_misses.ts for the false positives that narrowing fixes)."
+why      = "executeSuggestedShellCommandSync() runs the model's reply through cp.execSync(), child_process imported under the cp namespace alias. Proves BAS-LLM10-006 still catches real receiver-qualified child_process usage after its receiver gate was narrowed away from any object with an .exec/.execSync method (see clean/near_misses.ts for the false positives that narrowing fixes). Reported as an observation: TypeScript/JavaScript has no dataflow graph to prove the value's origin."
 
 [[known_gap]]
 file     = "vulnerable/llm10_eval_on_model_reply.ts"
@@ -864,9 +864,9 @@ file     = "vulnerable/zt4_no_delimiter.ts"
 line     = 16
 rule     = "BAS-ZT4-003"
 category = "ZT4"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "buildReplyPrompt() concatenates the customer's raw, fully untrusted ticket text (customerMessage) directly into the persona instructions template literal, no delimiter or separate message role. Caught by the JavaScript rule once JS rules began reaching .ts files -- the rule was always correct, it simply never ran here."
+why      = "buildReplyPrompt() concatenates the customer's raw, fully untrusted ticket text (customerMessage) directly into the persona instructions template literal, no delimiter or separate message role. Caught by the JavaScript rule once JS rules began reaching .ts files -- the rule was always correct, it simply never ran here. Reported as an observation: TypeScript/JavaScript has no dataflow graph to prove the value's origin."
 
 # ---------------------------------------------------------------------
 # clean/ -- OpsBot's Node service, done safely, plus TS/JS near-misses.
@@ -939,4 +939,27 @@ category = "LLM01"
 kind     = "defect"
 severity = "critical"
 why      = "Complete, well-formed frontmatter, but the body's classic instruction-override phrase (\"ignore all previous instructions\") is word-wrapped across a Markdown line break (\"IGNORE ALL PREVIOUS\\nINSTRUCTIONS\"). Regression fixture for a bug where scan_phrases only did a literal substring match and silently missed phrases split by a line break; the same phrasing on one line was already caught (see log-analyzer above)."
+
+# =====================================================================
+# observations/ -- name-gated JS/TS shapes with no dataflow graph to prove
+# a literal's origin, so each finding below is a kind = "observation".
+# =====================================================================
+
+[[expect]]
+file     = "observations/literal_sinks.ts"
+line     = 4
+rule     = "BAS-LLM10-006"
+category = "LLM10"
+kind     = "observation"
+severity = "critical"
+why      = "A literal shell command. TypeScript has no dataflow graph here, so the engine cannot prove the argument fixed and reports an observation, never a defect."
+
+[[expect]]
+file     = "observations/literal_sinks.ts"
+line     = 7
+rule     = "BAS-LLM10-005"
+category = "LLM10"
+kind     = "observation"
+severity = "high"
+why      = "eval() on a literal held in a const. Observation for the same reason as line 4."
 
