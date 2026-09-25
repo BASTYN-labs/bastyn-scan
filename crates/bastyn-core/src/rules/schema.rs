@@ -103,6 +103,14 @@ pub(crate) struct RuleDef {
     /// Only match when nested inside one of these patterns.
     #[serde(default)]
     pub(crate) inside: Vec<String>,
+    /// Drop a match when one of these patterns matches anywhere in the same
+    /// file with every metavariable it shares bound to the same text.
+    ///
+    /// `none` only sees the matched node and `inside` only its ancestors;
+    /// this reaches a sibling statement, such as the message that sends a
+    /// prompt in the user role rather than the system role.
+    #[serde(default)]
+    pub(crate) none_in_file: Vec<String>,
     /// Captured metavariable name to the regex its text must match.
     #[serde(default)]
     pub(crate) metavariable_matches: HashMap<String, String>,

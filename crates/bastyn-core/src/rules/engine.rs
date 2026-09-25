@@ -178,6 +178,11 @@ struct CompiledRule {
     any_kinds: Option<Vec<bool>>,
     none: Vec<Pattern>,
     inside: Vec<Pattern>,
+    /// `none_in_file:` patterns paired with the metavariables each one
+    /// shares with `any` (sorted, for deterministic iteration). Checked by
+    /// [`CompiledRule::excluded_by_file`] against a whole-file search rather
+    /// than the candidate node alone, unlike [`Self::none`].
+    none_in_file: Vec<(Pattern, Vec<String>)>,
     metavariable_matches: Vec<(String, RegexMatcher)>,
     metavariable_not_matches: Vec<(String, RegexMatcher)>,
     flow: Option<CompiledFlow>,
@@ -308,6 +313,7 @@ impl CompiledRule {
             .collect();
 
         let flow = compile_flow(&def, &any_vars)?;
+        let none_in_file = compile_none_in_file(&def, grammar, lang, &any_vars)?;
 
         let mut metavariable_matches = Vec::with_capacity(def.metavariable_matches.len());
         for (var, regex_src) in def.metavariable_matches {
@@ -354,6 +360,7 @@ impl CompiledRule {
             any_kinds,
             none,
             inside,
+            none_in_file,
             metavariable_matches,
             metavariable_not_matches,
             flow,
@@ -403,6 +410,33 @@ impl CompiledRule {
         self.metavariable_not_matches.iter().all(|(var, regex)| {
             env.get_match(var)
                 .is_none_or(|node| regex.match_node(node.clone()).is_none())
+        })
+    }
+
+    /// Whether a `none_in_file` pattern matches elsewhere in the file with
+    /// the same bindings this candidate has.
+    ///
+    /// Only reached by candidates that passed every other gate, so the
+    /// whole-file search runs on the few matches that would otherwise be
+    /// reported.
+    fn excluded_by_file<D: Doc>(&self, root: &Node<'_, D>, env: &MetaVarEnv<'_, D>) -> bool {
+        self.none_in_file.iter().any(|(pattern, vars)| {
+            // A candidate from an `any` pattern that did not bind all of
+            // these has nothing to compare, so this pattern does not apply.
+            let Some(wanted) = vars
+                .iter()
+                .map(|var| env.get_match(var).map(|node| node.text().into_owned()))
+                .collect::<Option<Vec<String>>>()
+            else {
+                return false;
+            };
+            root.find_all(pattern).any(|hit| {
+                vars.iter().zip(&wanted).all(|(var, text)| {
+                    hit.get_env()
+                        .get_match(var)
+                        .is_some_and(|node| node.text() == text.as_str())
+                })
+            })
         })
     }
 }
@@ -481,6 +515,40 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
         unproven,
         builtin_callee: flow.builtin_callee,
     }))
+}
+
+/// Compile `def.none_in_file`, pairing each pattern with the metavariables
+/// (sorted, for deterministic error ordering) it shares with `any`.
+///
+/// Split out of [`CompiledRule::compile`] for the same reason
+/// [`compile_flow`] is: keeping that function within clippy's line-count
+/// lint.
+fn compile_none_in_file<L: LanguageExt + Copy>(
+    def: &RuleDef,
+    grammar: &'static str,
+    lang: L,
+    any_vars: &HashSet<String>,
+) -> Result<Vec<(Pattern, Vec<String>)>> {
+    let patterns = compile_patterns(&def.id, grammar, &def.none_in_file, lang)?;
+    patterns
+        .into_iter()
+        .map(|pattern| {
+            let mut vars: Vec<String> = pattern
+                .defined_vars()
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            vars.sort_unstable();
+            if let Some(var) = vars.iter().find(|var| !any_vars.contains(*var)) {
+                return Err(RuleError::UnboundMetavariable {
+                    id: def.id.clone(),
+                    field: "none_in_file".to_string(),
+                    var: var.clone(),
+                });
+            }
+            Ok((pattern, vars))
+        })
+        .collect()
 }
 
 fn compile_patterns<L: LanguageExt + Copy>(
@@ -820,6 +888,9 @@ fn scan_with<L: LanguageExt + Copy>(
                         unproven = true;
                     }
                 }
+            }
+            if rule.excluded_by_file(&node, candidate.get_env()) {
+                continue;
             }
 
             let finding = build_finding(rule, relative_path, source, matched, unproven);

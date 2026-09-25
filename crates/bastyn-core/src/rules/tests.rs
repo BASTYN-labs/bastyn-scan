@@ -1056,3 +1056,100 @@ rules:
         "got {error:?}"
     );
 }
+
+/// A rule pairing a source-shaped `any` capture with a `none_in_file` pattern
+/// for the message role it is sent under: `none` only sees the matched node
+/// and `inside` only its ancestors, so neither can see the sibling statement
+/// that sends the same value in the user role.
+const USER_ROLE_RULE_PY: &str = r#"
+rules:
+  - id: BAS-NIF-001
+    title: t
+    kind: observation
+    severity: high
+    confidence: high
+    categories: [LLM01]
+    language: python
+    any:
+      - $SYS = f"$$$A{$VAR}$$$B"
+    none_in_file:
+      - '{"role": "user", "content": $SYS}'
+    description: d
+    remediation: r
+"#;
+
+/// A prompt assembled with an f-string and then sent as a `role: "user"`
+/// message anywhere in the file is dropped, even though the `any` pattern
+/// alone would have matched the assignment.
+#[test]
+fn none_in_file_drops_a_prompt_sent_in_the_user_role() {
+    let rules = RuleSet::from_yaml(USER_ROLE_RULE_PY).unwrap();
+    let source = "def chat(client, query):\n    prompt = f\"Summarize: {query}\"\n    return client.x(messages=[{\"role\": \"user\", \"content\": prompt}])\n";
+    assert!(scan_source(&rules, Path::new("app.py"), source).is_empty());
+}
+
+/// The same shape sent as a `role: "system"` message instead has nothing to
+/// exclude it, and is still reported.
+#[test]
+fn none_in_file_keeps_a_prompt_sent_in_the_system_role() {
+    let rules = RuleSet::from_yaml(USER_ROLE_RULE_PY).unwrap();
+    let source = "def chat(client, query):\n    prompt = f\"Follow: {query}\"\n    return client.x(messages=[{\"role\": \"system\", \"content\": prompt}])\n";
+    assert_eq!(scan_source(&rules, Path::new("app.py"), source).len(), 1);
+}
+
+/// A `role: "user"` message that sends a *different* variable does not
+/// exclude the candidate: the exclusion pattern must bind `$SYS` to the same
+/// text the candidate bound, not merely find a user-role message somewhere.
+#[test]
+fn none_in_file_requires_the_same_bound_text() {
+    let rules = RuleSet::from_yaml(USER_ROLE_RULE_PY).unwrap();
+    let source = "def chat(client, query, other):\n    prompt = f\"Follow: {query}\"\n    return client.x(messages=[{\"role\": \"user\", \"content\": other}])\n";
+    assert_eq!(scan_source(&rules, Path::new("app.py"), source).len(), 1);
+}
+
+/// Matching is on text, not on binding: a same-named variable sent in the
+/// user role anywhere in the file suppresses the candidate. Accepted, and
+/// pinned here so a change to it is deliberate.
+#[test]
+fn none_in_file_matches_on_text_across_functions() {
+    let rules = RuleSet::from_yaml(USER_ROLE_RULE_PY).unwrap();
+    let source = "def a(query):\n    prompt = f\"Follow: {query}\"\n    return prompt\n\ndef b(client, prompt):\n    return client.x(messages=[{\"role\": \"user\", \"content\": prompt}])\n";
+    assert!(scan_source(&rules, Path::new("app.py"), source).is_empty());
+}
+
+/// The same exclusion works against a TypeScript/JavaScript grammar, not
+/// just Python.
+#[test]
+fn none_in_file_works_for_typescript() {
+    let yaml = r#"
+rules:
+  - id: BAS-NIF-002
+    title: t
+    kind: observation
+    severity: high
+    confidence: high
+    categories: [LLM01]
+    language: javascript
+    any:
+      - "const $SYS = `$$$A${$VAR}$$$B`"
+    none_in_file:
+      - '{role: "user", content: $SYS}'
+    description: d
+    remediation: r
+"#;
+    let rules = RuleSet::from_yaml(yaml).unwrap();
+    let source = "export function m(query: string) {\n  const prompt = `S: ${query}`;\n  return [{role: \"system\", content: \"x\"}, {role: \"user\", content: prompt}];\n}\n";
+    assert!(scan_source(&rules, Path::new("app.ts"), source).is_empty());
+}
+
+/// A `none_in_file` pattern naming a metavariable no `any` pattern binds
+/// fails to load, the same as `flow.unproven.requires` does.
+#[test]
+fn none_in_file_naming_an_unbound_metavariable_fails_to_load() {
+    let yaml = USER_ROLE_RULE_PY.replace("$SYS}'", "$OTHER}'");
+    let err = RuleSet::from_yaml(&yaml).unwrap_err();
+    assert!(
+        matches!(err, RuleError::UnboundMetavariable { ref var, .. } if var == "OTHER"),
+        "{err}"
+    );
+}
