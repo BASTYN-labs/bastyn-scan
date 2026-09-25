@@ -62,14 +62,16 @@ rules:
     # `any:` pattern can describe, because the call site names that function
     # rather than eval.
     #
-    # BAS-LLM10-004 still covers eval()/exec() on *any* non-literal at
-    # `confidence: medium`, so nothing this rule stops claiming stops being
-    # reported; it is reported at the confidence the evidence supports.
+    # `builtin_callee: true` drops a call through a name this file rebinds
+    # (a local `def eval`), which is not the builtin. BAS-LLM10-004 still
+    # reports eval()/exec() on any non-literal: as a defect when the value
+    # traces to a catalogued untrusted source, otherwise as an observation.
     flow:
       variable: ARG
       source: model_output
       unguarded: true
       sink: code_execution
+      builtin_callee: true
     description: >
       A value that came from a model call is executed as Python, either
       directly by eval()/exec() or by a function in this file that passes it
@@ -93,13 +95,24 @@ rules:
       - subprocess.run($ARG, shell=True)
       - subprocess.call($ARG, shell=True)
       - subprocess.Popen($ARG, shell=True)
-    metavariable_matches:
-      ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
+    # A defect only when the value traces back to a model call. When the
+    # flow graph cannot trace it (a function parameter, a name bound
+    # elsewhere), a model-reply-shaped name is still worth a look, so it is
+    # reported as an observation instead of dropped.
+    flow:
+      variable: ARG
+      source: model_output
+      unguarded: true
+      unproven:
+        kind: observation
+        requires:
+          ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A model reply is passed straight to a shell with shell=True (or
-      os.system). Anything the model was tricked into saying — including
-      output planted by content it read from the web or from a document — now
-      runs as a shell command with the process's full privileges.
+      A value that may carry a model reply is passed to a shell with
+      shell=True (or os.system). If it does, anything the model was tricked
+      into saying -- including output planted by content it read from the
+      web or from a document -- runs as a shell command with the process's
+      full privileges.
     remediation: >
       Do not derive shell commands from model output. If the agent must run a
       fixed set of commands, dispatch on a whitelist of command names with
@@ -151,7 +164,7 @@ rules:
   # single- or double-quoted") so it holds for any count and any mix of
   # quote styles, not just the ones a corpus run happened to produce.
   #
-  # Two alternatives were tried and rejected, both refuted by a scan
+  # Two alternatives to the literal exclusions below were tried and rejected, both refuted by a scan
   # against `rules::tests::bas_llm10_003_still_flags_percent_interpolation`
   # /`_still_flags_a_format_call` before shipping:
   #   - An ast-grep `$$$` ellipsis `none:` pattern (`$CUR.execute("$A"
@@ -159,13 +172,11 @@ rules:
   #     scope cleanly to sibling literal-string nodes: it also absorbed
   #     `"...%s..." % response`, silently suppressing a real percent-
   #     interpolation SQL injection.
-  #   - Migrating to `flow: source: model_output` (as BAS-LLM10-001
-  #     already did for eval/exec) correctly stays silent on the literal-
-  #     concatenation false positive, but the flow graph's `call` node
-  #     resolution only tracks a call's own return provenance, not its
-  #     arguments' -- so it cannot see model output reaching
-  #     `"...".format(response)`, a real vulnerability shape this rule
-  #     must keep catching.
+  #   - The rule now asks the flow graph, as BAS-LLM10-001 does. A call to
+  #     .format on a string literal carries its arguments' provenance, so
+  #     `"...".format(response)` stays provable. When the origin cannot be
+  #     traced, the old ARG name list decides whether it is reported as an
+  #     observation.
   - id: BAS-LLM10-003
     title: Model output concatenated into a SQL query
     kind: defect
@@ -184,14 +195,22 @@ rules:
       - $CUR.execute($FN('''$LIT'''))
     metavariable_matches:
       CUR: "(?i)(cursor|cur|db|conn|connection)"
-      ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     metavariable_not_matches:
       ARG: '^\s*(select|insert|update)\(|^\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*$'
+    flow:
+      variable: ARG
+      source: model_output
+      unguarded: true
+      unproven:
+        kind: observation
+        requires:
+          ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A database cursor executes a query built from model output. Since the
-      model's reply is attacker-influenceable (via prompt injection from any
-      untrusted document, tool result, or user message it has seen), this is
-      SQL injection with the model as the delivery mechanism.
+      A database cursor executes a query built from a value that may carry a
+      model reply. If it does, this is SQL injection with the model as the
+      delivery mechanism: the model's reply is attacker-influenceable via
+      prompt injection from any untrusted document, tool result, or user
+      message it has seen.
     remediation: >
       Never interpolate model output into a SQL string. Use parameterized
       queries (cursor.execute(sql, params)) and keep model output confined to
@@ -205,42 +224,36 @@ rules:
   #   '%{query}%'"
   #   cursor.execute(sql)
   #
-  # BAS-LLM10-003 is a pure structural pattern gated by
+  # BAS-LLM10-003 used to be a pure structural pattern gated by
   # `metavariable_matches` on $CUR's and $ARG's own *text*. When the
-  # tainted value is assigned to a local variable first and that variable
-  # -- not the f-string itself -- is what reaches `.execute()`, $ARG's
-  # captured text is just `sql`: no response/reply/... trigger word
-  # appears anywhere in it, so the name-gate can never see it. This is the
-  # same sibling-statement blindness already documented on BAS-LLM10-004
-  # above: `none:` only rules out alternate shapes of the matched node
-  # itself, and `inside:` only reaches its ancestors -- neither can look
-  # at a prior sibling assignment, which is exactly where the SQL string
-  # was actually built.
+  # tainted value was assigned to a local variable first and that variable
+  # -- not the f-string itself -- was what reached `.execute()`, $ARG's
+  # captured text was just `sql`: no response/reply/... trigger word
+  # appeared anywhere in it, so the name-gate could never see it. `none:`
+  # only rules out alternate shapes of the matched node itself, and
+  # `inside:` only reaches its ancestors -- neither can look at a prior
+  # sibling assignment, which is exactly where the SQL string was actually
+  # built.
   #
-  # Found via an external security-gap report run against a benchmark repo
-  # called opsdesk-agent (not part of this file's own 65-real-repository
-  # measurement corpus). Confirmed directly against this codebase's flow
-  # graph (crates/bastyn-core/src/flow/), unmodified: `Analyzer::compute`'s
+  # Confirmed directly against this codebase's flow graph
+  # (crates/bastyn-core/src/flow/), unmodified: `Analyzer::compute`'s
   # `"string"` match arm already treats an f-string as carrying whatever
   # its `{...}` interpolations carry, and its `"identifier"` case already
   # resolves a name back through its local binding's assigned expression --
-  # so resolving the origin of `sql` in the example above already returns
-  # `Origin::Call { callee: "client.chat.completions.create" }` today, with
-  # no engine changes. What was actually missing is that BAS-LLM10-003
-  # never asked the flow graph this question at all: it has no `flow:`
-  # clause. This rule is that question, asked the same way BAS-LLM10-001
-  # already asks it for eval()/exec() -- no `metavariable_matches` on $CUR
-  # or $ARG here; the flow gate's proof of provenance does the precision
-  # work a name guess only approximates.
+  # so resolving the origin of `sql` in the example above returns
+  # `Origin::Call { callee: "client.chat.completions.create" }`, with no
+  # engine changes needed. This rule asks the flow graph that question
+  # directly -- no `metavariable_matches` on $ARG here -- the same way
+  # BAS-LLM10-001 already asks it for eval()/exec(); the flow gate's proof
+  # of provenance does the precision work a name guess only approximates.
   #
-  # Additive, not a replacement: BAS-LLM10-003's `.format()`/%-operator/
-  # name-gate coverage (and its literal-concatenation exclusions) stays
-  # exactly as-is. The two rules overlap on the direct single-line case
-  # (`cursor.execute(f"...{response}...")` satisfies both), and when they
-  # match the identical node this codebase's `merge_same_location` (in
-  # crates/bastyn-core/src/rules/engine.rs) already collapses that into one
-  # cross-layer finding rather than reporting a duplicate -- existing,
-  # relied-upon behaviour, not something new this rule has to handle.
+  # Both rules now consult the flow graph, so their coverage overlaps
+  # wherever a value's provenance alone proves the finding, not just on the
+  # direct single-line case. When they match the identical node this
+  # codebase's `merge_same_location` (in crates/bastyn-core/src/rules/
+  # engine.rs) collapses that into one cross-layer finding rather than
+  # reporting a duplicate -- existing, relied-upon behaviour, not something
+  # new this rule has to handle.
   #
   # Known gap, not oversold: this rule does not catch the value when it
   # arrives as a plain function parameter with no traceable in-file call to
@@ -312,12 +325,30 @@ rules:
       - $SYS = f"$$$A{$VAR}$$$B"
     metavariable_matches:
       SYS: "(?i)(system|prompt|instruction|persona|template)"
-      VAR: "(?i)(user|request|query|input|raw|message)"
+    # SYS stays a name gate: the assignment target's name is what marks the
+    # string as a prompt. VAR is tested for provenance instead: a defect when
+    # it traces to request data, tool output, retrieved context or a file or
+    # network read; an observation when its origin cannot be traced and its
+    # name still reads as user input. A prompt that this file sends in the
+    # user role is not a system prompt at all.
+    flow:
+      variable: VAR
+      source: [http_request, tool_output, retrieved_context, network_read, file_read]
+      unguarded: true
+      unproven:
+        kind: observation
+        requires:
+          VAR: "(?i)(user|request|query|input|raw|message)"
+    none_in_file:
+      - '{"role": "user", "content": $SYS}'
+      - "{'role': 'user', 'content': $SYS}"
+      - '{"content": $SYS, "role": "user"}'
+      - "{'content': $SYS, 'role': 'user'}"
     description: >
-      A system/instruction prompt is built by f-string-interpolating raw user
-      input directly into the instruction text, with no delimiter separating
-      "what the model must do" from "what the user said." Any user message
-      can now rewrite the model's instructions.
+      A system/instruction prompt is built by f-string-interpolating
+      untrusted input directly into the instruction text, with no delimiter
+      separating "what the model must do" from "what the user said." Whoever
+      controls that input can rewrite the model's instructions.
     remediation: >
       Keep untrusted input out of the instruction channel. Pass it as a
       separate user/tool message, or through a templating layer (e.g.
@@ -410,7 +441,9 @@ rules:
 
   - id: BAS-LLM03-001
     title: Unauthorized agent tool exposed without a confirmation guard
-    kind: defect
+    # An observation: the function's name is the only evidence that the tool
+    # changes state, and a name is not proof.
+    kind: observation
     severity: high
     confidence: medium
     categories: [LLM03]
@@ -454,7 +487,7 @@ rules:
     metavariable_matches:
       FN: "(?i)^(delete|drop|remove|transfer|withdraw|wire|drain|revoke|terminate|shutdown|sell_all|liquidate|send_funds|execute_trade|purge|wipe|create|update|edit|modify|insert|cancel|approve|reject|install|uninstall|register|grant|subscribe|schedule|submit|publish|deploy|charge|refund|send)"
     description: >
-      A tool exposed to the agent performs a privileged or state-changing
+      A tool exposed to the agent is named like a privileged or state-changing
       action (delete, transfer, create, update, ...) with no guard clause at
       the top of its body checking a confirmation or authorization condition
       before acting. If the agent decides to call it, it executes
@@ -557,13 +590,12 @@ rules:
       manager, and rotate whatever leaked into history.
 
   # ---------------------------------------------------------------------
-  # LLM10 — eval()/exec() run on anything other than a string literal is an
-  # unconditional code-execution smell, independent of where the argument
-  # came from. BAS-LLM10-001 only fires when the argument's own text names a
-  # response/reply/... variable; a model reply that has passed through one
-  # local variable (e.g. compile()'s result) carries no such word and is
-  # missed entirely. This rule drops that name requirement and keeps only
-  # the literal-argument exclusion, so it also catches the one-hop case.
+  # LLM10 -- eval()/exec() run on anything other than a string literal. A
+  # defect when the flow graph traces the argument to a catalogued untrusted
+  # source (model output, request data, retrieved context, tool output, a
+  # file or network read); an observation when it cannot trace it at all.
+  # A literal, a value closed over literals, or one a fixed-set guard
+  # already limits is not reported.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-004
@@ -579,13 +611,9 @@ rules:
     # common idiom, often used specifically to *sandbox* the call (passing a
     # restricted globals dict). Because that idiom is common, a 2/3-arg call
     # is an especially important case to catch when the sandbox dict is
-    # incomplete, not a rare edge case to skip. Found via an external
-    # security-gap report run against a benchmark repo (opsdesk-agent, not
-    # part of this file's own 65-repo corpus measurement):
-    # `exec(manifest["setup_code"], {})` at opsdesk-agent/mcp_server/tools.py
-    # was silently missed purely because of the extra `{}` argument, not
-    # because of the dict-subscript expression -- `exec(manifest["setup_code"])`
-    # (1 arg) was already caught. See
+    # incomplete, not a rare edge case to skip. A two- or three-argument
+    # call such as exec(manifest["setup_code"], {}) used to be missed purely
+    # because of the extra argument; see
     # tests/corpus/vulnerable/real_misses/exec_with_globals_dict.py.
     any:
       - eval($ARG)
@@ -601,37 +629,22 @@ rules:
       - eval("$LIT", $GLOBALS, $LOCALS)
       - exec("$LIT", $GLOBALS)
       - exec("$LIT", $GLOBALS, $LOCALS)
-    # Measured 2026-08-28: 6 false positives, all this rule, all a call
-    # provably safe from context the rule cannot see -- eval(class_name)
-    # where class_name can only ever be self.__class__.__name__, and
-    # eval(f"torch.{torch_dtype}") guarded one line above by an exact-match
-    # whitelist check. See tests/corpus/vulnerable/real_misses/
-    # eval_guarded_by_local_check.py for both, reproduced and investigated
-    # in full.
-    #
-    # Neither is fixable with `none:`: that field excludes alternate shapes
-    # of the *same* node `any:` matched (see rules::engine::scan_with,
-    # `matched.matches(pattern)`), so it can rule out an argument shape
-    # (`eval("$LIT")` above) but cannot see a sibling statement -- the prior
-    # assignment or guard clause the safety proof actually depends on.
-    # `inside:` only reaches ancestors of the matched node, and the guard in
-    # both cases is a sibling, not an ancestor. Widening `any:` to match a
-    # whole enclosing block so a guard-shape `none:` has something to work
-    # against was considered and rejected: every other finding from this
-    # rule would then report the block's line instead of the call's, and a
-    # guard pattern general enough to mean "checked against N literals
-    # above" without being tied to one example's exact if/elif shape is not
-    # achievable. Recorded as a known_gap (in the opposite direction from
-    # this file's usual recall gaps -- see expected.toml's comment on it)
-    # rather than shipped as an approximate guard pattern that would risk
-    # silently swallowing a real unvalidated eval().
+    # A value closed over names this program fixes (class_name =
+    # self.__class__.__name__) and one already limited by a `not in (...)`
+    # check against literals are both dropped by the flow graph. See
+    # tests/corpus/vulnerable/real_misses/eval_guarded_by_local_check.py.
+    flow:
+      variable: ARG
+      source: [model_output, http_request, retrieved_context, tool_output, file_read, network_read]
+      unguarded: true
+      builtin_callee: true
+      unproven:
+        kind: observation
     description: >
       eval()/exec() is called with an argument that is not a string literal.
       Whatever produced this value -- a model reply, a compiled code object
       derived from one, a config file, a network response -- the moment its
-      contents are attacker-influenceable this is arbitrary code execution,
-      regardless of how many local variables separate the call from its
-      original source.
+      contents are attacker-influenceable this is arbitrary code execution.
     remediation: >
       Never run eval()/exec() on anything other than a fixed literal. If the
       agent needs to run model-suggested logic, parse it into a constrained,
@@ -669,25 +682,13 @@ rules:
     # That is the stronger version of the same defect -- the override does not
     # get spliced into the instructions, it replaces them entirely -- and it
     # is what the interpolation-counting patterns above structurally cannot
-    # see. The two metavariable gates are what keep it off every ordinary
-    # `x = y or default`: the assignment target must be prompt-shaped *and*
-    # the value must be named as an override.
+    # see. The SYS name gate and the OVERRIDE provenance test are what keep
+    # it off every ordinary `x = y or default`.
     #
-    # The self-concatenation shapes (`$SYS = $SYS + $OVERRIDE` and its
-    # augmented-assignment sugar `$SYS += $OVERRIDE`) were added after an
-    # external security-gap report against a benchmark repo called
-    # opsdesk-agent (not this file's own 65-repo corpus measurement) found
-    # `system_prompt = system_prompt + x_agent_goal_override`, sourced from a
-    # FastAPI `Header(...)` parameter, going undetected. The report's own
-    # diagnosis was wrong -- it guessed the miss was about this rule not
-    # recognizing the `Header(...)` parameter-injection idiom as a source, as
-    # opposed to `request.headers.get(...)`. It is neither: this rule has
-    # never looked at how the override value was sourced, only at the shape
-    # of the assignment statement, and it already fires on a `Header(...)`
-    # value in the `$SYS = $OVERRIDE or $FALLBACK` shape above. The actual
-    # gap was structural -- self-concatenation was simply a fourth shape this
-    # rule had no pattern for, independent of which FastAPI idiom produced
-    # the value being appended.
+    # The self-concatenation shapes ($SYS = $SYS + $OVERRIDE and its
+    # augmented-assignment sugar $SYS += $OVERRIDE) cover appending a
+    # header-supplied value to the instructions, a shape the interpolation
+    # and or-fallback patterns cannot see.
     any:
       - '$SYS = f"$$$A{$OVERRIDE}$$$B{$VAR2}$$$C"'
       - 'return f"$$$A{$OVERRIDE}$$$B{$VAR2}$$$C"'
@@ -696,12 +697,24 @@ rules:
       - '$SYS += $OVERRIDE'
     metavariable_matches:
       SYS: "(?i)(system|prompt|instruction|persona|template)"
-      OVERRIDE: "(?i)(override|overridden|custom_instructions|force_prompt)"
+    flow:
+      variable: OVERRIDE
+      source: [http_request, tool_output, retrieved_context, network_read, file_read]
+      unguarded: true
+      unproven:
+        kind: observation
+        requires:
+          OVERRIDE: "(?i)(override|overridden|custom_instructions|force_prompt)"
+    none_in_file:
+      - '{"role": "user", "content": $SYS}'
+      - "{'role': 'user', 'content': $SYS}"
+      - '{"content": $SYS, "role": "user"}'
+      - "{'content': $SYS, 'role': 'user'}"
     description: >
-      A system/instruction prompt is built by f-string-interpolating a
-      caller-supplied override value directly into the instruction text,
-      alongside other content. Whatever sets that override -- a request
-      parameter, a header, a stored setting -- fully replaces the fixed
+      A system/instruction prompt is built by f-string-interpolating a value
+      named as an override directly into the instruction text, alongside
+      other content. If that value is caller-controlled -- a request
+      parameter, a header, a stored setting -- it fully replaces the fixed
       instructions rather than being confined to a data field.
     remediation: >
       Do not let a caller-supplied value replace or prepend the system
@@ -784,7 +797,9 @@ rules:
   # came from.
   - id: BAS-LLM10-005
     title: eval() or new Function() run on a non-literal expression (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: high
     confidence: medium
     categories: [LLM10, ZT4]
@@ -812,7 +827,9 @@ rules:
 
   - id: BAS-LLM10-006
     title: Model output executed as a shell command (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: critical
     confidence: high
     categories: [LLM10]
@@ -871,11 +888,12 @@ rules:
     metavariable_matches:
       ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A model reply is passed straight to a shell via child_process.exec,
-      execSync, or interpolated into a template-literal command string.
-      Anything the model was tricked into saying -- including output planted
-      by content it read from the web or from a document -- now runs as a
-      shell command with the process's full privileges.
+      A value named like a model reply is passed straight to a shell via
+      child_process.exec, execSync, or interpolated into a template-literal
+      command string. If this value carries model output, anything the model
+      was tricked into saying -- including output planted by content it read
+      from the web or from a document -- runs as a shell command with the
+      process's full privileges.
     remediation: >
       Do not derive shell commands from model output. If the agent must run
       a fixed set of commands, dispatch on a whitelist of command names with
@@ -894,7 +912,9 @@ rules:
   # only thing making it precise, and it stays.
   - id: BAS-LLM10-007
     title: Model output concatenated into a SQL query (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: critical
     confidence: high
     categories: [LLM10]
@@ -904,11 +924,12 @@ rules:
     metavariable_matches:
       ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A database query is built by interpolating model output straight into
-      a template-literal SQL string. Since the model's reply is
-      attacker-influenceable (via prompt injection from any untrusted
-      document, tool result, or user message it has seen), this is SQL
-      injection with the model as the delivery mechanism.
+      A database query is built by interpolating a value named like model
+      output straight into a template-literal SQL string. If this value
+      carries the model's reply, and that reply is attacker-influenceable
+      (via prompt injection from any untrusted document, tool result, or
+      user message it has seen), this is SQL injection with the model as
+      the delivery mechanism.
     remediation: >
       Never interpolate model output into a SQL string. Use a parameterized
       query (db.query(sql, params)) and keep model output confined to
@@ -958,7 +979,9 @@ rules:
 
   - id: BAS-ZT4-003
     title: Raw user input folded directly into a template-literal system prompt (JS)
-    kind: defect
+    # An observation: TypeScript and JavaScript have no dataflow graph yet,
+    # so nothing proves where this value came from.
+    kind: observation
     severity: high
     confidence: high
     categories: [LLM01, ZT4]
@@ -968,11 +991,17 @@ rules:
     metavariable_matches:
       SYS: "(?i)(system|prompt|instruction|persona|template)"
       VAR: "(?i)(user|request|query|input|raw|message)"
+    none_in_file:
+      - '{role: "user", content: $SYS}'
+      - "{role: 'user', content: $SYS}"
+      - '{content: $SYS, role: "user"}'
+      - "{content: $SYS, role: 'user'}"
     description: >
       A system/instruction prompt is built by template-literal-interpolating
-      raw user input directly into the instruction text, with no delimiter
-      separating "what the model must do" from "what the user said." Any
-      user message can now rewrite the model's instructions.
+      a value named like user input directly into the instruction text, with
+      no delimiter separating "what the model must do" from "what the user
+      said." If this value carries user input, whoever controls it can
+      rewrite the model's instructions.
     remediation: >
       Keep untrusted input out of the instruction channel. Pass it as a
       separate user/tool message, or through a templating layer that keeps
@@ -981,7 +1010,9 @@ rules:
 
   - id: BAS-LLM03-002
     title: Unauthorized agent tool exposed without a confirmation guard (JS)
-    kind: defect
+    # An observation: the function's name is the only evidence that the tool
+    # changes state, and a name is not proof.
+    kind: observation
     severity: high
     confidence: medium
     categories: [LLM03]
@@ -1046,7 +1077,7 @@ rules:
     metavariable_matches:
       NAME: "(?i)^(delete|drop|remove|transfer|withdraw|wire|drain|revoke|terminate|shutdown|sell_all|liquidate|send_funds|execute_trade|purge|wipe|create|update|edit|modify|insert|cancel|approve|reject|install|uninstall|register|grant|subscribe|schedule|submit|publish|deploy|charge|refund|send)"
     description: >
-      A tool registered with the agent SDK's tool() helper performs a
+      A tool registered with the agent SDK's tool() helper is named like a
       privileged or state-changing action (delete, transfer, create, update,
       ...) and its execute handler has no guard clause at the top checking a
       confirmation or authorization condition before acting. If the agent

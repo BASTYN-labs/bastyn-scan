@@ -103,6 +103,17 @@
 //! template both before and after its migration -- the old fixture cannot
 //! distinguish the two rules at all, which is the point.
 //!
+//! `BAS-LLM10-002`, `BAS-LLM10-003`'s `ARG` gate, and `BAS-ZT4-001`'s `VAR`
+//! gate have since migrated the same way: their templates bind the name from
+//! a catalogued source and their `unrelated` control varies the value, not
+//! the name, exactly as described above. A migrated rule reports its
+//! traceable value as `kind: defect` but an untraceable one -- whatever the
+//! `unproven` path's own name check still lets through -- as `kind:
+//! observation`, so `Target`'s `kind` field records which kind a row's
+//! template is built to prove and [`run_group`] only counts a sample as
+//! fired when both the rule id and that kind match; an unproven-path
+//! observation can never stand in for a row that expects a defect.
+//!
 //! Each sample is run twice: once against `RuleSet::embedded()` (the shipped,
 //! gated rule -- what the three bullet points above measure), and once
 //! against a *widened* variant compiled from the same `any`/`none`/`inside`
@@ -138,6 +149,7 @@
 
 use std::path::PathBuf;
 
+use bastyn_core::Kind;
 use bastyn_core::rules::{RuleSet, scan_source};
 use serde_yaml_ng::Value;
 
@@ -393,6 +405,11 @@ const GENERIC_UNRELATED: &[&str] = &[
 struct Target {
     rule_id: &'static str,
     var: &'static str,
+    /// The kind a sample's finding must have to count as the rule firing.
+    /// A flow-gated row's template proves the value's source, so it expects
+    /// the rule's declared kind; a row can never be satisfied by an
+    /// unproven-path observation standing in for a defect.
+    kind: Kind,
     /// File extension `scan_source` dispatches on -- decides which grammar
     /// bucket the rule is matched from (see `rules::engine`'s module docs).
     ext: &'static str,
@@ -450,6 +467,7 @@ fn targets() -> Vec<Target> {
         Target {
             rule_id: "BAS-LLM10-001",
             var: "ARG",
+            kind: Kind::Defect,
             ext: "py",
             // The whole vulnerability, not just its last line. This rule now
             // gates on `flow:` -- see the "Rules that gate on provenance"
@@ -479,34 +497,65 @@ def handle(path):
         Target {
             rule_id: "BAS-LLM10-002",
             var: "ARG",
+            kind: Kind::Defect,
             ext: "py",
-            template: "os.system(__ARG__)\n",
+            // This rule now gates on `flow:` -- see the "Rules that gate on
+            // provenance" section in this module's docs.
+            template: "\
+def handle(ticket):
+    __ARG__ = client.chat.completions.create(prompt=ticket).choices[0].message.content
+    os.system(__ARG__)
+",
             placeholder: "__ARG__",
-            placeholder_occurrences: 1,
+            placeholder_occurrences: 2,
             in_gate: ARG_IN_GATE,
             synonyms: ARG_SYNONYMS_PY,
-            unrelated: GENERIC_UNRELATED,
-            unrelated_template: None,
+            unrelated: ARG_IN_GATE,
+            unrelated_template: Some(
+                "\
+def handle(path):
+    __ARG__ = json.load(open(path))
+    os.system(__ARG__)
+",
+            ),
         },
         Target {
             rule_id: "BAS-LLM10-003",
             var: "ARG",
+            kind: Kind::Defect,
             ext: "py",
             // CUR pinned to "cursor", an in-gate value for CUR's own regex.
-            template: "cursor.execute(__ARG__)\n",
+            // This rule now gates ARG on `flow:` too -- see the "Rules that
+            // gate on provenance" section in this module's docs.
+            template: "\
+def handle(ticket):
+    __ARG__ = client.chat.completions.create(prompt=ticket).choices[0].message.content
+    cursor.execute(__ARG__)
+",
             placeholder: "__ARG__",
-            placeholder_occurrences: 1,
+            placeholder_occurrences: 2,
             in_gate: ARG_IN_GATE,
             synonyms: ARG_SYNONYMS_PY,
-            unrelated: GENERIC_UNRELATED,
-            unrelated_template: None,
+            unrelated: ARG_IN_GATE,
+            unrelated_template: Some(
+                "\
+def handle(path):
+    __ARG__ = json.load(open(path))
+    cursor.execute(__ARG__)
+",
+            ),
         },
         Target {
             rule_id: "BAS-LLM10-003",
             var: "CUR",
+            kind: Kind::Defect,
             ext: "py",
             // ARG pinned to "response", an in-gate value for ARG's own regex.
-            template: "__CUR__.execute(response)\n",
+            template: "\
+def handle(ticket):
+    response = client.chat.completions.create(prompt=ticket).choices[0].message.content
+    __CUR__.execute(response)
+",
             placeholder: "__CUR__",
             placeholder_occurrences: 1,
             in_gate: CUR_IN_GATE,
@@ -517,9 +566,14 @@ def handle(path):
         Target {
             rule_id: "BAS-ZT4-001",
             var: "SYS",
+            kind: Kind::Defect,
             ext: "py",
             // VAR pinned to "user_input", an in-gate value for VAR's own regex.
-            template: "__SYS__ = f\"Context: {user_input}\"\n",
+            template: "\
+def handle(request):
+    user_input = request.get_json()[\"q\"]
+    __SYS__ = f\"Context: {user_input}\"
+",
             placeholder: "__SYS__",
             placeholder_occurrences: 1,
             in_gate: SYS_IN_GATE_PY,
@@ -530,19 +584,33 @@ def handle(path):
         Target {
             rule_id: "BAS-ZT4-001",
             var: "VAR",
+            kind: Kind::Defect,
             ext: "py",
-            // SYS pinned to "system_prompt", an in-gate value for SYS's own regex.
-            template: "system_prompt = f\"Context: {__VAR__}\"\n",
+            // SYS pinned to "system_prompt", an in-gate value for SYS's own
+            // regex. This rule now gates VAR on `flow:` too -- see the
+            // "Rules that gate on provenance" section in this module's docs.
+            template: "\
+def handle(request):
+    __VAR__ = request.get_json()[\"q\"]
+    system_prompt = f\"Context: {__VAR__}\"
+",
             placeholder: "__VAR__",
-            placeholder_occurrences: 1,
+            placeholder_occurrences: 2,
             in_gate: VAR_IN_GATE_PY,
             synonyms: VAR_SYNONYMS_PY,
-            unrelated: GENERIC_UNRELATED,
-            unrelated_template: None,
+            unrelated: VAR_IN_GATE_PY,
+            unrelated_template: Some(
+                "\
+def handle():
+    __VAR__ = \"a fixed note\"
+    system_prompt = f\"Context: {__VAR__}\"
+",
+            ),
         },
         Target {
             rule_id: "BAS-LLM08-001",
             var: "VAR",
+            kind: Kind::Defect,
             ext: "py",
             // CONTENT pinned to a valid sk-... shape, satisfying CONTENT's own
             // (value-shape, not naming) gate.
@@ -557,6 +625,7 @@ def handle(path):
         Target {
             rule_id: "BAS-LLM03-001",
             var: "FN",
+            kind: Kind::Observation,
             ext: "py",
             template: "@tool\ndef __FN__(args):\n    do_something(args)\n",
             placeholder: "__FN__",
@@ -569,6 +638,7 @@ def handle(path):
         Target {
             rule_id: "BAS-LLM06-001",
             var: "CLIENT",
+            kind: Kind::Observation,
             ext: "py",
             template: "__CLIENT__.chat.completions.create(messages=msgs)\n",
             placeholder: "__CLIENT__",
@@ -581,6 +651,7 @@ def handle(path):
         Target {
             rule_id: "BAS-LLM10-006",
             var: "ARG",
+            kind: Kind::Observation,
             ext: "ts",
             template: "execSync(__ARG__);\n",
             placeholder: "__ARG__",
@@ -593,6 +664,7 @@ def handle(path):
         Target {
             rule_id: "BAS-LLM10-007",
             var: "ARG",
+            kind: Kind::Observation,
             ext: "ts",
             template: "db.query(`SELECT * FROM t WHERE id = ${__ARG__}`);\n",
             placeholder: "__ARG__",
@@ -605,6 +677,7 @@ def handle(path):
         Target {
             rule_id: "BAS-ZT4-003",
             var: "SYS",
+            kind: Kind::Observation,
             ext: "ts",
             // VAR pinned to "userInput", an in-gate value for VAR's own regex.
             template: "const __SYS__ = `Context: ${userInput}`;\n",
@@ -618,6 +691,7 @@ def handle(path):
         Target {
             rule_id: "BAS-ZT4-003",
             var: "VAR",
+            kind: Kind::Observation,
             ext: "ts",
             // SYS pinned to "systemPrompt", an in-gate value for SYS's own regex.
             template: "const systemPrompt = `Context: ${__VAR__}`;\n",
@@ -631,6 +705,7 @@ def handle(path):
         Target {
             rule_id: "BAS-LLM03-002",
             var: "NAME",
+            kind: Kind::Observation,
             ext: "ts",
             template: "const __NAME__ = tool({\n  description: \"does a thing\",\n  execute: async (params) => {\n    doSomething(params);\n  }\n});\n",
             placeholder: "__NAME__",
@@ -684,7 +759,7 @@ fn run_group(
             ));
             let fired = scan_source(ruleset, &path, &source)
                 .iter()
-                .any(|f| f.rule_id == target.rule_id);
+                .any(|f| f.rule_id == target.rule_id && f.kind == target.kind);
             Sample { name, fired }
         })
         .collect()
@@ -849,7 +924,13 @@ fn print_report(rows: &[Row]) {
 /// The floor is pooled across 14 targets, so it moves in steps of roughly
 /// eight points per migrated rule. Thirteen name gates are still unmigrated;
 /// each one that moves should raise this again.
-const MIN_OVERALL_SURVIVAL_PCT: f64 = 10.0;
+///
+/// `BAS-LLM10-002`, `-003` and `BAS-ZT4-001` moved their value gates to
+/// provenance; the name lists now only decide unproven-path observations.
+/// Measured after that change: 14 gated targets, 119 synonym samples, 39
+/// survive, **32.8%**. The floor moves to 32%, the printed rate rounded
+/// down.
+const MIN_OVERALL_SURVIVAL_PCT: f64 = 32.0;
 
 #[test]
 #[expect(

@@ -107,11 +107,11 @@ use ast_grep_language::{JavaScript, LanguageExt, Python, Tsx, TypeScript};
 use crate::category::Category;
 use crate::finding::{Confidence, Finding, Kind, Location, Severity};
 use crate::flow::graph::{callee_path as flow_graph_callee_path, contains_sink_call};
-use crate::flow::{FlowGraph, FlowLanguage, SinkKind, SourceKind, guards};
+use crate::flow::{FlowGraph, FlowLanguage, SinkKind, SourceKind, guards, shadow};
 use crate::test_path::is_test_path;
 
 use super::error::{Result, RuleError};
-use super::schema::{RuleDef, RuleFile, RuleLanguage, TestPathPolicy};
+use super::schema::{RuleDef, RuleFile, RuleLanguage, TestPathPolicy, UnprovenDef, UnprovenKind};
 
 /// A grammar the engine can parse and match rules against, guessed from a
 /// file's extension.
@@ -178,9 +178,49 @@ struct CompiledRule {
     any_kinds: Option<Vec<bool>>,
     none: Vec<Pattern>,
     inside: Vec<Pattern>,
+    /// `none_in_file:` patterns paired with the metavariables each one
+    /// shares with `any` (sorted, for deterministic iteration). Checked by
+    /// [`CompiledRule::excluded_by_file`] against a whole-file search rather
+    /// than the candidate node alone, unlike [`Self::none`].
+    none_in_file: Vec<(Pattern, Vec<String>)>,
     metavariable_matches: Vec<(String, RegexMatcher)>,
     metavariable_not_matches: Vec<(String, RegexMatcher)>,
     flow: Option<CompiledFlow>,
+}
+
+/// Appended to the description of a finding reported through a `flow:`
+/// rule's unproven path.
+const UNPROVEN_NOTE: &str = "The origin of this value could not be traced within this file, so this is reported as an observation rather than a defect.";
+
+/// What a `flow:` clause concludes about one captured value. Ordered from
+/// weakest to strongest so the wrapper pass can take the strongest verdict
+/// across a call's arguments with `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FlowVerdict {
+    /// Not reported.
+    Drop,
+    /// Reported as an observation, if the unproven path's `requires` holds.
+    Unproven,
+    /// Reported with the rule's declared kind.
+    Proven,
+}
+
+/// A validated `flow.unproven` clause.
+struct CompiledUnproven {
+    /// Captured metavariable name to the regex its text must match, applied
+    /// only on the unproven path.
+    requires: Vec<(String, RegexMatcher)>,
+}
+
+impl CompiledUnproven {
+    /// Whether every `requires` regex matches its capture. A metavariable
+    /// this match did not bind fails closed, as `metavariable_matches` does.
+    fn met<D: Doc>(&self, env: &MetaVarEnv<'_, D>) -> bool {
+        self.requires.iter().all(|(var, regex)| {
+            env.get_match(var)
+                .is_some_and(|node| regex.match_node(node.clone()).is_some())
+        })
+    }
 }
 
 /// A rule's `flow:` clause, validated at load time.
@@ -200,18 +240,34 @@ struct CompiledFlow {
     /// When set, calls to a local function forwarding the value into a sink of
     /// this kind are reported too, at the call site.
     sink: Option<SinkKind>,
+    /// When set, a value whose origin cannot be traced at all is reported as
+    /// an observation instead of being dropped, provided its `requires`
+    /// (if any) holds.
+    unproven: Option<CompiledUnproven>,
+    /// Drop a match whose callee is a bare name this file rebinds itself.
+    builtin_callee: bool,
 }
 
 impl CompiledFlow {
-    /// Whether `node_id`'s value satisfies this clause in `graph`.
-    fn satisfied_by(&self, graph: &FlowGraph, node_id: usize) -> bool {
-        if !graph
-            .source_kind_of(node_id)
-            .is_some_and(|kind| self.sources.contains(&kind))
-        {
-            return false;
+    /// What this clause concludes about `node_id`'s value in `graph`.
+    fn verdict(&self, graph: &FlowGraph, node_id: usize) -> FlowVerdict {
+        // A value drawn only from literals this file fixes cannot carry
+        // anything an attacker wrote, whatever the rule is about.
+        if graph.is_closed(node_id) {
+            return FlowVerdict::Drop;
         }
-        !(self.unguarded && guards::is_guarded(graph, node_id))
+        if self.unguarded && guards::is_guarded(graph, node_id) {
+            return FlowVerdict::Drop;
+        }
+        match graph.source_kind_of(node_id) {
+            Some(kind) if self.sources.contains(&kind) => FlowVerdict::Proven,
+            // An untraced value takes the unproven path when this clause
+            // has one; a value traced to a source this rule does not list
+            // is known not to be what the rule is about, so it is dropped
+            // just the same as one with no known origin and no such path.
+            None if self.unproven.is_some() => FlowVerdict::Unproven,
+            Some(_) | None => FlowVerdict::Drop,
+        }
     }
 }
 
@@ -243,36 +299,21 @@ impl CompiledRule {
             });
         }
 
-        // The dataflow graph is Python-only (see `crate::flow`), so a `flow:`
-        // clause anywhere else would compile into a matcher that can never
-        // fire. Rejecting it here is the same contract `RuleLanguage` itself
-        // keeps: a rule we cannot honour fails to load rather than silently
-        // never matching.
-        let flow = match def.flow {
-            None => None,
-            Some(_) if def.language != RuleLanguage::Python => {
-                return Err(RuleError::FlowUnsupportedLanguage {
-                    id: def.id,
-                    language: format!("{:?}", def.language).to_lowercase(),
-                });
-            }
-            Some(flow) => {
-                let sources = flow.source.kinds();
-                if sources.is_empty() {
-                    return Err(RuleError::EmptyFlowSources { id: def.id });
-                }
-                Some(CompiledFlow {
-                    variable: flow.variable,
-                    sources,
-                    unguarded: flow.unguarded,
-                    sink: flow.sink,
-                })
-            }
-        };
-
         let any = compile_patterns(&def.id, grammar, &def.any, lang)?;
         let none = compile_patterns(&def.id, grammar, &def.none, lang)?;
         let inside = compile_patterns(&def.id, grammar, &def.inside, lang)?;
+
+        // What the `any` patterns actually bind, so a field naming a
+        // metavariable (`flow.unproven.requires`) can be checked against
+        // real evidence rather than trusted blindly.
+        let any_vars: HashSet<String> = any
+            .iter()
+            .flat_map(|pattern| pattern.defined_vars())
+            .map(str::to_owned)
+            .collect();
+
+        let flow = compile_flow(&def, &any_vars)?;
+        let none_in_file = compile_none_in_file(&def, grammar, lang, &any_vars)?;
 
         let mut metavariable_matches = Vec::with_capacity(def.metavariable_matches.len());
         for (var, regex_src) in def.metavariable_matches {
@@ -319,6 +360,7 @@ impl CompiledRule {
             any_kinds,
             none,
             inside,
+            none_in_file,
             metavariable_matches,
             metavariable_not_matches,
             flow,
@@ -370,6 +412,152 @@ impl CompiledRule {
                 .is_none_or(|node| regex.match_node(node.clone()).is_none())
         })
     }
+
+    /// Whether a `none_in_file` pattern matches elsewhere in the file with
+    /// the same bindings this candidate has.
+    ///
+    /// Only reached by candidates that passed every other gate, so the
+    /// whole-file search runs on the few matches that would otherwise be
+    /// reported.
+    fn excluded_by_file<D: Doc>(&self, root: &Node<'_, D>, env: &MetaVarEnv<'_, D>) -> bool {
+        self.none_in_file.iter().any(|(pattern, vars)| {
+            // A candidate from an `any` pattern that did not bind all of
+            // these has nothing to compare, so this pattern does not apply.
+            let Some(wanted) = vars
+                .iter()
+                .map(|var| env.get_match(var).map(|node| node.text().into_owned()))
+                .collect::<Option<Vec<String>>>()
+            else {
+                return false;
+            };
+            root.find_all(pattern).any(|hit| {
+                vars.iter().zip(&wanted).all(|(var, text)| {
+                    hit.get_env()
+                        .get_match(var)
+                        .is_some_and(|node| node.text() == text.as_str())
+                })
+            })
+        })
+    }
+}
+
+/// Compile `def.flow`, if present, given the metavariables `def.any` binds.
+///
+/// Split out of [`CompiledRule::compile`] to keep that function within
+/// clippy's line-count lint -- the flow clause has enough of its own
+/// validation to deserve its own scope.
+fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<CompiledFlow>> {
+    let Some(flow) = &def.flow else {
+        return Ok(None);
+    };
+    // The dataflow graph is Python-only (see `crate::flow`), so a `flow:`
+    // clause anywhere else would compile into a matcher that can never fire.
+    // Rejecting it here is the same contract `RuleLanguage` itself keeps: a
+    // rule we cannot honour fails to load rather than silently never
+    // matching.
+    if def.language != RuleLanguage::Python {
+        return Err(RuleError::FlowUnsupportedLanguage {
+            id: def.id.clone(),
+            language: format!("{:?}", def.language).to_lowercase(),
+        });
+    }
+    let sources = flow.source.kinds();
+    if sources.is_empty() {
+        return Err(RuleError::EmptyFlowSources { id: def.id.clone() });
+    }
+    // The wrapper-sink pass `flow.sink` turns on builds its findings
+    // straight from `wrapper_sink_calls`, never through
+    // `CompiledRule::excluded_by_file` -- see this module's `scan_with`. A
+    // `none_in_file` exclusion on such a rule would therefore be silently
+    // skipped for every wrapper-call finding, so the combination is rejected
+    // here rather than shipped half-working.
+    if flow.sink.is_some() && !def.none_in_file.is_empty() {
+        return Err(RuleError::FlowSinkWithNoneInFile { id: def.id.clone() });
+    }
+    // `flow.unproven` only changes what a defect rule reports: an
+    // observation rule already reports everything it matches as an
+    // observation, so the field would be a no-op there.
+    if def.kind == Kind::Observation && flow.unproven.is_some() {
+        return Err(RuleError::UnprovenOnObservation { id: def.id.clone() });
+    }
+    let unproven = match &flow.unproven {
+        None => None,
+        // `kind` is destructured, not ignored, so its only possible value is
+        // a read rather than dead weight: the struct pattern is exhaustive
+        // precisely because `UnprovenKind` has one variant.
+        Some(UnprovenDef {
+            kind: UnprovenKind::Observation,
+            requires,
+        }) => {
+            // Sorted so the first `UnboundMetavariable` or
+            // `InvalidUnprovenRegex` a rule author sees is deterministic
+            // rather than a `HashMap` iteration order.
+            let mut requires_entries: Vec<(&String, &String)> = requires.iter().collect();
+            requires_entries.sort_by_key(|(var, _)| *var);
+
+            let mut compiled = Vec::with_capacity(requires_entries.len());
+            for (var, regex_src) in requires_entries {
+                if !any_vars.contains(var) {
+                    return Err(RuleError::UnboundMetavariable {
+                        id: def.id.clone(),
+                        field: "flow.unproven.requires".to_string(),
+                        var: var.clone(),
+                    });
+                }
+                let regex = RegexMatcher::try_new(regex_src).map_err(|source| {
+                    RuleError::InvalidUnprovenRegex {
+                        id: def.id.clone(),
+                        var: var.clone(),
+                        source,
+                    }
+                })?;
+                compiled.push((var.clone(), regex));
+            }
+            Some(CompiledUnproven { requires: compiled })
+        }
+    };
+    Ok(Some(CompiledFlow {
+        variable: flow.variable.clone(),
+        sources,
+        unguarded: flow.unguarded,
+        sink: flow.sink,
+        unproven,
+        builtin_callee: flow.builtin_callee,
+    }))
+}
+
+/// Compile `def.none_in_file`, pairing each pattern with the metavariables
+/// (sorted, for deterministic error ordering) it shares with `any`.
+///
+/// Split out of [`CompiledRule::compile`] for the same reason
+/// [`compile_flow`] is: keeping that function within clippy's line-count
+/// lint.
+fn compile_none_in_file<L: LanguageExt + Copy>(
+    def: &RuleDef,
+    grammar: &'static str,
+    lang: L,
+    any_vars: &HashSet<String>,
+) -> Result<Vec<(Pattern, Vec<String>)>> {
+    let patterns = compile_patterns(&def.id, grammar, &def.none_in_file, lang)?;
+    patterns
+        .into_iter()
+        .map(|pattern| {
+            let mut vars: Vec<String> = pattern
+                .defined_vars()
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            vars.sort_unstable();
+            if let Some(var) = vars.iter().find(|var| !any_vars.contains(*var)) {
+                return Err(RuleError::UnboundMetavariable {
+                    id: def.id.clone(),
+                    field: "none_in_file".to_string(),
+                    var: var.clone(),
+                });
+            }
+            Ok((pattern, vars))
+        })
+        .collect()
 }
 
 fn compile_patterns<L: LanguageExt + Copy>(
@@ -682,6 +870,7 @@ fn scan_with<L: LanguageExt + Copy>(
             if !rule.metavariable_exclusions_clear(candidate.get_env()) {
                 continue;
             }
+            let mut unproven = false;
             if let Some(flow) = &rule.flow {
                 // Fails closed on a metavariable this pattern never bound,
                 // the same way `metavariable_matches` does: no evidence, no
@@ -689,14 +878,31 @@ fn scan_with<L: LanguageExt + Copy>(
                 let Some(captured) = candidate.get_env().get_match(&flow.variable) else {
                     continue;
                 };
-                let graph =
-                    graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
-                if !flow.satisfied_by(graph, captured.node_id()) {
+                if flow.builtin_callee && shadow::bare_callee_is_shadowed(&node, matched) {
                     continue;
                 }
+                let graph =
+                    graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
+                match flow.verdict(graph, captured.node_id()) {
+                    FlowVerdict::Drop => continue,
+                    FlowVerdict::Proven => {}
+                    FlowVerdict::Unproven => {
+                        if !flow
+                            .unproven
+                            .as_ref()
+                            .is_some_and(|u| u.met(candidate.get_env()))
+                        {
+                            continue;
+                        }
+                        unproven = true;
+                    }
+                }
+            }
+            if rule.excluded_by_file(&node, candidate.get_env()) {
+                continue;
             }
 
-            let finding = build_finding(rule, relative_path, source, matched);
+            let finding = build_finding(rule, relative_path, source, matched, unproven);
             push_unique(&mut findings, &mut seen, finding);
         }
     }
@@ -725,8 +931,8 @@ fn scan_with<L: LanguageExt + Copy>(
             && contains_sink_call(&node, sink)
         {
             let graph = graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
-            for call in wrapper_sink_calls(&node, graph, sink, flow) {
-                let finding = build_finding(rule, relative_path, source, &call);
+            for (call, unproven) in wrapper_sink_calls(&node, graph, sink, flow) {
+                let finding = build_finding(rule, relative_path, source, &call, unproven);
                 push_unique(&mut findings, &mut seen, finding);
             }
         }
@@ -784,7 +990,9 @@ fn push_unique(
 }
 
 /// Calls, in this file, to a local function that forwards the argument into a
-/// `sink`-kind sink, where that argument satisfies `flow`.
+/// `sink`-kind sink, where that argument satisfies `flow`. The paired `bool`
+/// is whether the call is reported only on the unproven path -- see
+/// [`FlowVerdict`].
 ///
 /// This is the caller-side half of the depth-one wrapper relation
 /// [`crate::flow::graph`] computes. Keyword arguments are deliberately not
@@ -795,7 +1003,7 @@ fn wrapper_sink_calls<'r, D: Doc>(
     graph: &FlowGraph,
     sink: SinkKind,
     flow: &CompiledFlow,
-) -> Vec<Node<'r, D>> {
+) -> Vec<(Node<'r, D>, bool)> {
     let mut calls = Vec::new();
     for call in root.dfs().filter(|node| node.kind() == "call") {
         let Some(callee) = call.field("function") else {
@@ -814,22 +1022,42 @@ fn wrapper_sink_calls<'r, D: Doc>(
             .named_children()
             .filter(|argument| argument.kind() != "keyword_argument")
             .collect();
-        if parameters.iter().any(|index| {
-            positional
-                .get(*index)
-                .is_some_and(|argument| flow.satisfied_by(graph, argument.node_id()))
-        }) {
-            calls.push(call);
+
+        let verdict = parameters
+            .iter()
+            .filter_map(|index| positional.get(*index))
+            .map(|argument| flow.verdict(graph, argument.node_id()))
+            .max()
+            .unwrap_or(FlowVerdict::Drop);
+        match verdict {
+            FlowVerdict::Proven => calls.push((call, false)),
+            // No metavariable environment exists here to test `requires`
+            // against, so only a clause without `requires` reports it.
+            FlowVerdict::Unproven
+                if flow
+                    .unproven
+                    .as_ref()
+                    .is_some_and(|u| u.requires.is_empty()) =>
+            {
+                calls.push((call, true));
+            }
+            FlowVerdict::Unproven | FlowVerdict::Drop => {}
         }
     }
     calls
 }
 
+/// `unproven` is whether this match is reported through a `flow.unproven`
+/// path rather than proven provenance: it downgrades the kind to
+/// [`Kind::Observation`], the confidence to [`Confidence::Low`], and appends
+/// [`UNPROVEN_NOTE`] to the description, regardless of the rule's own
+/// declared kind and confidence.
 fn build_finding<D: Doc>(
     rule: &CompiledRule,
     relative_path: &Path,
     source: &str,
     matched: &Node<'_, D>,
+    unproven: bool,
 ) -> Finding {
     let start = matched.start_pos();
     let line = start.line() + 1;
@@ -850,10 +1078,22 @@ fn build_finding<D: Doc>(
     // the one way to hide a genuinely leaked secret that happens to sit in a
     // fixture; a rule that cannot afford even that says `in_test_paths:
     // report`.
-    let kind = if rule.in_test_paths == TestPathPolicy::Downgrade && is_test_path(relative_path) {
+    let kind = if unproven
+        || (rule.in_test_paths == TestPathPolicy::Downgrade && is_test_path(relative_path))
+    {
         Kind::Observation
     } else {
         rule.kind
+    };
+    let confidence = if unproven {
+        Confidence::Low
+    } else {
+        rule.confidence
+    };
+    let description = if unproven {
+        format!("{} {UNPROVEN_NOTE}", rule.description.trim_end())
+    } else {
+        rule.description.clone()
     };
 
     Finding {
@@ -861,7 +1101,7 @@ fn build_finding<D: Doc>(
         title: rule.title.clone(),
         kind,
         severity: rule.severity,
-        confidence: rule.confidence,
+        confidence,
         categories: rule.categories.clone(),
         location: Location {
             file: relative_path.to_path_buf(),
@@ -869,7 +1109,7 @@ fn build_finding<D: Doc>(
             column,
         },
         snippet,
-        description: rule.description.clone(),
+        description,
         remediation: rule.remediation.clone(),
         secondary_rule_ids: Vec::new(),
         references: Vec::new(),

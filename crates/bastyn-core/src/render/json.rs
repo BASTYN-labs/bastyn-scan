@@ -385,4 +385,17 @@ mod tests {
             .unwrap();
         assert!(findings.is_empty());
     }
+
+    #[test]
+    fn a_partial_cve_status_serialises_with_its_counts() {
+        let report = report_with(CveStatus::Partial {
+            dependencies: 9,
+            incomplete: 2,
+        });
+        let value: serde_json::Value = serde_json::from_str(&render(&report).unwrap()).unwrap();
+        assert_eq!(
+            value["cve"],
+            serde_json::json!({"status": "partial", "dependencies": 9, "incomplete": 2})
+        );
+    }
 }
