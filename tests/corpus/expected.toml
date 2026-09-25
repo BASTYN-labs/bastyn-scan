@@ -858,6 +858,10 @@ why  = "privileged: false, network_mode: bridge, a project-relative bind mount a
 file = "clean/stdin_dispatch_hook.py"
 why = "command traces to an unprocessed sys.stdin read (json.load(sys.stdin)) -- the hook/skill-runner dispatch shape, excluded via exclude_if: stdin_dispatch."
 
+[[expect_none]]
+file = "clean/module_constant_path_join.py"
+why = "DATA_DIR is a module-level literal assignment; constant_path already traces a Name node through a module-scope binding to its own literal via the existing lookup/decide mechanism in flow/graph.rs, so this case is correctly excluded without any code change. Added as a regression-locking fixture."
+
 # ---------------------------------------------------------------------
 # Shapes measured on a real application that the corpus did not originally
 # cover. Added after scanning it and finding these missed.
