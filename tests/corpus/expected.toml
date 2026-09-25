@@ -796,15 +796,6 @@ why      = "Complete, well-formed frontmatter (name/description/version/permissi
 
 [[expect]]
 file     = "vulnerable/skills/auto-remediate/SKILL.md"
-line     = 1
-rule     = "BAS-SKILL-001"
-category = "LLM04"
-kind     = "defect"
-severity = "low"
-why      = "Frontmatter declares only name and description, omitting version and permissions -- the two fields a host would need to pin this skill across updates or scope what it may do."
-
-[[expect]]
-file     = "vulnerable/skills/auto-remediate/SKILL.md"
 line     = 12
 rule     = "BAS-SKILL-003"
 category = "LLM03"

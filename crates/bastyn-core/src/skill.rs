@@ -11,15 +11,14 @@
 //! [`crate::instructions`], but with three failure modes of its own that a
 //! hidden-Unicode scan does not cover:
 //!
-//! - **`BAS-SKILL-001`** -- incomplete or unparseable frontmatter. OWASP
-//!   `GenAI`'s LLM04 (Supply Chain) and the agentic-security community's ASI-10
-//!   (Supply Chain) both treat a component's own declared provenance as part
-//!   of the trust decision: a skill with no declared `version` cannot be
-//!   pinned or diffed across updates, and one with no declared `permissions`
-//!   gives a host nothing to scope it against. This mirrors how this crate
-//!   already treats missing version/provenance metadata elsewhere (see
-//!   [`crate::cve`]'s unpinned-dependency handling) -- an absent declaration
-//!   is itself the finding, not a reason to stay silent.
+//! - **`BAS-SKILL-001`** -- frontmatter missing a field the Agent Skills
+//!   specification (<https://agentskills.io/specification>) requires: `name`
+//!   or `description`. Neither is a security or supply-chain claim -- it is
+//!   a spec-validity check, filed as an observation rather than a defect and
+//!   carrying no OWASP `GenAI` or ASI-x category the way `BAS-SKILL-002` and
+//!   `BAS-SKILL-003` below do. It still matters because an agent host's
+//!   skill-discovery mechanism can skip or mis-index a `SKILL.md` that omits
+//!   either field.
 //! - **`BAS-SKILL-002`** -- classic prompt-injection phrasing embedded in the
 //!   skill's own text. OWASP `GenAI`'s LLM01 (Prompt Injection). A skill's
 //!   `description` and body are exactly what an agent's skill-discovery
@@ -65,8 +64,12 @@ const RULE_MISSING_FRONTMATTER: &str = "BAS-SKILL-001";
 const RULE_PROMPT_INJECTION: &str = "BAS-SKILL-002";
 const RULE_SKIP_CONFIRMATION: &str = "BAS-SKILL-003";
 
-/// The frontmatter fields a well-formed `SKILL.md` declares.
-const REQUIRED_FRONTMATTER_FIELDS: &[&str] = &["name", "description", "version", "permissions"];
+/// The frontmatter fields the Agent Skills specification requires
+/// (<https://agentskills.io/specification>). `version` is not a spec field
+/// (it is only suggested as a nested key inside an optional `metadata:`
+/// block) and `permissions` does not exist in the spec (the nearest thing is
+/// an optional, experimental `allowed-tools` field) — neither belongs here.
+const REQUIRED_FRONTMATTER_FIELDS: &[&str] = &["name", "description"];
 
 /// Classic instruction-override phrasing. Each is a case-insensitive
 /// substring match against the file's full text (frontmatter and body both),
@@ -175,7 +178,7 @@ fn extract_frontmatter(contents: &str) -> Option<&str> {
     None
 }
 
-/// `BAS-SKILL-001` -- one or more of the four required frontmatter fields is
+/// `BAS-SKILL-001` -- one or both of the required frontmatter fields is
 /// missing, or the frontmatter block could not be produced at all (absent,
 /// or present but not a YAML mapping). The latter case is deliberately
 /// treated as "every field missing" rather than skipped or errored: an
@@ -207,11 +210,11 @@ fn check_frontmatter(relative_path: &Path, contents: &str) -> Option<Finding> {
 
     Some(Finding {
         rule_id: RULE_MISSING_FRONTMATTER.to_owned(),
-        title: "SKILL.md frontmatter is missing required fields".to_owned(),
-        kind: Kind::Defect,
+        title: "SKILL.md frontmatter is not spec-valid".to_owned(),
+        kind: Kind::Observation,
         severity: Severity::Low,
         confidence: Confidence::High,
-        categories: vec![Category::Llm04],
+        categories: Vec::new(),
         // A property of the file's declaration as a whole, not one line
         // within it -- matches BAS-MCP-000's whole-manifest finding, which
         // reports the same line 1 / column 1 for the same reason.
@@ -227,14 +230,13 @@ fn check_frontmatter(relative_path: &Path, contents: &str) -> Option<Finding> {
             .trim()
             .to_owned(),
         description: format!(
-            "This SKILL.md's frontmatter is missing the {noun} {field_list}. A skill's \
-             declared metadata is what an agent host uses to decide whether to trust, pin, and \
-             scope it; an absent or unparseable declaration leaves nothing to check that \
-             decision against."
+            "This SKILL.md's frontmatter is missing the {noun} {field_list}, which the Agent \
+             Skills specification requires. Agent hosts may skip or mis-index a skill without \
+             them."
         ),
-        remediation: "Add a YAML frontmatter block at the top of SKILL.md (between a `---` \
-                       pair, as the very first thing in the file) declaring name, description, \
-                       version, and permissions."
+        remediation: "Add a YAML frontmatter block (between `---` lines at the top of the \
+                       file) with at least `name` and `description`. See \
+                       <https://agentskills.io/specification>."
             .to_owned(),
         secondary_rule_ids: Vec::new(),
         references: Vec::new(),
@@ -486,25 +488,24 @@ mod tests {
 
     #[test]
     fn missing_frontmatter_fields_are_named() {
-        let contents = "---\nname: deploy\ndescription: Deploys the service.\n---\n\nBody text.\n";
+        let contents = "---\nname: deploy\n---\n\nBody text.\n";
 
         let findings = inspect(Path::new("SKILL.md"), contents);
 
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert_eq!(findings[0].rule_id, "BAS-SKILL-001");
-        assert_eq!(findings[0].kind, Kind::Defect);
+        assert_eq!(findings[0].kind, Kind::Observation);
         assert_eq!(findings[0].severity, Severity::Low);
         assert_eq!(findings[0].confidence, Confidence::High);
-        assert_eq!(findings[0].categories, vec![Category::Llm04]);
+        assert_eq!(findings[0].categories, Vec::new());
         assert_eq!(findings[0].location.line, 1);
         assert_eq!(findings[0].location.column, 1);
-        assert!(findings[0].description.contains("version"));
-        assert!(findings[0].description.contains("permissions"));
+        assert!(findings[0].description.contains("description"));
         assert!(!findings[0].description.contains("name,"));
     }
 
     #[test]
-    fn absent_frontmatter_reports_all_four_fields_missing() {
+    fn absent_frontmatter_reports_both_fields_missing() {
         let contents = "# No frontmatter here\n\nJust a body.\n";
 
         let findings = inspect(Path::new("SKILL.md"), contents);
@@ -520,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_frontmatter_reports_all_four_fields_missing() {
+    fn unparseable_frontmatter_reports_both_fields_missing() {
         // A frontmatter block that parses as a YAML scalar, not a mapping.
         let contents = "---\njust a string, not a mapping\n---\n\nBody.\n";
 
@@ -528,6 +529,31 @@ mod tests {
 
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert_eq!(findings[0].rule_id, "BAS-SKILL-001");
+    }
+
+    #[test]
+    fn complete_minimal_frontmatter_produces_no_finding() {
+        let contents = "---\nname: deploy\ndescription: Deploys the service.\n---\n\nBody text.\n";
+
+        assert!(inspect(Path::new("SKILL.md"), contents).is_empty());
+    }
+
+    #[test]
+    fn metadata_and_allowed_tools_without_version_or_permissions_produce_no_finding() {
+        let contents = "---\n\
+                         name: deploy\n\
+                         description: Deploys the service.\n\
+                         metadata:\n\
+                         \x20\x20version: 1.0.0\n\
+                         allowed-tools:\n\
+                         \x20\x20- Bash\n\
+                         ---\n\
+                         \n\
+                         # Deploy Skill\n\
+                         \n\
+                         Runs `terraform apply` after confirming the plan.\n";
+
+        assert!(inspect(Path::new("SKILL.md"), contents).is_empty());
     }
 
     #[test]
