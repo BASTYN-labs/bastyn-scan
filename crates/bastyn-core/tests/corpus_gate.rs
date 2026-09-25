@@ -251,7 +251,7 @@ const MAX_KNOWN_GAPS: usize = 13;
 /// Raising it means a rule started over-triggering on a new case that
 /// cannot currently be excluded precisely -- that needs a human decision in
 /// the PR description, not a silent bump, exactly like `MAX_KNOWN_GAPS`.
-const MAX_KNOWN_FALSE_POSITIVES: usize = 2;
+const MAX_KNOWN_FALSE_POSITIVES: usize = 0;
 // 2 on 2026-08-28: split out of MAX_KNOWN_GAPS (see that constant's 14-to-12
 // history entry). Both entries are BAS-LLM10-004 flagging an eval()/exec()
 // call whose argument a human can see is safe by reading a sibling
@@ -259,6 +259,9 @@ const MAX_KNOWN_FALSE_POSITIVES: usize = 2;
 // `none:` (same-node only) and `inside:` (ancestors only) cannot reach. See
 // vulnerable/real_misses/eval_guarded_by_local_check.py's docstring and
 // bastyn.yml's comment on BAS-LLM10-004 for the investigation.
+//
+// Lowered on 2026-09-24: the flow graph now drops a closed value and a
+// `not in` allowlist-guarded value for BAS-LLM10-004.
 
 /// `crates/bastyn-core` -> `tests/corpus`.
 fn corpus_root() -> PathBuf {
@@ -936,6 +939,12 @@ fn known_gap_count_does_not_grow() -> Result<(), String> {
 /// `MAX_KNOWN_FALSE_POSITIVES` for why this is a separate ceiling rather
 /// than folded into `MAX_KNOWN_GAPS`.
 #[test]
+#[expect(
+    clippy::absurd_extreme_comparisons,
+    reason = "MAX_KNOWN_FALSE_POSITIVES is 0 right now, which makes this <= look like a fixed \
+              == to clippy; it stays <= because the constant is meant to rise again the day a \
+              rule genuinely gains a new, deliberately-admitted false positive"
+)]
 fn known_false_positive_count_does_not_grow() -> Result<(), String> {
     let root = corpus_root();
     let Some(manifest) = load_manifest(&root)? else {

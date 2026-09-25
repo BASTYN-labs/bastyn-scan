@@ -645,3 +645,18 @@ rules:
         .expect("a wrapper-call observation");
     assert_eq!(wrapper.kind, crate::finding::Kind::Observation);
 }
+
+/// `request.json` is an attribute read, not a call, so the graph cannot
+/// classify it as request data. With a user-input-shaped name it must still
+/// surface as an observation rather than vanish.
+#[test]
+fn a_system_prompt_from_an_unclassified_request_attribute_is_an_observation() {
+    let rules = RuleSet::embedded().unwrap();
+    let source = "def handle(request):\n    user_query = request.json[\"q\"]\n    system_prompt = f\"Context: {user_query}\"\n";
+    let findings = scan_source(&rules, Path::new("app/handler.py"), source);
+    let zt4 = findings
+        .iter()
+        .find(|f| f.rule_id == "BAS-ZT4-001")
+        .expect("an observation");
+    assert_eq!(zt4.kind, crate::finding::Kind::Observation);
+}

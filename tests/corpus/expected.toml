@@ -34,9 +34,9 @@ file     = "vulnerable/llm01_prompt_injection.py"
 line     = 26
 rule     = "BAS-ZT4-001"
 category = "LLM01"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "An internal wiki runbook page -- editable by anyone -- is folded straight into the agent's instructions with no delimiter separating instructions from untrusted content."
+why      = "An internal wiki runbook page -- editable by anyone -- is folded straight into the agent's instructions with no delimiter separating instructions from untrusted content. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/llm03_excessive_agency.py"
@@ -97,9 +97,34 @@ file     = "vulnerable/llm10_eval_on_model_reply.py"
 line     = 59
 rule     = "BAS-LLM10-003"
 category = "LLM10"
+kind     = "observation"
+severity = "critical"
+why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
+
+[[expect]]
+file     = "vulnerable/model_output_renamed.py"
+line     = 6
+rule     = "BAS-LLM10-002"
+category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism."
+why      = "Model output reaches a shell with shell=True through a variable named `command`, which no name list contains. Found through provenance, not the name."
+
+[[expect]]
+file     = "vulnerable/model_output_renamed.py"
+line     = 11
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "Model output becomes SQL query text through a variable named `statement`. BAS-LLM10-003 and BAS-LLM10-008 both match; the report merges them."
+
+[[expect]]
+file     = "vulnerable/model_output_renamed.py"
+line     = 16
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "Model output formatted into SQL with str.format. The flow graph carries the argument's provenance through .format."
 
 [[expect]]
 file     = "vulnerable/zt1_static_credentials.py"
@@ -124,9 +149,27 @@ file     = "vulnerable/zt4_no_delimiter.py"
 line     = 14
 rule     = "BAS-ZT4-001"
 category = "ZT4"
+kind     = "observation"
+severity = "high"
+why      = "A customer's raw, fully untrusted ticket text is concatenated directly into the persona instructions with no delimiter or separate message role. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
+
+[[expect]]
+file     = "vulnerable/system_prompt_from_parameter.py"
+line     = 2
+rule     = "BAS-ZT4-001"
+category = "ZT4"
+kind     = "observation"
+severity = "high"
+why      = "A function parameter interpolated into a prompt sent in the system role. The parameter's origin is outside this file, so the engine cannot prove it untrusted: reported as an observation, not a defect."
+
+[[expect]]
+file     = "vulnerable/system_prompt_from_request.py"
+line     = 6
+rule     = "BAS-ZT4-001"
+category = "ZT4"
 kind     = "defect"
 severity = "high"
-why      = "A customer's raw, fully untrusted ticket text is concatenated directly into the persona instructions with no delimiter or separate message role."
+why      = "HTTP request data (request.get_json()) interpolated into a prompt sent in the system role."
 
 [[expect]]
 file     = "vulnerable/zt2_wildcard_tool_grant.py"
@@ -248,27 +291,27 @@ file     = "vulnerable/real_misses/eval_compile_rce.py"
 line     = 37
 rule     = "BAS-LLM10-004"
 category = "LLM10"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "eval(compile(model_reply, ...)) -- the taint is one hop away from the model reply through a local variable named `compiled`. BAS-LLM10-004 drops the response/reply/... name requirement and flags eval()/exec() on any non-literal argument."
+why      = "eval(compile(model_reply, ...)) -- the taint is one hop away from the model reply through a local variable named `compiled`. BAS-LLM10-004 drops the response/reply/... name requirement and flags eval()/exec() on any non-literal argument. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/real_misses/exec_with_globals_dict.py"
 line     = 32
 rule     = "BAS-LLM10-004"
 category = "LLM10"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "exec(manifest[\"setup_code\"], namespace) -- an explicit globals dict as the second argument. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-LLM10-004 used to match only the single-argument shape, so the 2-arg call was silently missed."
+why      = "exec(manifest[\"setup_code\"], namespace) -- an explicit globals dict as the second argument. BAS-LLM10-004 used to match only the single-argument shape, so the 2-arg call was silently missed. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/real_misses/overridable_system_prompt.py"
 line     = 19
 rule     = "BAS-ZT4-002"
 category = "LLM01"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "A caller-supplied override fully replaces the system prompt (f\"System: {override}{context}\\n\\nUser: {user_input}\"). BAS-ZT4-002 accepts more than one interpolation, gated on the first being override-shaped."
+why      = "A caller-supplied override fully replaces the system prompt (f\"System: {override}{context}\\n\\nUser: {user_input}\"). BAS-ZT4-002 accepts more than one interpolation, gated on the first being override-shaped. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/real_misses/hardcoded_dict_secrets.py"
@@ -302,27 +345,26 @@ file     = "vulnerable/real_misses/override_or_fallback_prompt.py"
 line     = 28
 rule     = "BAS-ZT4-002"
 category = "LLM01"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "`system_prompt = system_override or self._build_system_prompt(...)` -- the caller's override replaces the instruction channel outright. Measured 2026-08-28: this is the only caller-supplied prompt override in 65 real repositories, and it is an `or` fallback, not the f-string interpolation BAS-ZT4-002 was originally written against."
+why      = "`system_prompt = system_override or self._build_system_prompt(...)` -- the caller's override replaces the instruction channel outright. Measured 2026-08-28: this is the only caller-supplied prompt override in 65 real repositories, and it is an `or` fallback, not the f-string interpolation BAS-ZT4-002 was originally written against. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/real_misses/header_override_self_concat.py"
 line     = 36
 rule     = "BAS-ZT4-002"
 category = "LLM01"
-kind     = "defect"
+kind     = "observation"
 severity = "high"
-why      = "system_prompt = system_prompt + x_agent_goal_override -- a header-sourced override self-concatenated onto the system prompt. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-ZT4-002 had no self-concatenation shape, so this was silently missed regardless of which FastAPI idiom sourced the header value."
+why      = "system_prompt = system_prompt + x_agent_goal_override -- a header-sourced override self-concatenated onto the system prompt. BAS-ZT4-002 had no self-concatenation shape, so this was silently missed regardless of which FastAPI idiom sourced the header value. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/real_misses/sql_through_local_variable.py"
 line     = 41
-rule     = "BAS-LLM10-008"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "sql = f\"...{refined_query}%'\"; cursor.execute(sql) -- the model's reply reaches SQL through one local f-string reassignment. Found via an external security-gap report against a benchmark repo (opsdesk-agent, not part of this file's own 65-repo corpus measurement): BAS-LLM10-003's name-gate never sees a variable named `sql`, so this was silently missed; BAS-LLM10-008 asks the flow graph instead of guessing from the variable's name."
+why      = "sql = f\"...{refined_query}%'\"; cursor.execute(sql) -- the model's reply reaches SQL through one local f-string reassignment. BAS-LLM10-003's former name gate never saw a variable named `sql`; both BAS-LLM10-003 and BAS-LLM10-008 now trace it through the flow graph, and the report merges them."
 
 [[expect]]
 file     = "vulnerable/real_misses/eval_expression_tool.js"
@@ -355,41 +397,17 @@ category = "LLM10"
 why      = "sql = f\"...{query}%'\"; cursor.execute(sql), where `query` is an @tool-decorated MCP handler's own parameter -- agent-controlled once you know it's a tool handler, but the flow graph resolves a bare parameter to Origin::Parameter, never Origin::Call{...}, and has no concept that a decorated tool function's parameters are untrusted. Would need a new SourceKind plus a decorator-recognition pass; genuinely separate, larger engine work, not attempted here."
 
 # ---------------------------------------------------------------------
-# vulnerable/real_misses/eval_guarded_by_local_check.py — the two entries
-# below run in the *opposite* direction from every `[[known_gap]]` above,
-# which is why they are a distinct entry type, `[[known_false_positive]]`,
-# rather than known_gap entries. A known_gap is a recall gap: a real defect
-# the engine is expected to miss. These are a precision gap: a safe call
-# BAS-LLM10-004 is expected to keep flagging anyway, because proving it
-# safe needs seeing a sibling statement (a prior assignment or guard
-# clause) that `none:`/`inside:` cannot reach -- both only ever look at the
-# matched node itself or its ancestors, never a sibling. See the file's own
-# docstring for the full investigation.
-#
-# Recorded here anyway, per this codebase's practice of writing every known
-# limitation down rather than leaving it silently untested (see README.md's
-# "detection is recorded as a known_gap, not quietly left out" -- the same
-# practice applies to known_false_positive). `corpus_gate`'s
-# `find_promotable` only ever looks at `[[known_gap]]` entries, so these two
-# can never trigger its "promote to [[expect]]" suggestion -- that
-# suggestion would have been wrong here: promoting either of these to
-# `[[expect]]` would assert code that is provably not vulnerable is a
-# defect. They were briefly filed as `[[known_gap]]` before this entry type
-# existed, which produced exactly that wrong suggestion every run; see
-# corpus_gate.rs's MAX_KNOWN_GAPS history comment for that correction.
+# vulnerable/real_misses/eval_guarded_by_local_check.py used to carry two
+# `[[known_false_positive]]` entries here: BAS-LLM10-004 kept flagging an
+# eval() call whose argument a human could see was safe by reading a
+# sibling statement (a prior assignment or guard clause) that `none:`
+# (same-node only) and `inside:` (ancestors only) cannot reach. The flow
+# graph's provenance test reaches past that limit -- a value closed over a
+# name the program itself fixes, and a value a `not in (...)` guard
+# dominates, are both dropped directly -- so neither case is reported
+# anymore. See the file's own docstring and bastyn.yml's comment on
+# BAS-LLM10-004.
 # ---------------------------------------------------------------------
-
-[[known_false_positive]]
-file     = "vulnerable/real_misses/eval_guarded_by_local_check.py"
-line     = 65
-category = "LLM10"
-why      = "eval(class_name) where class_name can only ever be self.__class__.__name__ of a closed set of subclasses defined in this module -- not attacker-influenceable. The taint-safety proof lives at class_name's assignment one line above the call, which `none:` cannot see (it only matches alternate shapes of the eval() call node itself)."
-
-[[known_false_positive]]
-file     = "vulnerable/real_misses/eval_guarded_by_local_check.py"
-line     = 81
-category = "LLM10"
-why      = "eval(f\"torch.{torch_dtype}\") guarded one line above by an exact-match check against a 3-item whitelist that raises before eval() is ever reached. The guard is a sibling if/raise statement, not part of the eval() call's own node, so `none:` (same-node exclusion) and `inside:` (ancestor constraint) both structurally cannot express it."
 
 # ---------------------------------------------------------------------
 # vulnerable/zt3_container_boundary/ — the sandbox boundary, which is not
@@ -598,6 +616,10 @@ file = "clean/prompts.py"
 why  = "A prompt-named variable with no sk--shaped content, and untrusted input kept in its own ChatPromptTemplate slot rather than f-string-interpolated into instructions."
 
 [[expect_none]]
+file = "clean/user_role_prompt.py"
+why  = "The interpolated text is sent in the user role with fixed system instructions, and the second prompt interpolates a literal fixed in this file."
+
+[[expect_none]]
 file = "clean/tools.py"
 why  = "A destructive tool guarded by a decorator (@require_confirmation) and one guarded by assert, instead of the inline if-not-raise/return shape BAS-LLM03-001's none: exclusion recognises. See README.md: the assert-guarded case is a CONFIRMED PRECISION BUG on the current scanner (BAS-LLM03-001 fires on tools.py:35), kept in the corpus deliberately rather than hidden. Plus update_server_config, a state-changing (not destructive-named) tool guarded by the same inline if-not-raise shape -- proves the 2026-08-28 verb-list widening still respects existing guard shapes."
 
@@ -612,6 +634,18 @@ why  = "A public, unauthenticated chat endpoint (correct for a public chatbot) w
 [[expect_none]]
 file = "clean/near_misses.py"
 why  = "eval on a literal, approx_tokens / token_count / api_key_name / max_tokens near-miss variable names, os.environ / os.getenv credential handling, a non-prompt-shaped f-string, and a parameterized SQL query -- the cases that fool naive rules. Plus three 2026-08-31 additions measured on real third-party repositories: a Bearer token that is unexpanded {{env.X}} template syntax, a credential scrubbed to [REDACTED] before being persisted, and a static audit query split across more adjacent literals than BAS-LLM10-003's old none: enumeration covered, one of which contains the column name completion_tokens."
+
+[[expect_none]]
+file = "clean/literal_sinks.py"
+why  = "SQL, a shell command and eval() whose argument is a literal fixed in this file, including under the variable names a model reply is often given. Nothing from outside the file reaches them."
+
+[[expect_none]]
+file = "clean/eval_allowlisted.py"
+why  = "eval() on a parameter that a preceding `not in` check against fixed literals has already limited to two harmless expressions."
+
+[[expect_none]]
+file = "clean/shadowed_eval.py"
+why  = "eval here is a function this file defines, not the Python builtin, so passing a model reply to it executes nothing."
 
 [[expect_none]]
 file = "clean/mcp/mcp.json"
