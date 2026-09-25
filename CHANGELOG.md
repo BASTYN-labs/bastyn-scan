@@ -22,6 +22,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   observation: for `BAS-LLM10-004` always, for the others only when its name matches the rule's
   former name list. Model output reaching a shell or SQL is now found under any variable name when
   the file itself shows the value came from a model call.
+- **The provenance-based downgrade above does not apply to `BAS-LLM10-009`, `-017`, or `-018`.** These
+  three rules, added by this release, report a defect unconditionally on the composition they match —
+  a non-literal command reaching a shell, or an unparameterized query reaching execution — regardless
+  of whether the specific value's provenance can be traced in the file. At a location where both one
+  of these unconditional rules and a provenance-gated rule above would match, the unconditional rule's
+  defect is what gets reported: the engine keeps a defect over an observation at the same location.
+  This can change a scan's exit code for a codebase that previously relied on the provenance-gated
+  behavior alone to keep that location at observation level.
 - **Observation-only rules.** `BAS-LLM10-005`, `-006`, `-007` and `BAS-ZT4-003` (TypeScript and
   JavaScript, which have no dataflow graph yet) and `BAS-LLM03-001`/`-002` (tool name only) now
   report observations. They appear with `--show-observations` and never affect the exit code.
@@ -40,26 +48,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   check.** Flags a `subprocess`/`os.system`/`os.popen` shell call fed a non-literal command even when
   the surrounding code has an allowlist or denylist gate, since neither actually prevents the shell
   from receiving attacker-controlled input. Python only for now — no `child_process` (JS/TS) twin
-  ships in this change. Found by measuring Bastyn's rule set against a 5-repository benchmark corpus
-  of intentionally-vulnerable MCP/agent applications and closing the recall gap it surfaced.
+  ships in this change. Closes a detection gap where a shell call fed a non-literal command was
+  missed whenever an allowlist/denylist check preceded it, even though such a check never actually
+  prevents attacker-controlled input from reaching the shell.
 - **`BAS-LLM10-012`: file opened at an unresolved path built by joining or interpolating a non-literal
   value.** Flags `open()` calls assembled inline via `os.path.join`/f-string/string concatenation with
   no `realpath`/`abspath` resolution — including when the only existing guard is a bypassable
-  string-prefix containment check. Python only for now — no JS/TS twin ships in this change. Found via
-  the same benchmark-corpus recall pass.
+  string-prefix containment check. Python only for now — no JS/TS twin ships in this change. Closes a
+  detection gap where such a path was missed whenever any containment check preceded the `open()`
+  call, even a string-prefix check that does not resolve `..` segments or symlinks.
 - **`BAS-ZT1-018`/`-019`/`-020`: hardcoded JWT literal, hardcoded AWS access key ID, and a
   credential-shaped default value read from an environment variable.** Three new hardcoded-secret
-  shapes the existing `ZT1` rules didn't cover, closing recall gaps the benchmark corpus surfaced.
+  shapes — a JWT literal, an AWS access key ID, and a credential-shaped default argument to an
+  environment-variable lookup — that the existing `ZT1` rules' name-and-value checks did not cover.
   Python only for now — no JS/TS twin ships in this change.
 - **`BAS-LLM10-017`/`-018`: unparameterized SQL query reaches execution, directly or via a local
   variable.** Flags an interpolation-built query string that reaches `.execute()` either inline or
-  after first being assigned to a local variable, closing another benchmark-corpus recall gap. Python
-  only for now — no JS/TS twin ships in this change.
+  after first being assigned to a local variable. Closes a detection gap where the query was missed
+  once it was stored in a local variable before being executed, rather than passed to `.execute()`
+  directly. Python only for now — no JS/TS twin ships in this change.
 - **`BAS-LLM01-002`/`-003`: hidden instruction block and suspicious instruction-override phrase in a
   tool's own description.** Detects MCP "tool poisoning" — an adversarial instruction riding along
   inside a tool's docstring that a human reviewer approving the tool would never read as an
-  instruction. Python only for now — no JS/TS twin ships in this change. Found via the same
-  benchmark-corpus recall pass.
+  instruction. Closes a gap where a tool's description field was never inspected as a
+  prompt-injection surface at all, even though a host's tool-discovery mechanism reads it directly.
+  Python only for now — no JS/TS twin ships in this change.
 - **`BAS-ZT1-021`/`-022`: a provider API key literal, and any other credential-shaped literal, in a
   committed `.env` file.** `.env` files were always walked (the walker's own allowlist calls them
   "exactly the material a scanner should not miss") but no analyser claimed the format, so a real key
@@ -74,9 +87,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - A Compose file that is not valid YAML is listed as skipped instead of counted as scanned.
 - `BAS-LLM10-009` no longer fires on a shell command whose entire non-literal content traces to an
-  unprocessed `sys.stdin` read (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`) — the
-  OpenHands-hook / skill-runner control-channel shape, the same trust boundary as `argv` rather than
-  attacker-reachable input. A command that reaches a shell via any other non-literal path is
+  unprocessed `sys.stdin` read (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`) — a hook or
+  skill-runner's own command-dispatch control-channel shape, the same trust boundary as `argv` rather
+  than attacker-reachable input. A command that reaches a shell via any other non-literal path is
   unaffected.
 
 ## [0.1.7] - 2026-09-25

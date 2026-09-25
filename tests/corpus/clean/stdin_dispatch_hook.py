@@ -1,4 +1,4 @@
-"""Minimal reproduction of the OpenHands-hook / skill-execute shape:
+"""Minimal reproduction of a hook / skill-runner's own command-dispatch shape:
 the whole point of this file is to run a command its own parent process
 handed it over stdin -- the same trust boundary as argv, not user input."""
 import json

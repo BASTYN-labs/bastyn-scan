@@ -429,9 +429,12 @@ rules:
       shell treat it as one argument regardless of content. Also excluded
       when the command's entire non-literal content traces to an
       unprocessed sys.stdin read (sys.stdin.read(), json.load(sys.stdin),
-      input()) -- the OpenHands-hook / skill-runner shape of dispatching a
-      command handed over the process's own control channel, analogous to
-      trusting argv rather than attacker-reachable input.
+      input()) -- a hook or skill-runner's own command-dispatch shape,
+      handed over the process's own control channel, analogous to trusting
+      argv rather than attacker-reachable input. This exclusion trusts the
+      stdin-sourced value's role as a control-channel command wherever it
+      appears in the file; it does not verify the surrounding code is
+      actually a hook or skill-runner entry point.
     remediation: >
       Never build a shell command string from anything other than a fixed
       literal. Call the target program directly with an argv list and
