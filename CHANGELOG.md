@@ -40,6 +40,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 
 - A Compose file that is not valid YAML is listed as skipped instead of counted as scanned.
+- **`BAS-SKILL-001` required four frontmatter fields; the spec only requires two.** The check
+  previously reported a finding whenever a `SKILL.md`'s frontmatter was missing any of `name`,
+  `description`, `version`, or `permissions`, but the Agent Skills specification only requires
+  `name` and `description` — `version` is not a spec field at all (it is only suggested as a nested
+  key inside an optional `metadata:` block), and `permissions` does not exist in the spec (the
+  nearest thing is an optional, experimental `allowed-tools` field). This meant the rule fired on
+  correctly written `SKILL.md` files that simply didn't declare the two extra fields. It's now a
+  `name`/`description`-only check, filed as a low-severity observation (hidden unless
+  `--show-observations` is passed) rather than a defect, since a spec-validity gap is not itself a
+  security claim.
 
 ## [0.1.6] - 2026-09-22
 
