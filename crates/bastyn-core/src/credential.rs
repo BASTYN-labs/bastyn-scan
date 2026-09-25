@@ -53,30 +53,17 @@ pub(crate) fn looks_like_credential_key(name: &str) -> bool {
 /// -- the key matches `SECRET`, so every other signal here said "secret",
 /// but the value is a mode setting a deployment chooses from a small fixed
 /// set, not something anyone types in as a password.
+///
+/// Deliberately excludes database/cloud-provider product names
+/// (`postgres`, `mysql`, `redis`, `s3`, ...) and generic words like
+/// `default`/`standard`/`basic`/`simple`, even though some real deployments
+/// do use them as a mode/backend selector: those same words are also
+/// extremely common real default passwords (`POSTGRES_PASSWORD: postgres`
+/// ships in the official Postgres image's own README as a "for local dev"
+/// example people routinely forget to change). This list stays limited to
+/// words that could never plausibly be typed as an actual credential value.
 const ENUM_MODE_VALUES: &[&str] = &[
-    "local",
-    "remote",
-    "memory",
-    "disk",
-    "file",
-    "none",
-    "disabled",
-    "enabled",
-    "default",
-    "standard",
-    "basic",
-    "simple",
-    "sqlite",
-    "postgres",
-    "postgresql",
-    "mysql",
-    "mariadb",
-    "redis",
-    "mongodb",
-    "s3",
-    "gcs",
-    "azure",
-    "cloud",
+    "local", "remote", "memory", "disk", "file", "none", "disabled", "enabled",
 ];
 
 /// Value fragments — matched case-insensitively — that mark a value as an
@@ -383,9 +370,24 @@ mod tests {
 
     #[test]
     fn a_storage_backend_mode_word_is_not_hardcoded() {
-        for value in ["local", "LOCAL", "sqlite", "redis", "s3", "disabled"] {
+        for value in ["local", "LOCAL", "memory", "disk", "file", "disabled"] {
             assert!(!is_hardcoded_credential_value(value), "{value}");
         }
+    }
+
+    #[test]
+    fn a_database_or_cloud_provider_name_is_a_real_weak_credential() {
+        // Regression for the ENUM_MODE_VALUES over-exclusion: these words are
+        // also extremely common real default passwords (`POSTGRES_PASSWORD:
+        // postgres` ships in the official Postgres image's own README as a
+        // "for local dev" example), so they must NOT be excluded just
+        // because they also name a database/cloud product. `local` -- the
+        // original motivating case (a mode setting, not a password) -- must
+        // still be excluded.
+        for value in ["postgres", "mysql", "redis", "default", "basic"] {
+            assert!(is_hardcoded_credential_value(value), "{value}");
+        }
+        assert!(!is_hardcoded_credential_value("local"));
     }
 
     #[test]

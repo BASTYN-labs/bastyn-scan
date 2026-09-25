@@ -102,8 +102,11 @@ struct Assignment {
 ///
 /// A blank line or a line whose first non-blank character is `#` is not an
 /// assignment. An optional leading `export ` (the shell-sourceable form many
-/// `.env` files use) is stripped before splitting on the first `=`, and
-/// matching surrounding `"`/`'` quotes are stripped from the value. A line
+/// `.env` files use) is stripped before splitting on the first `=`. An
+/// UNQUOTED value has a trailing inline comment stripped first (see
+/// [`strip_inline_comment`]); a QUOTED value is left untouched by that step,
+/// since a `#` inside quotes is part of the value, not a comment. Matching
+/// surrounding `"`/`'` quotes are then stripped from whatever remains. A line
 /// with no `=` at all is not an assignment either, and is silently skipped —
 /// this module has no notion of a malformed `.env` file the way
 /// `infra::inspect` has an unparseable Compose file, because there is no
@@ -119,6 +122,12 @@ fn assignments(contents: &str) -> Vec<Assignment> {
             }
             let rest = trimmed.strip_prefix("export ").unwrap_or(trimmed);
             let (key, value) = rest.split_once('=')?;
+            let is_quoted = matches!(value.trim_start().chars().next(), Some('"' | '\''));
+            let value = if is_quoted {
+                value
+            } else {
+                strip_inline_comment(value)
+            };
             Some(Assignment {
                 key: key.trim().to_owned(),
                 value: unquote(value.trim()).to_owned(),
@@ -126,6 +135,30 @@ fn assignments(contents: &str) -> Vec<Assignment> {
             })
         })
         .collect()
+}
+
+/// Strip a trailing inline comment from an UNQUOTED `.env` value: the first
+/// whitespace-immediately-followed-by-`#` marks where the real value ends,
+/// and everything from that whitespace onward (comment included) is dropped.
+/// Matches how real `.env` loaders such as `python-dotenv` behave — a `#`
+/// only starts a comment outside quotes, so callers must never pass a
+/// quoted value's content through here (see the `is_quoted` check in
+/// [`assignments`]).
+///
+/// A `#` with no preceding whitespace (`abc#123`) is left alone: it reads as
+/// part of the token, not a comment, the same way a real `.env` loader
+/// treats it.
+fn strip_inline_comment(value: &str) -> &str {
+    let mut prev_whitespace_index = None;
+    for (index, ch) in value.char_indices() {
+        if ch == '#'
+            && let Some(ws_index) = prev_whitespace_index
+        {
+            return &value[..ws_index];
+        }
+        prev_whitespace_index = ch.is_whitespace().then_some(index);
+    }
+    value
 }
 
 fn unquote(value: &str) -> &str {
@@ -370,5 +403,42 @@ mod tests {
     #[test]
     fn an_empty_file_produces_nothing() {
         assert!(rules(".env", "").is_empty());
+    }
+
+    #[test]
+    fn an_unquoted_value_that_is_only_a_placeholder_comment_is_not_flagged() {
+        // The value after `=` is entirely an inline comment ("fill me in"),
+        // so once the comment is stripped there is no credential value left
+        // at all -- this must be silent the same way a genuinely empty
+        // value already is, not report the literal comment text as a
+        // high-severity secret.
+        let contents = "DB_PASSWORD= # fill me in\n";
+
+        assert!(rules(".env", contents).is_empty());
+    }
+
+    #[test]
+    fn an_unquoted_value_with_a_trailing_inline_comment_is_stripped_before_judging() {
+        // The trailing " # prod" must not break the `sk-`-shape match --
+        // before this fix it did, and the line was misclassified as the
+        // generic BAS-ZT1-022 instead of the provider-key BAS-ZT1-021.
+        let contents = "OPENAI_API_KEY=sk-proj-abc123def456ghi789 # prod\n";
+
+        assert_eq!(rules(".env", contents), ["BAS-ZT1-021"]);
+    }
+
+    #[test]
+    fn a_quoted_value_containing_a_literal_hash_is_preserved_in_full() {
+        // Comment-stripping must never apply inside quotes: a `#` (even one
+        // preceded by whitespace) inside a quoted value is part of the
+        // secret, not a comment marker, matching how real `.env` loaders
+        // (e.g. python-dotenv) treat quoted values.
+        let contents = "SECRET=\"abc #123\"\n";
+
+        let findings = inspect(Path::new(".env"), contents);
+
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        assert_eq!(findings[0].rule_id, "BAS-ZT1-022");
+        assert_eq!(findings[0].snippet, "SECRET=abc #123");
     }
 }

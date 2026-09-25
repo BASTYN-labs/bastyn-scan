@@ -1196,6 +1196,35 @@ severity = "high"
 why      = "the admin password's environment lookup has a real, source-visible default."
 
 # ---------------------------------------------------------------------
+# vulnerable/zt1_single_quoted_secrets.py -- final fix wave regression
+# (2026-09-25): BAS-ZT1-018/019's `any:` list was only '"$VALUE"'
+# (double-quoted), so the identical JWT/AWS-key literal spelled with
+# single quotes instead produced no finding at all.
+# ---------------------------------------------------------------------
+
+[[expect]]
+file     = "vulnerable/zt1_single_quoted_secrets.py"
+line     = 12
+rule     = "BAS-ZT1-018"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "a live-looking JWT is hardcoded directly in source, single-quoted."
+
+[[expect]]
+file     = "vulnerable/zt1_single_quoted_secrets.py"
+line     = 20
+rule     = "BAS-ZT1-019"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "a real-looking AWS access key ID in the exact AKIA-prefixed shape, single-quoted."
+
+[[expect_none]]
+file = "clean/zt1_aws_example_key.py"
+why  = "AKIAIOSFODNN7EXAMPLE is AWS's own official published placeholder access key ID, excluded by name from BAS-ZT1-019 -- not a real credential."
+
+# ---------------------------------------------------------------------
 # vulnerable/zt1_jwt_credential_shaped_key.py -- a final-review regression
 # fixture (2026-09-23, finding I2). zt1_secret_shapes.py's JWT-holding key
 # was renamed from the realistic `service_token` to `issued_jwt`
