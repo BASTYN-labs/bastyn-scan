@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-09-25
+
 ### Fixed
 
 - **`BAS-SKILL-001` required four frontmatter fields; the spec only requires two.** The check
@@ -410,7 +412,8 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.7
 [0.1.6]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.6
 [0.1.5]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.5
 [0.1.4]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.4
