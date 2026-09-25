@@ -405,12 +405,11 @@ fn collect_wrapper_sinks<D: Doc>(
             // `def eval`) is not a call to the catalogued builtin sink,
             // whatever it is named -- the same fact `bare_callee_is_shadowed`
             // already keeps a direct match from reporting. `wrapper_sinks`
-            // has no per-rule `builtin_callee` flag to consult here, but it
-            // does not need one: every bare-identifier sink this catalogue
-            // knows about (`eval`, `exec`, `compile`, ...) is
-            // `SinkKind::CodeExecution`, so this check is a no-op for the
-            // qualified sinks (`os.system`, `subprocess.run`, ...) a call
-            // through an attribute can never satisfy in the first place.
+            // has no per-rule `builtin_callee` flag to consult here, and
+            // does not need one: a rebound bare name is not the catalogued
+            // sink whatever its `SinkKind` (`eval`, `system`, `open`, ...),
+            // and the check never fires for a qualified sink (`os.system`,
+            // `subprocess.run`, ...), whose callee is an attribute.
             if bare_callee_is_shadowed(root, &call) {
                 continue;
             }
