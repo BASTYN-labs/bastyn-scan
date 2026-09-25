@@ -408,10 +408,13 @@ fn analyse_file(root: &Path, relative: &Path, ruleset: &RuleSet) -> Option<FileA
     }
 
     if infra_file {
-        // Container configuration is the only place the sandbox boundary
-        // is written down. A file that does not parse yields nothing
-        // rather than an error — see `infra::inspect`.
-        out.findings.extend(infra::inspect(relative, &contents));
+        // Container configuration is the only place the sandbox boundary is
+        // written down. A Compose file that does not parse is listed as
+        // skipped, so the report does not claim coverage it did not get.
+        match infra::inspect(relative, &contents) {
+            Ok(found) => out.findings.extend(found),
+            Err(_) => out.skipped.push(Skip::unparseable(display_path(relative))),
+        }
     }
 
     if instruction_file {
@@ -510,6 +513,8 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::report::SkipReason;
+
     fn tree(entries: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new().unwrap();
         for (path, contents) in entries {
@@ -590,14 +595,51 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_compose_file_is_not_reported_and_does_not_fail_the_scan() {
-        // Unlike an MCP config, whose name promises a schema, a compose file
-        // that does not parse says nothing about the container boundary.
+    fn a_malformed_compose_file_is_listed_as_skipped_not_reported_as_a_finding() {
+        // A compose file that does not parse cannot be checked for the
+        // container boundary it claims to describe, so the scan lists it as
+        // skipped rather than counting it as covered.
         let dir = tree(&[("docker-compose.yml", "services: [unclosed\n")]);
 
         let report = scan(dir.path(), &offline()).unwrap();
 
         assert!(report.findings.is_empty(), "{:#?}", report.findings);
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|skip| skip.reason == SkipReason::Unparseable
+                    && skip.path == "docker-compose.yml"),
+            "{:#?}",
+            report.skipped
+        );
+    }
+
+    #[test]
+    fn a_compose_file_that_does_not_parse_is_listed_as_skipped() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("compose.yaml"),
+            "services:\n  app: [\n    privileged: true\n",
+        )
+        .unwrap();
+        let report = scan(
+            dir.path(),
+            &ScanOptions {
+                offline: true,
+                ..ScanOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|skip| skip.reason == SkipReason::Unparseable && skip.path == "compose.yaml"),
+            "{:?}",
+            report.skipped
+        );
+        assert!(report.findings.is_empty());
     }
 
     #[test]
