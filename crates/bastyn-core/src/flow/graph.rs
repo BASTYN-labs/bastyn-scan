@@ -808,16 +808,7 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             "subscript" => node.field("value").map_or_else(Resolved::unknown, |value| {
                 self.resolve(&value, scope, depth + 1)
             }),
-            "call" => {
-                let callee = node
-                    .field("function")
-                    .map(|f| callee_path(&f))
-                    .unwrap_or_default();
-                Resolved {
-                    closed: callee == "type",
-                    prov: Prov::Call { callee },
-                }
-            }
+            "call" => self.resolve_call(node, scope, depth),
             "parenthesized_expression" | "await" => node
                 .named_children()
                 .next()
@@ -868,6 +859,63 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             // costs a finding; guessing would cost a false one.
             _ => Resolved::unknown(),
         }
+    }
+
+    /// Resolve a `call` node: `.format` on a string literal is handled
+    /// specially so it carries its arguments' provenance; anything else
+    /// resolves to the return value of the callee named as written.
+    fn resolve_call(&mut self, node: &Node<'r, D>, scope: usize, depth: usize) -> Resolved {
+        if let Some(formatted) = self.string_format(node, scope, depth) {
+            return formatted;
+        }
+        let callee = node
+            .field("function")
+            .map(|f| callee_path(&f))
+            .unwrap_or_default();
+        Resolved {
+            closed: callee == "type",
+            prov: Prov::Call { callee },
+        }
+    }
+
+    /// `"...{}".format(a, b=c)`: the result is text built from the template
+    /// and every argument, so it carries all of their provenance.
+    ///
+    /// `None` for any other call, including `.format` on a receiver that is
+    /// not a string literal, whose type this graph cannot know.
+    fn string_format(
+        &mut self,
+        node: &Node<'r, D>,
+        scope: usize,
+        depth: usize,
+    ) -> Option<Resolved> {
+        let function = node.field("function")?;
+        if function.kind() != "attribute" || function.field("attribute")?.text() != "format" {
+            return None;
+        }
+        let receiver = function.field("object")?;
+        if !matches!(receiver.kind().as_ref(), "string" | "concatenated_string") {
+            return None;
+        }
+        let mut answer = self.resolve(&receiver, scope, depth + 1);
+        let Some(arguments) = node.field("arguments") else {
+            return Some(answer);
+        };
+        if arguments.kind() != "argument_list" {
+            return Some(answer.combine(Resolved::unknown()));
+        }
+        for argument in arguments.named_children() {
+            let value = match argument.kind().as_ref() {
+                "keyword_argument" => argument.field("value"),
+                "list_splat" | "dictionary_splat" => None,
+                _ => Some(argument),
+            };
+            let inner = value.map_or_else(Resolved::unknown, |value| {
+                self.resolve(&value, scope, depth + 1)
+            });
+            answer = answer.combine(inner);
+        }
+        Some(answer)
     }
 
     /// Resolve a name against the bindings visible at `offset` in `scope`.
@@ -1360,5 +1408,65 @@ def run_snippet(code):
                 .wrapper_sink_parameters("run_snippet", SinkKind::CodeExecution)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn str_format_carries_the_provenance_of_its_arguments() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM {}\".format(reply))
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(
+            matches!(graph.origin_of(arg), Some(Origin::Call { callee }) if callee.contains("create")),
+            "{:?}",
+            graph.origin_of(arg)
+        );
+    }
+
+    #[test]
+    fn str_format_with_a_keyword_argument_carries_its_provenance() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM {t}\".format(t=reply))
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
+    }
+
+    #[test]
+    fn str_format_of_literals_only_is_closed() {
+        let (root, graph) =
+            build_python_graph("def f(cursor):\n    cursor.execute(\"SELECT {}\".format(1))\n");
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(graph.is_closed(arg));
+    }
+
+    #[test]
+    fn percent_formatting_carries_the_provenance_of_its_operand() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM %s\" % reply)
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
+    }
+
+    #[test]
+    fn concatenation_carries_the_provenance_of_its_operand() {
+        let source = "\
+def handle(client, cursor):
+    reply = client.chat.completions.create(prompt='x').choices[0].message.content
+    cursor.execute(\"SELECT * FROM \" + reply)
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "cursor.execute");
+        assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
     }
 }
