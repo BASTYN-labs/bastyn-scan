@@ -801,11 +801,11 @@ rule     = "BAS-SKILL-003"
 category = "LLM03"
 kind     = "defect"
 severity = "high"
-why      = "The body states the skill \"will act autonomously\" and applies remediation \"rather than waiting on a human to approve each step\" -- explicit excessive-agency language telling the agent not to pause for approval before a chain of infrastructure-changing actions. Same file as the BAS-SKILL-001 finding above, proving one SKILL.md can trigger both an independent frontmatter check and an independent body-text check."
+why      = "The body states the skill \"will act autonomously\" and applies remediation \"rather than waiting on a human to approve each step\" -- explicit excessive-agency language telling the agent not to pause for approval before a chain of infrastructure-changing actions."
 
 [[expect_none]]
 file = "clean/skills/well-formed/SKILL.md"
-why  = "Complete frontmatter (name/description/version/permissions all present) and ordinary body text with no instruction-override or confirmation-skipping phrasing from either BAS-SKILL-002's or BAS-SKILL-003's list -- must produce zero findings."
+why  = "Frontmatter satisfies the two required fields (name, description) and additionally declares version and permissions, and the body has ordinary text with no instruction-override or confirmation-skipping phrasing from either BAS-SKILL-002's or BAS-SKILL-003's list -- must produce zero findings."
 
 [[expect]]
 file     = "vulnerable/skills/word-wrapped-injection/SKILL.md"

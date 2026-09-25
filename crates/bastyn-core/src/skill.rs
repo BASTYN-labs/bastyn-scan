@@ -232,7 +232,7 @@ fn check_frontmatter(relative_path: &Path, contents: &str) -> Option<Finding> {
         description: format!(
             "This SKILL.md's frontmatter is missing the {noun} {field_list}, which the Agent \
              Skills specification requires. Agent hosts may skip or mis-index a skill without \
-             them."
+             these fields."
         ),
         remediation: "Add a YAML frontmatter block (between `---` lines at the top of the \
                        file) with at least `name` and `description`. See \
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(findings[0].location.line, 1);
         assert_eq!(findings[0].location.column, 1);
         assert!(findings[0].description.contains("description"));
-        assert!(!findings[0].description.contains("name,"));
+        assert!(!findings[0].description.contains("name"));
     }
 
     #[test]
