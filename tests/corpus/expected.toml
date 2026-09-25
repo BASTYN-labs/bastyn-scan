@@ -211,6 +211,15 @@ category = "LLM04"
 why      = "certifi==2022.12.7 has real published advisories. Same offline-network gap as the requests entry above."
 requires_network = true
 
+[[expect]]
+file     = "vulnerable/llm04_supply_chain/requirements.txt"
+line     = 16
+rule     = "BAS-LLM04-001"
+category = "LLM04"
+kind     = "observation"
+severity = "low"
+why      = "langchain>=0.1 is a range, not a pin: an observation that the installed version is not fixed by this file."
+
 [[known_gap]]
 file     = "vulnerable/llm09_vector_embedding_weaknesses.py"
 line     = 21
@@ -278,6 +287,15 @@ category = "ZT1"
 kind     = "defect"
 severity = "critical"
 why      = "An admin token as a dict literal value (\"admin_secret\": \"SUPER-SECRET-TOKEN-...\"). Same dict-literal shape as the database_url entry above."
+
+[[expect]]
+file     = "vulnerable/real_misses/hardcoded_dict_secrets.py"
+line     = 31
+rule     = "BAS-ZT1-002"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "A database URL with an inline password (postgresql://svc:hunter2@...) as a dict literal value. Same shape as the line-15 entry, in the second function."
 
 [[expect]]
 file     = "vulnerable/real_misses/override_or_fallback_prompt.py"
@@ -394,8 +412,8 @@ line     = 14
 rule     = "BAS-INFRA-006"
 category = "ZT1"
 kind     = "defect"
-severity = "critical"
-why      = "ENV DB_PASSWORD=Sup3rWeakPass! is a hardcoded credential, not shaped like a provider key -- BAS-INFRA-002's `sk-`-shaped gate does not cover it, and the two rules must not double-report the same literal."
+severity = "high"
+why      = "ENV DB_PASSWORD=Sup3rWeakPass! is a hardcoded credential, not shaped like a provider key -- BAS-INFRA-002's `sk-`-shaped gate does not cover it, and the two rules must not double-report the same literal. Reported high, not critical: credential_severity() rates a value that is neither high-entropy nor named for a cloud provider as high."
 
 [[expect]]
 file     = "vulnerable/zt3_container_boundary/Dockerfile"
@@ -448,8 +466,8 @@ line     = 11
 rule     = "BAS-INFRA-006"
 category = "ZT1"
 kind     = "defect"
-severity = "critical"
-why      = "MYSQL_PASSWORD=password in the list form of environment: is a real weak default -- verbatim shape from the head-to-head benchmark against a Python prototype, which caught this class and Bastyn originally missed it entirely."
+severity = "high"
+why      = "MYSQL_PASSWORD=password in the list form of environment: is a real weak default -- verbatim shape from the head-to-head benchmark against a Python prototype, which caught this class and Bastyn originally missed it entirely. Reported high, not critical: credential_severity() rates a value that is neither high-entropy nor named for a cloud provider as high."
 
 [[expect]]
 file     = "vulnerable/zt3_container_boundary/docker-compose.yml"
@@ -466,8 +484,8 @@ line     = 18
 rule     = "BAS-INFRA-006"
 category = "ZT1"
 kind     = "defect"
-severity = "critical"
-why      = "MYSQL_ROOT_PASSWORD: 'aa123456' in the mapping form of environment: -- format parity with the list-form findings above. MYSQL_DATABASE on the line below must not be flagged."
+severity = "high"
+why      = "MYSQL_ROOT_PASSWORD: 'aa123456' in the mapping form of environment: -- format parity with the list-form findings above. MYSQL_DATABASE on the line below must not be flagged. Reported high, not critical: credential_severity() rates a value that is neither high-entropy nor named for a cloud provider as high."
 
 # =====================================================================
 # mcp/ — MCP server configuration shapes
@@ -496,6 +514,24 @@ severity = "high"
 why      = "The opsbot-logs stdio server is launched with root filesystem access (\"/\"); the opsbot-runbooks server in the same file, scoped to /srv/opsbot/runbooks, must not be flagged."
 
 [[expect]]
+file     = "mcp/stdio_two/mcp.json"
+line     = 5
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-logs server is launched from a package registry (npx -y / uvx) with no version pin, so what runs can change without a change to this repository."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.json"
+line     = 9
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-runbooks server is launched from a package registry (npx -y / uvx) with no version pin, so what runs can change without a change to this repository."
+
+[[expect]]
 file     = "mcp/stdio_two/mcp.yaml"
 line     = 6
 rule     = "BAS-MCP-001"
@@ -505,6 +541,24 @@ severity = "high"
 why      = "Same two-server config as mcp.json, in YAML: format parity. The reported line is the first line containing the literal offending arg text (\"/\"), which in YAML's layout is the preceding args entry, not the bare \"/\" line itself -- the documented approximate-location behaviour in mcp/checks.rs, confirmed by running the built scanner."
 
 [[expect]]
+file     = "mcp/stdio_two/mcp.yaml"
+line     = 6
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-logs server is launched from a package registry (npx -y / uvx) with no version pin, so what runs can change without a change to this repository."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.yaml"
+line     = 11
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-runbooks server is launched from a package registry (npx -y / uvx) with no version pin, so what runs can change without a change to this repository."
+
+[[expect]]
 file     = "mcp/stdio_two/mcp.toml"
 line     = 3
 rule     = "BAS-MCP-001"
@@ -512,6 +566,24 @@ category = "ZT3"
 kind     = "defect"
 severity = "high"
 why      = "Same two-server config as mcp.json, in TOML: format parity."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.toml"
+line     = 3
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-logs server is launched from a package registry (npx -y / uvx) with no version pin, so what runs can change without a change to this repository."
+
+[[expect]]
+file     = "mcp/stdio_two/mcp.toml"
+line     = 7
+rule     = "BAS-MCP-005"
+category = "LLM04"
+kind     = "defect"
+severity = "high"
+why      = "The opsbot-runbooks server is launched from a package registry (npx -y / uvx) with no version pin, so what runs can change without a change to this repository."
 
 # =====================================================================
 # clean/ — same jobs, done safely. Every near-miss that fools naive rules.
@@ -734,6 +806,15 @@ category = "ZT1"
 kind     = "defect"
 severity = "critical"
 why      = "OPENAI_API_KEY is a real-looking sk-proj-... key committed as an exported const literal instead of read from process.env or a secret manager."
+
+[[expect]]
+file     = "vulnerable/zt1_static_credentials.ts"
+line     = 14
+rule     = "BAS-ZT1-011"
+category = "ZT1"
+kind     = "defect"
+severity = "critical"
+why      = "The generic credential-shaped-literal rule reports the exported const statement (column 8), alongside BAS-ZT1-003's report of the string itself (column 31). Both describe the same committed key."
 
 [[expect]]
 file     = "vulnerable/zt2_wildcard_tool_grant.ts"

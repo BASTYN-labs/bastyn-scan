@@ -300,6 +300,114 @@ fn matches(
         && rule.is_none_or(|wanted| finding.rule_id == wanted)
 }
 
+/// Where one finding lands in the manifest.
+///
+/// Checked in declaration order, so a finding that matches more than one
+/// kind of entry is counted once, at the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    /// Matches an `[[expect]]` location (file, line, category, and rule
+    /// when the entry names one). Kind and severity are checked separately,
+    /// by `resolve_expect`.
+    Expect,
+    /// Matches a `[[known_false_positive]]`.
+    KnownFalsePositive,
+    /// Matches a `[[known_gap]]`: a gap that has started being caught.
+    KnownGap,
+    /// Matches nothing the manifest says. A gate failure unless the file is
+    /// an `[[expect_none]]` file, which `find_violations` already reports.
+    Unaccounted,
+}
+
+/// Classifies one finding against the manifest.
+fn classify(finding: &Finding, manifest: &Manifest) -> Class {
+    if manifest.expect.iter().any(|entry| {
+        matches(
+            finding,
+            &entry.file,
+            entry.line,
+            entry.category,
+            entry.rule.as_deref(),
+        )
+    }) {
+        return Class::Expect;
+    }
+    if manifest
+        .known_false_positive
+        .iter()
+        .any(|entry| matches(finding, &entry.file, entry.line, entry.category, None))
+    {
+        return Class::KnownFalsePositive;
+    }
+    if manifest
+        .known_gap
+        .iter()
+        .any(|gap| matches(finding, &gap.file, gap.line, gap.category, None))
+    {
+        return Class::KnownGap;
+    }
+    Class::Unaccounted
+}
+
+/// Findings no manifest entry accounts for, outside `[[expect_none]]` files
+/// (those are reported as violations instead, so nothing is reported twice).
+fn find_unaccounted<'a>(manifest: &Manifest, findings: &'a [Finding]) -> Vec<&'a Finding> {
+    findings
+        .iter()
+        .filter(|finding| classify(finding, manifest) == Class::Unaccounted)
+        .filter(|finding| {
+            !manifest
+                .expect_none
+                .iter()
+                .any(|entry| same_path(&finding.location.file, &entry.file))
+        })
+        .collect()
+}
+
+/// How many of the scan's defect findings the manifest says are real.
+struct DefectPrecision {
+    /// Defect findings that are correct.
+    correct: usize,
+    /// Every defect finding the scan returned.
+    returned: usize,
+}
+
+/// Defect precision on this corpus: of the defects the scan returned, how
+/// many the manifest says are real.
+///
+/// A defect is correct when it matches an `[[expect]]` entry whose own kind
+/// is `defect`, or a `[[known_gap]]` (a real defect we did not expect to
+/// catch yet). Known false positives stay in the denominator: they are
+/// defects the scan returned and should not have.
+fn defect_precision(findings: &[Finding], manifest: &Manifest) -> DefectPrecision {
+    let defects: Vec<&Finding> = findings
+        .iter()
+        .filter(|finding| finding.kind == Kind::Defect)
+        .collect();
+    let correct = defects
+        .iter()
+        .filter(|finding| {
+            manifest.expect.iter().any(|entry| {
+                entry.kind == Kind::Defect
+                    && matches(
+                        finding,
+                        &entry.file,
+                        entry.line,
+                        entry.category,
+                        entry.rule.as_deref(),
+                    )
+            }) || manifest
+                .known_gap
+                .iter()
+                .any(|gap| matches(finding, &gap.file, gap.line, gap.category, None))
+        })
+        .count();
+    DefectPrecision {
+        correct,
+        returned: defects.len(),
+    }
+}
+
 /// A percentage, or `None` when there is nothing to divide by — not a
 /// failure, just nothing measured yet.
 #[expect(
@@ -319,63 +427,107 @@ fn format_percentage(value: Option<f64>) -> String {
 }
 
 /// One `[[expect]]` entry, resolved against the scan.
-enum ExpectOutcome<'a> {
+enum ExpectOutcome<'a, 'f> {
     /// The referenced file is not on disk yet.
     Pending(&'a Expect),
-    /// The file exists and a finding matched.
+    /// A finding at this location has the expected kind and severity.
     Matched,
+    /// Findings exist at this location, but none has the expected kind and
+    /// severity. `finding` is the first of them, for the report.
+    Mismatched {
+        entry: &'a Expect,
+        finding: &'f Finding,
+    },
     /// The file exists and nothing matched: a recall failure.
     Missing(&'a Expect),
 }
 
-fn resolve_expect<'a>(root: &Path, entry: &'a Expect, findings: &[Finding]) -> ExpectOutcome<'a> {
+fn resolve_expect<'a, 'f>(
+    root: &Path,
+    entry: &'a Expect,
+    findings: &'f [Finding],
+) -> ExpectOutcome<'a, 'f> {
     if !root.join(&entry.file).exists() {
         return ExpectOutcome::Pending(entry);
     }
-    let found = findings.iter().any(|finding| {
-        matches(
-            finding,
-            &entry.file,
-            entry.line,
-            entry.category,
-            entry.rule.as_deref(),
-        )
-    });
-    if found {
-        ExpectOutcome::Matched
-    } else {
-        ExpectOutcome::Missing(entry)
+    let located: Vec<&Finding> = findings
+        .iter()
+        .filter(|finding| {
+            matches(
+                finding,
+                &entry.file,
+                entry.line,
+                entry.category,
+                entry.rule.as_deref(),
+            )
+        })
+        .collect();
+    match located.first() {
+        None => ExpectOutcome::Missing(entry),
+        Some(_)
+            if located.iter().any(|finding| {
+                finding.kind == entry.kind && finding.severity == entry.severity
+            }) =>
+        {
+            ExpectOutcome::Matched
+        }
+        Some(first) => ExpectOutcome::Mismatched {
+            entry,
+            finding: first,
+        },
     }
 }
 
 /// The `[[expect]]` list, resolved against one scan.
 #[derive(Default)]
-struct ExpectSummary<'a> {
-    /// Entries whose file exists on disk (whether matched or not).
-    ready: usize,
-    /// Ready entries with a matching finding.
-    matched: usize,
+struct ExpectSummary<'a, 'f> {
+    /// Ready `defect` entries, and how many of them matched.
+    ready_defects: usize,
+    /// Ready `defect` entries with a matching finding.
+    matched_defects: usize,
+    /// Ready `observation` entries, and how many of them matched.
+    ready_observations: usize,
+    /// Ready `observation` entries with a matching finding.
+    matched_observations: usize,
     /// Entries whose file is not on disk yet.
     pending: Vec<&'a Expect>,
     /// Ready entries with no matching finding: a recall failure.
     missing: Vec<&'a Expect>,
+    /// Entries located at the right place with the wrong kind or severity.
+    mismatched: Vec<(&'a Expect, &'f Finding)>,
 }
 
-fn resolve_expects<'a>(
+fn resolve_expects<'a, 'f>(
     root: &Path,
     expect: &'a [Expect],
-    findings: &[Finding],
-) -> ExpectSummary<'a> {
+    findings: &'f [Finding],
+) -> ExpectSummary<'a, 'f> {
     let mut summary = ExpectSummary::default();
     for entry in expect {
         match resolve_expect(root, entry, findings) {
             ExpectOutcome::Pending(entry) => summary.pending.push(entry),
-            ExpectOutcome::Matched => {
-                summary.matched += 1;
-                summary.ready += 1;
+            ExpectOutcome::Matched => match entry.kind {
+                Kind::Defect => {
+                    summary.ready_defects += 1;
+                    summary.matched_defects += 1;
+                }
+                Kind::Observation => {
+                    summary.ready_observations += 1;
+                    summary.matched_observations += 1;
+                }
+            },
+            ExpectOutcome::Mismatched { entry, finding } => {
+                match entry.kind {
+                    Kind::Defect => summary.ready_defects += 1,
+                    Kind::Observation => summary.ready_observations += 1,
+                }
+                summary.mismatched.push((entry, finding));
             }
             ExpectOutcome::Missing(entry) => {
-                summary.ready += 1;
+                match entry.kind {
+                    Kind::Defect => summary.ready_defects += 1,
+                    Kind::Observation => summary.ready_observations += 1,
+                }
                 summary.missing.push(entry);
             }
         }
@@ -441,28 +593,31 @@ fn find_resolved_false_positives<'a>(
 /// The report `FORMAT.md` specifies, plus a note when the corpus is not
 /// fully written yet. Always printed, pass or fail.
 fn print_summary(
-    summary: &ExpectSummary<'_>,
-    unexpected: usize,
+    summary: &ExpectSummary<'_, '_>,
+    precision: &DefectPrecision,
+    unaccounted: usize,
     gaps: GapCounts,
     false_positives: usize,
 ) {
-    let pending = summary.pending.len();
-    if summary.ready == 0 && pending > 0 {
-        println!(
-            "corpus: 0/0 planted defects found   (n/a — {pending} pending, corpus not yet written)"
-        );
-    } else {
-        println!(
-            "corpus: {}/{} planted defects found   (found {})",
-            summary.matched,
-            summary.ready,
-            format_percentage(percentage(summary.matched, summary.ready))
-        );
-    }
     println!(
-        "        {unexpected} unexpected finding{}             (precision {})",
-        if unexpected == 1 { "" } else { "s" },
-        format_percentage(percentage(summary.matched, summary.matched + unexpected)),
+        "corpus: {}/{} expected defects found        (recall on this corpus {})",
+        summary.matched_defects,
+        summary.ready_defects,
+        format_percentage(percentage(summary.matched_defects, summary.ready_defects))
+    );
+    println!(
+        "        {}/{} expected observations found",
+        summary.matched_observations, summary.ready_observations
+    );
+    println!(
+        "        {}/{} defects returned are expected   (defect precision on this corpus {}, known false positives included)",
+        precision.correct,
+        precision.returned,
+        format_percentage(percentage(precision.correct, precision.returned))
+    );
+    println!(
+        "        {unaccounted} unaccounted finding{}",
+        if unaccounted == 1 { "" } else { "s" }
     );
     println!(
         "        {} known gap{}{}",
@@ -605,6 +760,66 @@ fn print_violations(violations: &[Violation<'_>]) -> Vec<String> {
         .collect()
 }
 
+/// Prints `[[expect]]` entries located at the right place with the wrong
+/// kind or severity, and returns one failure line per entry.
+fn print_mismatched(mismatched: &[(&Expect, &Finding)]) -> Vec<String> {
+    if mismatched.is_empty() {
+        return Vec::new();
+    }
+    println!("\nmismatched expectations (wrong kind or severity):");
+    mismatched
+        .iter()
+        .map(|(entry, finding)| {
+            let line = format!(
+                "  {}:{} [{}] rule={} expected kind={:?} severity={:?}, got kind={:?} severity={:?}",
+                entry.file,
+                entry.line,
+                entry.category,
+                finding.rule_id,
+                entry.kind,
+                entry.severity,
+                finding.kind,
+                finding.severity
+            );
+            println!("{line}");
+            line
+        })
+        .collect()
+}
+
+/// Prints findings no manifest entry accounts for, and returns one failure
+/// line per finding.
+fn print_unaccounted(unaccounted: &[&Finding]) -> Vec<String> {
+    if unaccounted.is_empty() {
+        return Vec::new();
+    }
+    println!(
+        "\nunaccounted findings (match no [[expect]], [[known_false_positive]] or [[known_gap]]):"
+    );
+    unaccounted
+        .iter()
+        .map(|finding| {
+            let categories = finding
+                .categories
+                .iter()
+                .map(|category| category.id())
+                .collect::<Vec<_>>()
+                .join(",");
+            let line = format!(
+                "  {}:{} [{categories}] rule={} kind={:?} severity={:?} — {}",
+                finding.location.file.display(),
+                finding.location.line,
+                finding.rule_id,
+                finding.kind,
+                finding.severity,
+                finding.title
+            );
+            println!("{line}");
+            line
+        })
+        .collect()
+}
+
 #[test]
 fn corpus_gate() -> Result<(), String> {
     let root = corpus_root();
@@ -636,10 +851,13 @@ fn corpus_gate() -> Result<(), String> {
     let promotable = find_promotable(&manifest.known_gap, &report.findings);
     let resolved_false_positives =
         find_resolved_false_positives(&manifest.known_false_positive, &report.findings);
+    let unaccounted = find_unaccounted(&manifest, &report.findings);
+    let precision = defect_precision(&report.findings, &manifest);
 
     print_summary(
         &summary,
-        violations.len(),
+        &precision,
+        unaccounted.len(),
         GapCounts::of(&manifest.known_gap),
         manifest.known_false_positive.len(),
     );
@@ -651,6 +869,8 @@ fn corpus_gate() -> Result<(), String> {
 
     let mut failures = print_missing(&summary.missing);
     failures.extend(print_violations(&violations));
+    failures.extend(print_mismatched(&summary.mismatched));
+    failures.extend(print_unaccounted(&unaccounted));
 
     if failures.is_empty() {
         Ok(())
@@ -763,6 +983,152 @@ mod tests {
         }
     }
 
+    fn finding_of_kind(
+        rule: &str,
+        file: &str,
+        line: usize,
+        category: Category,
+        kind: Kind,
+        severity: Severity,
+    ) -> Finding {
+        Finding {
+            kind,
+            severity,
+            ..finding(rule, file, line, category)
+        }
+    }
+
+    fn manifest(toml_text: &str) -> Manifest {
+        toml::from_str(toml_text).unwrap()
+    }
+
+    #[test]
+    fn a_finding_matching_nothing_is_unaccounted() {
+        let m = manifest("");
+        let f = finding("BAS-LLM10-001", "vulnerable/a.py", 9, Category::Llm10);
+        assert_eq!(classify(&f, &m), Class::Unaccounted);
+    }
+
+    #[test]
+    fn classification_prefers_expect_over_known_false_positive_and_known_gap() {
+        let m = manifest(
+            r#"
+            [[expect]]
+            file = "vulnerable/a.py"
+            line = 9
+            category = "LLM10"
+            kind = "defect"
+            severity = "critical"
+            why = "x"
+            [[known_gap]]
+            file = "vulnerable/a.py"
+            line = 9
+            category = "LLM10"
+            why = "x"
+            [[known_false_positive]]
+            file = "vulnerable/a.py"
+            line = 9
+            category = "LLM10"
+            why = "x"
+            "#,
+        );
+        let f = finding("BAS-LLM10-001", "vulnerable/a.py", 9, Category::Llm10);
+        assert_eq!(classify(&f, &m), Class::Expect);
+    }
+
+    #[test]
+    fn classification_prefers_known_false_positive_over_known_gap() {
+        let m = manifest(
+            r#"
+            [[known_gap]]
+            file = "vulnerable/a.py"
+            line = 9
+            category = "LLM10"
+            why = "x"
+            [[known_false_positive]]
+            file = "vulnerable/a.py"
+            line = 9
+            category = "LLM10"
+            why = "x"
+            "#,
+        );
+        let f = finding("BAS-LLM10-001", "vulnerable/a.py", 9, Category::Llm10);
+        assert_eq!(classify(&f, &m), Class::KnownFalsePositive);
+    }
+
+    #[test]
+    fn an_expect_whose_finding_has_another_kind_is_a_mismatch() {
+        let m = manifest(
+            r#"
+            [[expect]]
+            file = "vulnerable/a.py"
+            line = 9
+            category = "LLM10"
+            kind = "defect"
+            severity = "critical"
+            why = "x"
+            "#,
+        );
+        let f = finding_of_kind(
+            "BAS-LLM10-001",
+            "vulnerable/a.py",
+            9,
+            Category::Llm10,
+            Kind::Observation,
+            Severity::Critical,
+        );
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        // `resolve_expect` treats a missing file as pending, so point it at a
+        // file that exists: this test file itself.
+        let mut entry = m.expect[0].clone();
+        entry.file = "tests/corpus_gate.rs".to_owned();
+        let mut located = f;
+        located.location.file = PathBuf::from("tests/corpus_gate.rs");
+        assert!(matches!(
+            resolve_expect(&root, &entry, std::slice::from_ref(&located)),
+            ExpectOutcome::Mismatched { .. }
+        ));
+    }
+
+    #[test]
+    fn defect_precision_counts_known_false_positives_as_wrong() {
+        let m = manifest(
+            r#"
+            [[expect]]
+            file = "vulnerable/a.py"
+            line = 1
+            category = "LLM10"
+            kind = "defect"
+            severity = "high"
+            why = "x"
+            [[known_false_positive]]
+            file = "vulnerable/b.py"
+            line = 2
+            category = "LLM10"
+            why = "x"
+            "#,
+        );
+        let right = finding("BAS-LLM10-004", "vulnerable/a.py", 1, Category::Llm10);
+        let wrong = finding("BAS-LLM10-004", "vulnerable/b.py", 2, Category::Llm10);
+        let precision = defect_precision(&[right, wrong], &m);
+        assert_eq!(precision.returned, 2);
+        assert_eq!(precision.correct, 1);
+    }
+
+    #[test]
+    fn an_observation_is_not_counted_in_defect_precision() {
+        let m = manifest("");
+        let f = finding_of_kind(
+            "BAS-LLM10-005",
+            "vulnerable/a.ts",
+            1,
+            Category::Llm10,
+            Kind::Observation,
+            Severity::High,
+        );
+        assert_eq!(defect_precision(&[f], &m).returned, 0);
+    }
+
     #[test]
     fn matches_on_file_line_and_category() {
         let f = finding("BAS-LLM10-001", "vulnerable/a.py", 9, Category::Llm10);
@@ -826,7 +1192,8 @@ mod tests {
 
     #[test]
     fn recall_and_precision_arithmetic() {
-        // 18/22 recall, 0 unexpected findings out of 18 true positives.
+        // 18/22 recall; 18/18 defect precision (every returned defect correct,
+        // none wrong or unaccounted for).
         assert_eq!(percentage(18, 22), Some(18.0 / 22.0 * 100.0));
         assert_eq!(percentage(18, 18), Some(100.0));
     }
