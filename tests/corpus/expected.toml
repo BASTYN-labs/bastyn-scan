@@ -99,7 +99,7 @@ rule     = "BAS-LLM10-003"
 category = "LLM10"
 kind     = "observation"
 severity = "critical"
-why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
+why      = "The model's reply is concatenated straight into an INSERT statement -- SQL injection with the model as the delivery mechanism. Reported as an observation: the f-string combines a traced model reply with an untraced parameter, and the flow graph reports a value of mixed origin as unknown."
 
 [[expect]]
 file     = "vulnerable/model_output_renamed.py"
@@ -347,7 +347,7 @@ rule     = "BAS-ZT4-002"
 category = "LLM01"
 kind     = "observation"
 severity = "high"
-why      = "`system_prompt = system_override or self._build_system_prompt(...)` -- the caller's override replaces the instruction channel outright. Measured 2026-08-28: this is the only caller-supplied prompt override in 65 real repositories, and it is an `or` fallback, not the f-string interpolation BAS-ZT4-002 was originally written against. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
+why      = "`system_prompt = system_override or self._build_system_prompt(...)` -- the caller's override replaces the instruction channel outright. This is an `or` fallback, not the f-string interpolation BAS-ZT4-002 was originally written against. Reported as an observation: the value's origin is outside this file (a parameter or an untraced name), so the engine cannot prove it untrusted."
 
 [[expect]]
 file     = "vulnerable/real_misses/header_override_self_concat.py"
@@ -485,7 +485,7 @@ rule     = "BAS-INFRA-006"
 category = "ZT1"
 kind     = "defect"
 severity = "high"
-why      = "MYSQL_PASSWORD=password in the list form of environment: is a real weak default -- verbatim shape from the head-to-head benchmark against a Python prototype, which caught this class and Bastyn originally missed it entirely. Reported high, not critical: credential_severity() rates a value that is neither high-entropy nor named for a cloud provider as high."
+why      = "MYSQL_PASSWORD=password in the list form of environment: is a real weak default. Reported high, not critical: credential_severity() rates a value that is neither high-entropy nor named for a cloud provider as high."
 
 [[expect]]
 file     = "vulnerable/zt3_container_boundary/docker-compose.yml"

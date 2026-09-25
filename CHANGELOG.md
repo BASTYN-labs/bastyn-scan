@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Breaking (library API)
+
+- `CveStatus` gains a `Partial` variant; a `match` on `CveStatus` outside this crate that is not
+  already exhaustive-with-a-wildcard must add an arm for it.
+- `bastyn_core::infra::inspect` now returns `Result<Vec<Finding>, InfraError>` instead of
+  `Vec<Finding>`, so an unparseable Compose file can be reported as skipped instead of scanned.
+
 ### Changed
 
 - **Defects now require traced provenance.** `BAS-LLM10-002`, `-003`, `-004`, `BAS-ZT4-001` and

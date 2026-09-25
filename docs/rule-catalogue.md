@@ -49,8 +49,11 @@ risk** (low/medium/high, with the false-positive shape), **Prevalence**
 **Detectability is graded conservatively on purpose.** Bastyn's own measured
 failure mode is rules that gate on a variable being *named* `response` or
 `prompt`. `crates/bastyn-core/tests/brittleness_gate.rs` puts a number on
-it: across every naming gate still shipped, only 32.8% of realistic
-alternate variable names are still caught (39 of 119). Ten of those gates
+it: across every row the file measures, only 32.8% of realistic alternate
+variable names are still caught (39 of 119). That figure includes four rows
+that have since moved off name gating entirely and score 100% (see below),
+which pulls the overall number up; set those four rows aside and the ten
+rows that still decide purely by name catch 2.4% (2 of 82). Those ten gates
 (e.g. `BAS-LLM10-006`, via
 `metavariable_matches: ARG: "(?i)(response|reply|completion|...)"` in
 `crates/bastyn-core/rules/bastyn.yml`) still decide purely by name and
@@ -2237,8 +2240,10 @@ than what the engine has today: a Python-only, single-file flow graph that
 a handful of shipped rules ask instead of matching a name. Every other rule
 with a naming gate still approximates provenance the old way, matching a
 captured variable's *name* against a word list — the mechanism
-`crates/bastyn-core/tests/brittleness_gate.rs` measures at 32.8% real-world
-survival (39 of 119) across the gates that still work that way. **13 (13%)
+`crates/bastyn-core/tests/brittleness_gate.rs` measures across every row it
+tracks at 32.8% real-world survival (39 of 119), a figure that includes four
+rows that have since moved onto the dataflow graph and score 100%; the rows
+that still gate purely on a name survive at 2.4% (2 of 82). **13 (13%)
 are semantic**. They require judging intent, correctness, or runtime
 behavior from static text, and no engine investment closes that gap; they
 are listed to be honest about what "coverage" cannot mean, not as a

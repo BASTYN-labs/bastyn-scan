@@ -108,10 +108,11 @@ rules:
         requires:
           ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A model reply is passed to a shell with shell=True (or os.system).
-      Anything the model was tricked into saying -- including output planted
-      by content it read from the web or from a document -- runs as a shell
-      command with the process's full privileges.
+      A value that may carry a model reply is passed to a shell with
+      shell=True (or os.system). If it does, anything the model was tricked
+      into saying -- including output planted by content it read from the
+      web or from a document -- runs as a shell command with the process's
+      full privileges.
     remediation: >
       Do not derive shell commands from model output. If the agent must run a
       fixed set of commands, dispatch on a whitelist of command names with
@@ -205,10 +206,11 @@ rules:
         requires:
           ARG: "(?i)(response|reply|completion|message|content|choices|output|generated)"
     description: >
-      A database cursor executes a query built from model output. Since the
-      model's reply is attacker-influenceable (via prompt injection from any
-      untrusted document, tool result, or user message it has seen), this is
-      SQL injection with the model as the delivery mechanism.
+      A database cursor executes a query built from a value that may carry a
+      model reply. If it does, this is SQL injection with the model as the
+      delivery mechanism: the model's reply is attacker-influenceable via
+      prompt injection from any untrusted document, tool result, or user
+      message it has seen.
     remediation: >
       Never interpolate model output into a SQL string. Use parameterized
       queries (cursor.execute(sql, params)) and keep model output confined to
@@ -332,6 +334,7 @@ rules:
     flow:
       variable: VAR
       source: [http_request, tool_output, retrieved_context, network_read, file_read]
+      unguarded: true
       unproven:
         kind: observation
         requires:
@@ -697,6 +700,7 @@ rules:
     flow:
       variable: OVERRIDE
       source: [http_request, tool_output, retrieved_context, network_read, file_read]
+      unguarded: true
       unproven:
         kind: observation
         requires:
@@ -707,10 +711,10 @@ rules:
       - '{"content": $SYS, "role": "user"}'
       - "{'content': $SYS, 'role': 'user'}"
     description: >
-      A system/instruction prompt is built by f-string-interpolating a
-      caller-supplied override value directly into the instruction text,
-      alongside other content. Whatever sets that override -- a request
-      parameter, a header, a stored setting -- fully replaces the fixed
+      A system/instruction prompt is built by f-string-interpolating a value
+      named as an override directly into the instruction text, alongside
+      other content. If that value is caller-controlled -- a request
+      parameter, a header, a stored setting -- it fully replaces the fixed
       instructions rather than being confined to a data field.
     remediation: >
       Do not let a caller-supplied value replace or prepend the system
