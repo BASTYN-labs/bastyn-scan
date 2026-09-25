@@ -303,7 +303,7 @@ const MAX_KNOWN_GAPS: usize = 15;
 /// Raising it means a rule started over-triggering on a new case that
 /// cannot currently be excluded precisely -- that needs a human decision in
 /// the PR description, not a silent bump, exactly like `MAX_KNOWN_GAPS`.
-const MAX_KNOWN_FALSE_POSITIVES: usize = 5; // TODO(merge): set from measured `cargo test` output below
+const MAX_KNOWN_FALSE_POSITIVES: usize = 5;
 // Folded in PR #25 (origin/main) on 2026-09-25, merged into release/0.1.8:
 // PR #25's provenance-tracing work fixed both of the pre-existing baseline's
 // known false positives in vulnerable/real_misses/eval_guarded_by_local_check.py
