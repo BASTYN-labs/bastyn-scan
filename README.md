@@ -326,15 +326,15 @@ jobs:
 A corpus under [`tests/corpus/`](tests/corpus/) specifies what should and should not be found, and a gate measures the engine against it on every push. Its output, verbatim, from `cargo test -p bastyn-core --test corpus_gate corpus_gate -- --nocapture`:
 
 ```
-corpus: 42/42 expected defects found        (recall on this corpus 100%)
+corpus: 41/41 expected defects found        (recall on this corpus 100%)
         28/28 expected observations found
-        42/42 defects returned are expected   (defect precision on this corpus 100%, known false positives included)
+        41/41 defects returned are expected   (defect precision on this corpus 100%, known false positives included)
         0 unaccounted findings
         13 known gaps (+8 reachable only with a network connection)
         0 known false positives (precision debt -- tracked separately from known gaps, see MAX_KNOWN_FALSE_POSITIVES)
 ```
 
-Every fixture in that corpus is one we wrote, so "42/42" is a regression alarm and not a coverage figure: the engine finds every defect and every observation *we planted*, and real-world recall is unmeasured. Defect precision's denominator is every defect the scan returned on this corpus, known false positives included, not just the ones that were expected — a false positive would show up as a defect returned but not expected, which is exactly what would pull that percentage down. A more honest single recall number folds the known gaps back in, at 42/(42+13) ≈ 76% of expected defects, excluding the 8 gaps that are unreachable only because CI runs `--offline`.
+Every fixture in that corpus is one we wrote, so "41/41" is a regression alarm and not a coverage figure: the engine finds every defect and every observation *we planted*, and real-world recall is unmeasured. Defect precision's denominator is every defect the scan returned on this corpus, known false positives included, not just the ones that were expected — a false positive would show up as a defect returned but not expected, which is exactly what would pull that percentage down. A more honest single recall number folds the known gaps back in, at 41/(41+13) ≈ 76% of expected defects, excluding the 8 gaps that are unreachable only because CI runs `--offline`.
 
 The gaps are published rather than hidden. Each one names the code shape we miss and why, in [`tests/corpus/expected.toml`](tests/corpus/expected.toml), and the count fails the build if it grows. Known false positives are ratcheted on a separate line, currently zero, because a recall gap and a precision gap are not the same problem.
 
