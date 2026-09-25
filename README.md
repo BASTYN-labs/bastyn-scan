@@ -19,7 +19,7 @@
 
 ---
 
-> **Status: alpha.** `bastyn scan` finds real issues today: 44 AST rules over Python, TypeScript and JavaScript across the OWASP GenAI and Anthropic Zero Trust categories, plus MCP manifest inspection, Dockerfile and Docker Compose inspection, a hidden-Unicode scan of agent instruction files, `SKILL.md` manifest scanning, and CVE matching against OSV. The embedded prompt-injection classifier is not built yet. See [Measured coverage](#measured-coverage) for what the test corpus does and does not prove, and [Roadmap](#roadmap) for what is missing.
+> **Status: alpha.** `bastyn scan` finds real issues today: 53 AST rules over Python, TypeScript and JavaScript across the OWASP GenAI and Anthropic Zero Trust categories, plus MCP manifest inspection, Dockerfile and Docker Compose inspection, a hidden-Unicode scan of agent instruction files, `SKILL.md` manifest scanning, and CVE matching against OSV. The embedded prompt-injection classifier is not built yet. See [Measured coverage](#measured-coverage) for what the test corpus does and does not prove, and [Roadmap](#roadmap) for what is missing.
 
 ## Why BASTYN
 
@@ -68,7 +68,7 @@ Bastyn scan: .
 Mode: online
 
 [ok] Discovered source tree
-[ok] Analysed 3 files with 44 rules
+[ok] Analysed 3 files with 53 rules
 [ok] Parsed 3 dependencies
 [ok] OSV vulnerability lookup - 3 dependencies checked
 
@@ -202,7 +202,7 @@ A CVE lookup that could not run, or that ran only partly, does not change the ex
 
 ### What it checks
 
-**44 rule ids** over the Python, TypeScript and JavaScript ASTs, via [`ast-grep`](https://ast-grep.github.io), loaded from `crates/bastyn-core/rules/*.yml`. A rule written for JavaScript is compiled against the JavaScript, TypeScript and TSX grammars alike, which is what "JS/TS" means below. Each rule's severity, description and remediation text live in those files, which are the reference this table summarises.
+**53 rule ids** over the Python, TypeScript and JavaScript ASTs, via [`ast-grep`](https://ast-grep.github.io), loaded from `crates/bastyn-core/rules/*.yml`. A rule written for JavaScript is compiled against the JavaScript, TypeScript and TSX grammars alike, which is what "JS/TS" means below. Each rule's severity, description and remediation text live in those files, which are the reference this table summarises.
 
 | Rule ids | What they match | Languages |
 | --- | --- | --- |

@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Pre-1.0, the minor version may carry breaking changes; they will always be listed here.
 
-## [Unreleased]
+## [0.1.8] - 2026-09-25
 
 ### Breaking (library API)
 
@@ -60,10 +60,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   inside a tool's docstring that a human reviewer approving the tool would never read as an
   instruction. Python only for now — no JS/TS twin ships in this change. Found via the same
   benchmark-corpus recall pass.
+- **`BAS-ZT1-021`/`-022`: a provider API key literal, and any other credential-shaped literal, in a
+  committed `.env` file.** `.env` files were always walked (the walker's own allowlist calls them
+  "exactly the material a scanner should not miss") but no analyser claimed the format, so a real key
+  committed to one produced no finding and was not even recorded as skipped. Reuses the same
+  credential-shape judgment already backing `BAS-INFRA-002`/`-006`
+  (`credential::is_provider_key_literal`, `looks_like_credential_key`,
+  `is_hardcoded_credential_value`). `.env.example`, `.env.sample`, `.env.template`, and `.env.dist`
+  are still analysed, so they count as scanned, but never flagged. Rust-native, like the
+  Dockerfile/Compose checks — no YAML rule file for either id.
 
 ### Fixed
 
 - A Compose file that is not valid YAML is listed as skipped instead of counted as scanned.
+- `BAS-LLM10-009` no longer fires on a shell command whose entire non-literal content traces to an
+  unprocessed `sys.stdin` read (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`) — the
+  OpenHands-hook / skill-runner control-channel shape, the same trust boundary as `argv` rather than
+  attacker-reachable input. A command that reaches a shell via any other non-literal path is
+  unaffected.
 
 ## [0.1.7] - 2026-09-25
 
