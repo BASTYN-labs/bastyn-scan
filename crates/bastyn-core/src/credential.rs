@@ -81,12 +81,28 @@ const PLACEHOLDER_MARKERS: &[&str] = &[
     "yourpassword",
     "insert_your",
     "insert-your",
-    "replace_with",
-    "replace-with",
+    // A general "replace ..." placeholder shape, not just the narrower
+    // "replace_with"/"replace-with" this subsumes: a bare `REPLACE_ME` or
+    // `REPLACEME` (no "with") is just as common a placeholder and was
+    // missed by the two entries below alone. Safe as a bare substring for
+    // the same reason "your" is below -- the English word "replace" inside
+    // a real high-entropy secret is astronomically unlikely.
+    "replace",
     "xxx",
     "todo",
     "fixme",
     "example.com",
+    // A general "your-...-here"/"your_..."-style placeholder shape, not just
+    // the password-specific "your_password"/"your-password"/"yourpassword"
+    // above: `sk-your-key-here`, `REPLACE_WITH_YOUR_ACTUAL_STRIPE_KEY`, and
+    // similar template text all use "your" to mean "put your own value
+    // here", regardless of which credential it is. Safe as a bare substring
+    // for the same reason this file already treats "at-least"/"minimum" as
+    // safe general fragments: the word "your" inside a real generated
+    // secret's own random characters is astronomically unlikely, unlike a
+    // broad word such as "key" or "secret" that a real secret's *name*
+    // might legitimately contain.
+    "your",
     // A value scrubbed *before* being written out (a log line, a persisted
     // copy of upstream API data) rather than a leaked secret -- the opposite
     // of what this check exists to catch. Measured 2026-08-31:
@@ -227,14 +243,33 @@ pub(crate) fn is_public_by_design_credential(value: &str) -> bool {
 /// Originally private to `infra::dockerfile` (`BAS-INFRA-002`'s check); moved
 /// here once `dotenv` (`BAS-ZT1-021`) needed the identical shape check on a
 /// second file format.
+///
+/// Unlike [`is_hardcoded_credential_value`], the shape check alone used to be
+/// the whole story here -- no [`PLACEHOLDER_MARKERS`] check at all. That let
+/// `sk-your-key-here-1234567890abcdef` and
+/// `sk-REPLACE_WITH_YOUR_ACTUAL_STRIPE_KEY` both through: 16+ characters
+/// after `sk-`, every one alphanumeric/`_`/`-`, so the shape check alone
+/// cannot tell a placeholder from a real key. Measured directly against a
+/// user report: both values produced a `BAS-ZT1-021` finding in a genuine,
+/// partially-filled-in `.env` file, not just an `.env.example`. The same
+/// placeholder check `is_hardcoded_credential_value` already runs is applied
+/// here too, so both callers (`dotenv`'s `BAS-ZT1-021`, `infra::dockerfile`'s
+/// `BAS-INFRA-002`) get it at once.
 pub(crate) fn is_provider_key_literal(value: &str) -> bool {
     let Some(rest) = value.strip_prefix("sk-") else {
         return false;
     };
-    rest.len() >= 16
-        && rest
+    if rest.len() < 16
+        || !rest
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    !PLACEHOLDER_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 /// Name fragments — matched the same way as [`CREDENTIAL_KEY_FRAGMENTS`],
@@ -439,6 +474,27 @@ mod tests {
     }
 
     #[test]
+    fn a_general_replace_or_your_shaped_placeholder_is_not_hardcoded() {
+        // Regression for the false-positive report's own named examples: a
+        // bare "REPLACE..." with no "_WITH_" in it, and a general
+        // "your-...-here"-style placeholder for a credential other than a
+        // password. Before this fix, PLACEHOLDER_MARKERS only had the
+        // password-specific "your_password"/"your-password"/"yourpassword"
+        // and the narrower "replace_with"/"replace-with", so none of these
+        // shapes were excluded.
+        for value in [
+            "REPLACE_ME",
+            "REPLACEME",
+            "replace-me",
+            "your-key-here",
+            "your_api_key",
+            "your-openai-key",
+        ] {
+            assert!(!is_hardcoded_credential_value(value), "{value}");
+        }
+    }
+
+    #[test]
     fn a_screaming_snake_case_value_reads_as_a_variable_name_not_a_secret() {
         for value in ["OPENAI_API_KEY", "DB_PASSWORD", "SECRET_KEY_2025"] {
             assert!(!is_hardcoded_credential_value(value), "{value}");
@@ -570,5 +626,30 @@ mod tests {
         for value in ["sk-tools/bin", "sk-short", "not-a-key"] {
             assert!(!is_provider_key_literal(value), "{value}");
         }
+    }
+
+    #[test]
+    fn a_provider_key_shaped_placeholder_is_not_reported() {
+        // Regression: `is_provider_key_literal` used to be shape-only (the
+        // `sk-` prefix, 16+ characters, alphanumeric/`_`/`-`), with no
+        // [`PLACEHOLDER_MARKERS`] check at all -- unlike its sibling
+        // `is_hardcoded_credential_value`. Both of these satisfy the shape
+        // check and, before this fix, were reported as leaked keys even in
+        // a genuine, non-example `.env` file or Dockerfile.
+        for value in [
+            "sk-your-key-here-1234567890",
+            "sk-REPLACE_WITH_YOUR_ACTUAL_KEY_1234567890",
+            "sk-REPLACE_ME_1234567890123456",
+            "sk-openai-your_api_key-000000",
+        ] {
+            assert!(!is_provider_key_literal(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_genuine_looking_provider_key_still_fires_after_the_placeholder_fix() {
+        // The fix above must not become so broad that it starts rejecting a
+        // real, correctly-shaped key that merely has no placeholder text.
+        assert!(is_provider_key_literal("sk-proj-Ab3xR9kLm2Qw7ZvN4tYh8sJ"));
     }
 }

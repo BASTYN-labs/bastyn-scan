@@ -431,6 +431,25 @@ why      = "A tool call that bypasses the audited call path and reaches the infr
 # scope. These two fixture directories remain in the corpus tree purely as a
 # hand-runnable reproduction of the original bug report (`cargo run
 # --release -p bastyn -- tests/corpus/vulnerable/dotenv_leak`).
+#
+# clean/dotenv_multi_segment_example/.env.local.example and
+# clean/dotenv_placeholder_value/.env are the same kind of fixture, added for
+# a later false-positive report against BAS-ZT1-021/022: (1) a per-environment
+# example file (`.env.local.example`) that a placeholder-suffix check used to
+# miss because it checked the whole remainder after ".env." rather than just
+# the final segment, and (2) a genuine, non-example `.env` holding an obvious
+# placeholder value (`sk-your-key-here-...`, `sk-REPLACE_WITH_YOUR_...`) that
+# `is_provider_key_literal` used to accept on shape alone. Both are two levels
+# below this corpus's single scan root, so the same reachability limit above
+# applies and neither carries an [[expect_none]] entry here. The real
+# regression coverage lives in crates/bastyn-core/src/dotenv.rs's own unit
+# tests (a_multi_segment_placeholder_suffix_file_is_never_flagged,
+# a_placeholder_shaped_value_in_a_genuine_env_file_is_not_flagged) and
+# crates/bastyn-core/src/credential.rs's own unit tests
+# (a_provider_key_shaped_placeholder_is_not_reported). Hand-runnable
+# reproduction: `cargo run --release -p bastyn -- scan
+# tests/corpus/clean/dotenv_multi_segment_example` /
+# `tests/corpus/clean/dotenv_placeholder_value`.
 
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/ — the four real misses measured against a
@@ -895,6 +914,10 @@ why = "DATA_DIR is a module-level literal assignment; constant_path already trac
 # crates/bastyn-core/src/dotenv.rs's own unit tests and by
 # crates/bastyn-core/src/scan.rs's dot_env_example_is_scanned_but_never_
 # flagged test, both scanning a tree with .env.example genuinely at the root.
+# clean/dotenv_multi_segment_example/.env.local.example and
+# clean/dotenv_placeholder_value/.env are the same shape of fixture, for the
+# same reason -- see the longer comment next to vulnerable/dotenv_leak/.env
+# above for what false-positive report they reproduce.
 
 # ---------------------------------------------------------------------
 # Shapes measured on a real application that the corpus did not originally

@@ -35,10 +35,12 @@
 //!
 //! # `.env.example` and friends stay analysed, never flagged
 //!
-//! `.env.example`, `.env.sample`, `.env.template`, and `.env.dist` are
-//! conventionally committed on purpose, as documentation of the variables a
-//! real `.env` must set — not a leaked secret. [`is_env_file`] still returns
-//! `true` for these, so the file is walked, opened, and counted as scanned
+//! `.env.example`, `.env.sample`, `.env.template`, `.env.dist`, and any
+//! per-environment variant ending in one of those suffixes
+//! (`.env.local.example`, `.env.production.sample`, ...) are conventionally
+//! committed on purpose, as documentation of the variables a real `.env`
+//! must set — not a leaked secret. [`is_env_file`] still returns `true` for
+//! these, so the file is walked, opened, and counted as scanned
 //! (honoring `walk.rs`'s "no silent narrowing" principle: a file this module
 //! recognises never quietly drops out of coverage), but [`inspect`]
 //! recognises the placeholder suffix and returns an empty `Vec` before
@@ -52,8 +54,11 @@ use crate::credential;
 use crate::finding::{Confidence, Finding, Kind, Location, Severity};
 
 /// Well-known non-secret suffixes on a `.env.<suffix>` file name. Matched
-/// case-insensitively against the *whole* remainder after `.env.`, so
-/// `.env.example` is excluded and `.env.production` is not.
+/// case-insensitively against only the *final* `.`-separated segment of the
+/// file name (file-extension style), so `.env.example` is excluded, as is
+/// `.env.local.example` / `.env.production.sample` / any other per-environment
+/// variant that ends in one of these — but `.env.production` (no placeholder
+/// suffix at all) is not.
 const PLACEHOLDER_SUFFIXES: &[&str] = &["example", "sample", "template", "dist"];
 
 /// True if this path is a `.env` file — the bare name, or any `.env.<suffix>`
@@ -78,17 +83,29 @@ pub(crate) fn is_env_file(path: &Path) -> bool {
     name == ".env" || name.starts_with(".env.")
 }
 
-/// The well-known placeholder suffix on a `.env.<suffix>` file name, if any.
+/// True if this `.env.<...>` file name ends in a well-known placeholder
+/// suffix.
+///
+/// The check is on the file name's *final* `.`-separated segment only, the
+/// same way a file extension is checked — not on the whole remainder after
+/// `.env.` — so a per-environment example file such as `.env.local.example`
+/// or `.env.production.sample` (an extremely common convention: a real
+/// project keeps per-environment example files alongside its per-environment
+/// real ones) is still recognised as a placeholder. Before this, only a
+/// remainder that was *exactly* one of [`PLACEHOLDER_SUFFIXES`] matched, so
+/// `.env.local.example` (remainder `"local.example"`) fell through and was
+/// scanned as a genuine `.env` file — the false-positive this function
+/// exists to prevent.
 fn placeholder_suffix(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let Some(remainder) = name.strip_prefix(".env.") else {
+    let Some(final_segment) = name.rsplit('.').next() else {
         return false;
     };
     PLACEHOLDER_SUFFIXES
         .iter()
-        .any(|suffix| remainder.eq_ignore_ascii_case(suffix))
+        .any(|suffix| final_segment.eq_ignore_ascii_case(suffix))
 }
 
 /// One `KEY=value` line parsed out of a `.env` file.
@@ -401,6 +418,49 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_segment_placeholder_suffix_file_is_never_flagged() {
+        // Regression for the false-positive report: `placeholder_suffix` used
+        // to require the ENTIRE remainder after ".env." to equal exactly
+        // "example"/"sample"/"template"/"dist", so a per-environment example
+        // file such as ".env.local.example" (remainder "local.example")
+        // fell through the old check and was scanned as a genuine .env file.
+        // The fix checks only the final `.`-separated segment, so any number
+        // of environment segments before the placeholder suffix must still
+        // be recognised.
+        for name in [
+            ".env.local.example",
+            ".env.development.sample",
+            ".env.production.template",
+            ".env.staging.dist",
+            ".env.LOCAL.EXAMPLE",
+        ] {
+            let contents = "OPENAI_API_KEY=sk-your-key-here-1234567890abcdef\nSTRIPE_SECRET_KEY=sk-REPLACE_WITH_YOUR_ACTUAL_STRIPE_KEY\nDB_PASSWORD=hunter2million\n";
+            assert!(
+                rules(name, contents).is_empty(),
+                "{name} should stay silent"
+            );
+        }
+    }
+
+    #[test]
+    fn a_multi_segment_non_placeholder_env_variant_is_still_checked() {
+        // The counterpart to the fix above: a genuine per-environment .env
+        // file with no placeholder suffix at all -- e.g. ".env.local" or
+        // ".env.production" -- must still be fully checked for real
+        // credentials. The final-segment check must not become so loose
+        // that it starts treating every multi-segment name as a
+        // placeholder.
+        for name in [".env.local", ".env.production", ".env.staging"] {
+            let contents = "DB_PASSWORD=hunter2million\n";
+            assert_eq!(
+                rules(name, contents),
+                ["BAS-ZT1-022"],
+                "{name} should still be checked"
+            );
+        }
+    }
+
+    #[test]
     fn an_empty_file_produces_nothing() {
         assert!(rules(".env", "").is_empty());
     }
@@ -440,5 +500,33 @@ mod tests {
         assert_eq!(findings.len(), 1, "{findings:#?}");
         assert_eq!(findings[0].rule_id, "BAS-ZT1-022");
         assert_eq!(findings[0].snippet, "SECRET=abc #123");
+    }
+
+    #[test]
+    fn a_placeholder_shaped_value_in_a_genuine_env_file_is_not_flagged() {
+        // Regression for the second bug in the same report: unlike
+        // `placeholder_suffix`, `is_provider_key_literal` used to have no
+        // placeholder-content check at all -- only the `sk-` shape and
+        // length. A real, non-suffixed `.env` file that a developer only
+        // partially filled in after cloning a template (a very common real
+        // scenario, not just an `.env.example` problem) must stay silent for
+        // an obviously-placeholder value.
+        let contents = "OPENAI_API_KEY=sk-your-key-here-1234567890abcdef\nSTRIPE_SECRET_KEY=sk-REPLACE_WITH_YOUR_ACTUAL_STRIPE_KEY\n";
+
+        assert!(
+            rules(".env", contents).is_empty(),
+            "{:#?}",
+            inspect(Path::new(".env"), contents)
+        );
+    }
+
+    #[test]
+    fn a_real_looking_provider_key_in_a_genuine_env_file_still_fires() {
+        // The fix above must not become so broad that it silences a genuine
+        // leak: a real-shaped key with no placeholder text must still
+        // produce a finding, in a plain (non-suffixed) `.env` file.
+        let contents = "OPENAI_API_KEY=sk-proj-Ab3xR9kLm2Qw7ZvN4tYh8sJ1234567890\n";
+
+        assert_eq!(rules(".env", contents), ["BAS-ZT1-021"]);
     }
 }
