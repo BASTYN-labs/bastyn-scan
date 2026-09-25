@@ -1447,8 +1447,15 @@ author or select pipeline templates.
 
 ## ZT1 Identity and Credentials
 
-Bastyn ships `BAS-ZT1-001`, `-002`, `-003` here today. The entries below
-add the MCP-specific OAuth/token-handling failures the spec itself now
+Bastyn ships `BAS-ZT1-001`, `-002`, `-003` here today, plus `BAS-ZT1-021`/
+`-022` (a provider API key literal, and any other credential-shaped
+literal, in a committed `.env` file). The last two are Rust-native, like
+the Dockerfile/Compose checks in `crate::infra` — the match logic is
+`credential::is_provider_key_literal`/`looks_like_credential_key`/
+`is_hardcoded_credential_value`, not an `ast-grep` pattern, so there is no
+YAML rule file for either; see `crates/bastyn-core/src/dotenv.rs`'s own
+module doc comment for the full rule table. The entries below add the
+MCP-specific OAuth/token-handling failures the spec itself now
 documents in detail, plus the "is this endpoint authenticated at all"
 question that current rules don't touch.
 

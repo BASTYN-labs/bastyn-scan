@@ -228,6 +228,28 @@ pub(crate) fn is_public_by_design_credential(value: &str) -> bool {
         .any(|prefix| value.starts_with(prefix))
 }
 
+/// True if `value` has the shape of a provider API key.
+///
+/// This is `BAS-ZT1-003`'s `^sk-[A-Za-z0-9_-]{16,}$` written out, not a second
+/// opinion about what a secret looks like: the same shape decides in a
+/// Dockerfile, in a `.env` file, or in TypeScript source, so one config
+/// cannot be a credential in one file and a harmless string in another.
+/// Anchored at both ends, which is what keeps `sk-tools/bin` — a path that
+/// merely starts the same way — out.
+///
+/// Originally private to `infra::dockerfile` (`BAS-INFRA-002`'s check); moved
+/// here once `dotenv` (`BAS-ZT1-021`) needed the identical shape check on a
+/// second file format.
+pub(crate) fn is_provider_key_literal(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("sk-") else {
+        return false;
+    };
+    rest.len() >= 16
+        && rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
 /// Name fragments — matched the same way as [`CREDENTIAL_KEY_FRAGMENTS`],
 /// after stripping `_`/`-` and upper-casing — that identify a cloud-provider
 /// or platform access credential by name alone, regardless of what the
@@ -529,5 +551,22 @@ mod tests {
             credential_severity("API_TOKEN", "Sup3rWeakPass!"),
             crate::finding::Severity::High
         );
+    }
+
+    #[test]
+    fn a_provider_key_literal_is_recognised_by_shape() {
+        for value in [
+            "sk-proj-9f2b7d41c6a8e35019bd",
+            "sk-proj-7f3a9c1eAbCdEfGh1234",
+        ] {
+            assert!(is_provider_key_literal(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_value_that_merely_starts_with_sk_dash_is_not_a_provider_key() {
+        for value in ["sk-tools/bin", "sk-short", "not-a-key"] {
+            assert!(!is_provider_key_literal(value), "{value}");
+        }
     }
 }

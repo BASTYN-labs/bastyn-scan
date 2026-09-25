@@ -303,7 +303,7 @@ fn check_key_literals(instructions: &[Instruction], relative_path: &Path) -> Vec
         .flat_map(|instruction| {
             assignments(&instruction.arguments)
                 .into_iter()
-                .filter(|(_, value)| is_provider_key_literal(value))
+                .filter(|(_, value)| credential::is_provider_key_literal(value))
                 .map(move |(name, value)| Finding {
                     rule_id: "BAS-INFRA-002".to_owned(),
                     title: "Provider API key baked into the container image".to_owned(),
@@ -337,10 +337,10 @@ fn check_key_literals(instructions: &[Instruction], relative_path: &Path) -> Vec
 /// The generic sibling of `BAS-INFRA-002`: that rule owns the narrow `sk-`
 /// provider-key shape, this one owns everything else credential-named —
 /// database passwords, service tokens, generic API secrets. A value already
-/// caught by [`is_provider_key_literal`] is excluded here so the two rules
-/// never double-report the same literal. See [`credential`] for the shared
-/// name/value judgment the Compose `environment:` check under the same rule
-/// id reuses.
+/// caught by [`credential::is_provider_key_literal`] is excluded here so the
+/// two rules never double-report the same literal. See [`credential`] for the
+/// shared name/value judgment the Compose `environment:` check under the same
+/// rule id reuses.
 fn check_credential_literals(instructions: &[Instruction], relative_path: &Path) -> Vec<Finding> {
     instructions
         .iter()
@@ -349,7 +349,7 @@ fn check_credential_literals(instructions: &[Instruction], relative_path: &Path)
             assignments(&instruction.arguments)
                 .into_iter()
                 .filter(|(name, value)| {
-                    !is_provider_key_literal(value)
+                    !credential::is_provider_key_literal(value)
                         && credential::looks_like_credential_key(name)
                         && credential::is_hardcoded_credential_value(value)
                 })
@@ -450,23 +450,6 @@ fn unquote(value: &str) -> &str {
         }
     }
     trimmed
-}
-
-/// True if `value` has the shape of a provider API key.
-///
-/// This is `BAS-ZT1-003`'s `^sk-[A-Za-z0-9_-]{16,}$` written out, not a second
-/// opinion about what a secret looks like: the same shape decides in a
-/// Dockerfile as in TypeScript source, so one config cannot be a credential in
-/// one file and a harmless string in another. Anchored at both ends, which is
-/// what keeps `sk-tools/bin` — a path that merely starts the same way — out.
-fn is_provider_key_literal(value: &str) -> bool {
-    let Some(rest) = value.strip_prefix("sk-") else {
-        return false;
-    };
-    rest.len() >= 16
-        && rest
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
 fn location(relative_path: &Path, line: usize) -> Location {

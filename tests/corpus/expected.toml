@@ -407,6 +407,31 @@ line     = 22
 category = "ZT6"
 why      = "A tool call that bypasses the audited call path and reaches the infra client directly, leaving no record of which ticket or session triggered it. Needs cross-referencing two call sites; no rule expresses that."
 
+# vulnerable/dotenv_leak/.env and clean/dotenv_example/.env.example exist as
+# fixtures (see README.md-style live-reproduction commands in the dotenv
+# analyser's own PR/task notes) but carry no [[expect]]/[[expect_none]] entry
+# here, deliberately: walk.rs's own doc comment scopes the .env/.env.*
+# always-walk allowlist to "the scan root" -- collect_files's allowlist pass
+# only looks one level below whatever root it is handed. This corpus's own
+# gate (see this file's header comment and corpus_gate.rs's module doc)
+# scans `tests/corpus` exactly once, as a single root, so a .env file nested
+# two levels below it (vulnerable/dotenv_leak/.env) is not a hidden dotfile
+# at *that* scan's root and is therefore never walked in this gate at all --
+# not found, not skipped, invisible -- regardless of whether dotenv.rs
+# detects it correctly. Confirmed directly: scanning tests/corpus as a whole
+# produces zero findings and zero skipped entries mentioning either fixture.
+# This is a reachability limit of running one shared corpus scan over many
+# independent fixture directories, not a detection gap in BAS-ZT1-021/022,
+# so recording it as [[known_gap]] would misattribute a harness limitation
+# as a rule weakness. The actual regression coverage for "is .env wired into
+# scan()" lives in crates/bastyn-core/src/scan.rs's own test module
+# (dot_env_credentials_are_analysed_by_the_scan and its .env.example sibling)
+# and crates/bastyn-core/src/dotenv.rs's own unit tests, both of which scan a
+# tree with .env genuinely at its root, matching walk.rs's real allowlist
+# scope. These two fixture directories remain in the corpus tree purely as a
+# hand-runnable reproduction of the original bug report (`cargo run
+# --release -p bastyn -- tests/corpus/vulnerable/dotenv_leak`).
+
 # ---------------------------------------------------------------------
 # vulnerable/real_misses/ — the four real misses measured against a
 # production agentic app (see README.md for the measurement).
@@ -861,6 +886,15 @@ why = "command traces to an unprocessed sys.stdin read (json.load(sys.stdin)) --
 [[expect_none]]
 file = "clean/module_constant_path_join.py"
 why = "DATA_DIR is a module-level literal assignment; constant_path already traces a Name node through a module-scope binding to its own literal via the existing lookup/decide mechanism in flow/graph.rs, so this case is correctly excluded without any code change. Added as a regression-locking fixture."
+
+# clean/dotenv_example/.env.example carries no [[expect_none]] entry here for
+# the same reachability reason documented next to vulnerable/dotenv_leak/.env
+# above: it is nested two levels below this gate's single tests/corpus scan
+# root, past walk.rs's root-only .env allowlist, so this gate never walks it
+# either way. Its placeholder-suffix silence is covered by
+# crates/bastyn-core/src/dotenv.rs's own unit tests and by
+# crates/bastyn-core/src/scan.rs's dot_env_example_is_scanned_but_never_
+# flagged test, both scanning a tree with .env.example genuinely at the root.
 
 # ---------------------------------------------------------------------
 # Shapes measured on a real application that the corpus did not originally
