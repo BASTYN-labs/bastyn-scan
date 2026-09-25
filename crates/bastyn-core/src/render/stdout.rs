@@ -373,9 +373,11 @@ impl Section {
 /// missing-defenses section to controls that are genuinely absent rather than
 /// ones already accounted for above.
 ///
-/// `categories` is never empty — rule loading rejects a rule without one — but
-/// if that ever changed, an unfiled finding must still be printed rather than
-/// silently dropped, so it falls through to cross-layer.
+/// `categories` is usually non-empty — YAML rule loading rejects a rule
+/// without one — but a hand-written Rust check can leave it empty (for
+/// example `BAS-SKILL-001`, a spec-validity observation that carries no
+/// security category). Such an unfiled finding must still be printed rather
+/// than silently dropped, so it falls through to cross-layer.
 fn section_of(finding: &Finding) -> Section {
     finding
         .categories
@@ -491,23 +493,31 @@ fn write_finding_head(out: &mut String, finding: &Finding, code: &str, options: 
     write_wrapped(out, &location, &indent, None, options);
 }
 
-/// `"Confidence: high · Categories: LLM01, ZT4"`.
+/// `"Confidence: high · Categories: LLM01, ZT4"`, or just `"Confidence: high"`
+/// for a hand-written Rust check that carries no category at all (for
+/// example `BAS-SKILL-001`, a spec-validity observation) -- an empty list
+/// still deserves a line, just not a dangling `· Categories:` with nothing
+/// after it.
 fn write_attribution(out: &mut String, finding: &Finding, options: StdoutOptions) {
     let categories: Vec<&str> = finding
         .categories
         .iter()
         .map(|category| category.id())
         .collect();
-    let label = if categories.len() == 1 {
-        "Category"
+    let confidence = format!("Confidence: {}", confidence_label(finding.confidence));
+    let line = if categories.is_empty() {
+        options.glyphs.text(&confidence)
     } else {
-        "Categories"
+        let label = if categories.len() == 1 {
+            "Category"
+        } else {
+            "Categories"
+        };
+        options.glyphs.text(&format!(
+            "{confidence} \u{b7} {label}: {}",
+            categories.join(", ")
+        ))
     };
-    let line = options.glyphs.text(&format!(
-        "Confidence: {} \u{b7} {label}: {}",
-        confidence_label(finding.confidence),
-        categories.join(", ")
-    ));
     write_wrapped(out, &line, "", Some(ansi::DIM), options);
 }
 
@@ -1731,6 +1741,38 @@ mod tests {
                 && cross_filed < position(&text, "MISSING DEFENSES"),
             "BAS-LLM10-001 belongs under cross-layer:\n{text}"
         );
+    }
+
+    /// A hand-written Rust check (e.g. `BAS-SKILL-001`) can leave `categories`
+    /// empty rather than claiming a security category it does not have. The
+    /// attribution line must not print a dangling `· Categories:` with
+    /// nothing after it, and the finding must still be printed -- filed under
+    /// cross-layer, the same fallback an unfiled finding of any kind gets.
+    #[test]
+    fn empty_categories_omits_the_label_and_falls_through_to_cross_layer() {
+        let mut report = empty_report();
+        let mut uncategorised = defect();
+        uncategorised.rule_id = "BAS-SKILL-001".to_string();
+        uncategorised.title = "SKILL.md frontmatter is not spec-valid".to_string();
+        uncategorised.categories = Vec::new();
+        report.findings.push(uncategorised);
+        report.summary.defects = 1;
+
+        let text = summarised(&report, false);
+
+        assert!(
+            !text.contains("Categories:") && !text.contains("Category:"),
+            "an empty category list must not print a dangling label:\n{text}"
+        );
+        assert!(
+            text.contains("Confidence: high"),
+            "confidence must still be printed on its own:\n{text}"
+        );
+        assert!(
+            text.contains("CROSS-LAYER"),
+            "an uncategorised finding belongs under cross-layer:\n{text}"
+        );
+        assert!(text.contains("BAS-SKILL-001"), "got:\n{text}");
     }
 
     #[test]
