@@ -489,12 +489,21 @@ fn query_osv(deps: &[Dependency], transport: &dyn OsvTransport) -> Result<QueryO
 
     let mut id_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
     let mut pending: Vec<(usize, String)> = Vec::new();
+    // Dependencies OSV.dev never sent a result for at all -- a short
+    // `results` array on the initial batch or on a pagination page is not a
+    // promise that those dependencies have no advisories, so they are
+    // tracked separately from `pending` (which is for a *page token* still
+    // outstanding) and folded into `incomplete` below either way.
+    let mut missing: BTreeSet<usize> = BTreeSet::new();
 
     for (i, result) in response.results.iter().enumerate() {
         if i >= deps.len() {
             break;
         }
         record_result(result, i, &mut id_to_indices, &mut pending);
+    }
+    if response.results.len() < deps.len() {
+        missing.extend(response.results.len()..deps.len());
     }
 
     let mut round = 0;
@@ -535,10 +544,13 @@ fn query_osv(deps: &[Dependency], transport: &dyn OsvTransport) -> Result<QueryO
             let (i, _) = pending[j];
             record_result(result, i, &mut id_to_indices, &mut next_pending);
         }
+        if page.results.len() < pending.len() {
+            missing.extend(pending[page.results.len()..].iter().map(|(i, _)| *i));
+        }
         pending = next_pending;
     }
 
-    let incomplete: BTreeSet<usize> = pending.iter().map(|(i, _)| *i).collect();
+    let incomplete: BTreeSet<usize> = pending.iter().map(|(i, _)| *i).chain(missing).collect();
     Ok((id_to_indices, incomplete))
 }
 
@@ -1157,6 +1169,53 @@ mod tests {
         // One initial call, then MAX_PAGINATION_ROUNDS more before the round
         // cap stops the loop.
         assert_eq!(*transport.calls.borrow(), 1 + MAX_PAGINATION_ROUNDS);
+    }
+
+    /// The initial batch response can come back with fewer entries than
+    /// queries were sent -- OSV.dev is not contractually bound to return one
+    /// result per query, and a response that silently drops the tail must
+    /// not read as "the missing dependencies have no advisories".
+    #[test]
+    fn an_initial_batch_shorter_than_the_queries_is_partial() {
+        let deps = vec![
+            dependency("requests", "2.19.1"),
+            dependency("urllib3", "1.26.14"),
+        ];
+        let transport = FakeTransport::new()
+            .with_post_response(Ok(r#"{"results":[{"vulns":[]}]}"#.to_string()));
+        let (findings, status) = check_with_transport(&deps, false, &transport);
+        assert!(findings.is_empty());
+        assert_eq!(
+            status,
+            CveStatus::Partial {
+                dependencies: 2,
+                incomplete: 1
+            }
+        );
+    }
+
+    /// The same gap, one pagination round in: a page can come back shorter
+    /// than the queries that were still pending.
+    #[test]
+    fn a_pagination_page_shorter_than_the_pending_queries_is_partial() {
+        let deps = vec![
+            dependency("requests", "2.19.1"),
+            dependency("urllib3", "1.26.14"),
+        ];
+        let transport = FakeTransport::new()
+            .with_post_response(Ok(
+                r#"{"results":[{"vulns":[],"next_page_token":"more"},{"vulns":[],"next_page_token":"more"}]}"#.to_string(),
+            ))
+            .with_post_response(Ok(r#"{"results":[{"vulns":[]}]}"#.to_string()));
+        let (findings, status) = check_with_transport(&deps, false, &transport);
+        assert!(findings.is_empty());
+        assert_eq!(
+            status,
+            CveStatus::Partial {
+                dependencies: 2,
+                incomplete: 1
+            }
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ use crate::finding::{Confidence, Finding, Kind, Severity};
 use crate::report::{CveStatus, Report};
 
 use super::error::Result;
+use super::stdout::plural;
 
 const SCHEMA: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
@@ -228,7 +229,8 @@ fn build_invocations(report: &Report) -> Vec<Invocation> {
             dependencies,
             incomplete,
         } => format!(
-            "OSV vulnerability lookup incomplete: {dependencies} dependencies checked, results may be missing for {incomplete}."
+            "OSV vulnerability lookup incomplete: {} checked, results may be missing for {incomplete}.",
+            plural(*dependencies, "dependency", "dependencies")
         ),
         CveStatus::Unreachable { reason } => {
             format!("OSV vulnerability lookup skipped: {reason}.")
@@ -1048,6 +1050,22 @@ mod tests {
             value["runs"][0]["invocations"][0]["executionSuccessful"],
             true
         );
+    }
+
+    /// A single checked dependency reads as singular, not `"1 dependencies"`.
+    #[test]
+    fn a_partial_cve_lookup_with_one_dependency_is_singular() {
+        let value = parse(&report_with(CveStatus::Partial {
+            dependencies: 1,
+            incomplete: 2,
+        }));
+        let text =
+            value["runs"][0]["invocations"][0]["toolExecutionNotifications"][0]["message"]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        assert!(text.contains("1 dependency checked"), "{text}");
+        assert!(!text.contains("1 dependencies"), "{text}");
     }
 
     #[test]

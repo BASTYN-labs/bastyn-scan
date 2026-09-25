@@ -1289,7 +1289,11 @@ fn ellipsise(text: &str, width: usize, glyphs: Glyphs) -> String {
 ///
 /// Worth the eight lines: a security tool that prints "1 files" invites the
 /// reader to wonder what else it did not check.
-fn plural(count: usize, one: &str, many: &str) -> String {
+///
+/// `pub(super)` rather than private: `render::sarif`'s own CVE-incomplete
+/// notification counts dependencies the same way and reuses this rather than
+/// growing a second copy.
+pub(super) fn plural(count: usize, one: &str, many: &str) -> String {
     if count == 1 {
         format!("{count} {one}")
     } else {
