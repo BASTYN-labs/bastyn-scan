@@ -409,6 +409,21 @@ fn a_sourceless_flow_clause_still_drops_a_call_through_a_shadowed_builtin() {
     assert!(!fires(&ruleset, source));
 }
 
+/// `is_closed` still runs before the sourceless shortcut: a value built only
+/// from literals this file fixes is dropped the same as it would be with a
+/// `source:` list, not proven just because there is no provenance question
+/// left to ask. Only indirectly covered elsewhere by the
+/// `eval_guarded_by_local_check.py` corpus fixture; this pins it directly at
+/// the engine level.
+#[test]
+fn a_sourceless_flow_clause_still_drops_a_closed_value() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    assert!(!fires(
+        &ruleset,
+        "def handle():\n    x = \"a\" + \"b\"\n    eval(x)\n"
+    ));
+}
+
 /// `unproven:` only means something when there is a `source:` list for a
 /// value's origin to fail against -- with none, every non-closed, non-guarded
 /// value is already `Proven`, so the combination is a meaningless
@@ -437,6 +452,36 @@ rules:
     let error = RuleSet::from_yaml(yaml).unwrap_err();
     assert!(
         matches!(error, RuleError::UnprovenWithoutSource { .. }),
+        "{error:?}"
+    );
+}
+
+/// `flow.sink` with no `flow.source` would let the wrapper-sink pass report
+/// every call to a local wrapper whose argument is merely not closed and not
+/// guarded -- a materially broader, currently untested reach no shipped rule
+/// asks for. Rejected at load time rather than shipped silently.
+#[test]
+fn sink_without_source_fails_to_load() {
+    let yaml = r"
+rules:
+  - id: BAS-FLOW-032
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      sink: code_execution
+    description: eval() runs a non-literal argument.
+    remediation: Do not.
+";
+    let error = RuleSet::from_yaml(yaml).unwrap_err();
+    assert!(
+        matches!(error, RuleError::FlowSinkWithoutSource { .. }),
         "{error:?}"
     );
 }

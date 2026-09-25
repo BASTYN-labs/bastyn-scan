@@ -476,7 +476,7 @@ why      = "exec(manifest[\"setup_code\"], namespace) -- an explicit globals dic
 
 [[expect]]
 file     = "vulnerable/real_misses/eval_on_untraceable_parameter.py"
-line     = 32
+line     = 35
 rule     = "BAS-LLM10-004"
 category = "LLM10"
 kind     = "defect"

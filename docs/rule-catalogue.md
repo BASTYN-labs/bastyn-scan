@@ -59,13 +59,18 @@ rows that still decide purely by name catch 2.4% (2 of 82). Those ten gates
 `crates/bastyn-core/rules/bastyn.yml`) still decide purely by name and
 mostly score 0%. `BAS-LLM10-001` to `-004` and `BAS-ZT4-001`/`-002` have
 since moved off name gating and onto the dataflow graph in
-`crates/bastyn-core/src/flow/` instead, asking where a value actually came
-from rather than what it is called. Of those, only the four rows the
-brittleness gate actually measures — `BAS-LLM10-001`'s, `-002`'s and
-`-003`'s `ARG` gates, and `BAS-ZT4-001`'s `VAR` gate — are confirmed at
-100%; `BAS-LLM10-004` (which never had a naming gate to test in the first
-place) and `BAS-ZT4-002` are not in that measurement. That graph is
-Python-only, single-file, and has no TypeScript/JavaScript equivalent yet.
+`crates/bastyn-core/src/flow/` instead. `BAS-LLM10-001` to `-003` and
+`BAS-ZT4-001`/`-002` ask where a value actually came from; `BAS-LLM10-004`
+(since 2026-09-25) still uses the same graph for its closed-value and guard
+checks, but no longer asks where the value came from at all -- it reports
+unconditionally on any non-literal, non-closed, non-guarded argument, the
+same composition-is-the-defect philosophy `BAS-LLM10-009`/`-017`/`-018` use.
+Of those, only the four rows the brittleness gate actually measures —
+`BAS-LLM10-001`'s, `-002`'s and `-003`'s `ARG` gates, and `BAS-ZT4-001`'s
+`VAR` gate — are confirmed at 100%; `BAS-LLM10-004` (which never had a
+naming gate to test in the first place) and `BAS-ZT4-002` are not in that
+measurement. That graph is Python-only, single-file, and has no
+TypeScript/JavaScript equivalent yet.
 Any catalogue entry below that can only work by matching a name rather than
 tracing where a value actually came from is marked `dataflow`, not
 `structural`, even where an argument could be read as "this is basically the

@@ -219,12 +219,36 @@ pub enum RuleError {
     /// value's origin to fail against. With no `source:`, the flow clause
     /// treats every value that clears the closed/guard checks as `Proven`
     /// outright -- there is no untraceable path left for `unproven:` to
-    /// redirect, so the combination is a load error rather than a clause
-    /// that silently never fires.
+    /// redirect, so the combination is a load error rather than a field that
+    /// silently has no effect.
     #[error(
-        "rule `{id}`: `flow.unproven` has no effect without `flow.source`; drop one or the other"
+        "rule `{id}`: `flow.unproven` has no effect without `flow.source`; add a `flow.source` \
+         list or remove `flow.unproven`"
     )]
     UnprovenWithoutSource {
+        /// The offending rule's id.
+        id: String,
+    },
+
+    /// A rule declared `flow.sink` with no `flow.source` at all.
+    ///
+    /// The wrapper-sink pass `flow.sink` turns on reports every call to a
+    /// local function forwarding the captured value into a sink of that
+    /// kind, wherever the flow clause's own verdict is `Proven` for that
+    /// value. With a `source:` list, that is bounded to
+    /// values traced to one of the listed kinds. With no `source:` at all,
+    /// it would be every value that is merely not closed and (with
+    /// `unguarded: true`) not guarded -- a materially broader, currently
+    /// unexercised reach no shipped rule asks for. Rejected here rather than
+    /// shipped as an untested, unbounded capability; lifting this
+    /// restriction later is a deliberate choice for whoever needs it, not a
+    /// silent default.
+    #[error(
+        "rule `{id}`: `flow.sink` requires `flow.source`; a sourceless `flow.sink` would report \
+         every wrapper call whose argument is merely not closed and not guarded, which no rule \
+         exercises today"
+    )]
+    FlowSinkWithoutSource {
         /// The offending rule's id.
         id: String,
     },

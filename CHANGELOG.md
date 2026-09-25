@@ -23,16 +23,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   or SQL is now found under any variable name when the file itself shows the value came from a model
   call.
 - **`BAS-LLM10-004` (`eval()`/`exec()` on a non-literal argument) no longer gates on provenance at
-  all.** It previously asked the flow graph where the argument came from, same as the rules above:
-  traced to a catalogued source it was a defect, traced to nowhere it was a hidden observation (behind
-  `flow.unproven`, out of the default report), traced to some other real source it was dropped
-  entirely. That third-strength gate was hiding real findings for little precision gained — legitimate
-  `eval()`/`exec()` on a non-literal value is rare — so it is now reported as a defect unconditionally,
+  all.** It previously asked the flow graph where the argument came from, same as the rules above,
+  with a `source:` list that already named every `SourceKind` this engine knows: traced to one of
+  them it was a defect, traced to nowhere (an untraceable origin, such as a bare function parameter)
+  it was a hidden, low-confidence observation behind `flow.unproven`, out of the default report. That
+  gate was hiding real findings for little precision gained — legitimate `eval()`/`exec()` on a
+  non-literal value is rare — so an untraceable origin is now reported as a defect unconditionally,
   the same composition-is-the-defect philosophy `BAS-LLM10-009`/`-017`/`-018` already use. A value the
   flow graph proves is built only from literals this file fixes, or one a guard already dominates, is
   still not reported, and a call through a locally rebound `eval`/`exec` name is still not the builtin
-  — only the provenance requirement is gone. This can surface a call previously invisible without
-  `--show-observations`, or previously silent altogether, as a defect that affects a scan's exit code.
+  — only the provenance requirement is gone. This can surface a call previously visible only with
+  `--show-observations` as a defect that affects a scan's exit code.
 - **The provenance-based downgrade above does not apply to `BAS-LLM10-004`, `-009`, `-017`, or
   `-018`.** These rules report a defect unconditionally on the composition they match — `eval()`/
   `exec()` on a non-literal argument, a non-literal command reaching a shell, or an unparameterized
@@ -58,9 +59,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Rule schema: `flow.source` is now optional. A `flow:` clause that omits it does not gate on
   provenance at all — it matches any value that is not built only from literals this file fixes and
   (with `flow.unguarded`) not already dominated by a guard, whatever produced it. `flow.unproven` has
-  no effect without `flow.source` and fails to load if both are present, since there is no untraceable
-  path left for it to redirect once every non-closed, non-guarded value is already proven. This is what
-  `BAS-LLM10-004` now uses; see the `Changed` entry above.
+  no effect once every non-closed, non-guarded value is already proven, so a rule fails to load if it
+  declares `flow.unproven` while `flow.source` is omitted. `flow.sink` is rejected the same way when
+  `flow.source` is omitted, since a sourceless wrapper-forwarding search is a materially broader,
+  currently untested reach no shipped rule asks for. This is what `BAS-LLM10-004` now uses; see the
+  `Changed` entry above.
 - **`BAS-LLM10-009`: non-literal command run through a shell, regardless of any allowlist/denylist
   check.** Flags a `subprocess`/`os.system`/`os.popen` shell call fed a non-literal command even when
   the surrounding code has an allowlist or denylist gate, since neither actually prevents the shell

@@ -189,6 +189,11 @@ pub(crate) struct RuleDef {
 /// fail: with no `source:`, every value that is not closed or guarded is
 /// already `Proven`, so pairing `unproven:` with an omitted `source:` is a
 /// load error (see [`super::error::RuleError::UnprovenWithoutSource`]).
+/// `sink:` is likewise rejected with no `source:` (see
+/// [`super::error::RuleError::FlowSinkWithoutSource`]): the wrapper-sink
+/// pass it enables would otherwise reach every wrapper call whose argument
+/// is merely not closed and not guarded, a materially broader and currently
+/// untested combination no shipped rule needs.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FlowDef {

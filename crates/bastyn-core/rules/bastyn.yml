@@ -1121,22 +1121,27 @@ rules:
     # unconditional-composition philosophy BAS-LLM10-009/-017/-018 already
     # use. Legitimate eval()/exec() on a variable (as opposed to a fixed
     # literal) is rare enough that catalogued-source provenance was buying
-    # little precision while actively hiding real findings: three real
+    # little precision while actively hiding real findings. Before this
+    # change, `source:` already listed all six SourceKind variants with no
+    # `requires` filter, so an untraced value was never actually dropped --
+    # it was already reported, just as a hidden, low-confidence observation
+    # behind `unproven:` and `--show-observations`, not as a defect. Two real
     # eval()/exec() calls on an untraceable value (a function parameter, or a
-    # value one hop from one) used to be dropped or, at best, buried as a
-    # hidden observation behind `unproven:` and `--show-observations`, purely
-    # because the engine could not name which catalogued source produced the
-    # value -- not because the call was any safer. A value closed over names
-    # this program fixes (class_name = self.__class__.__name__) and one
-    # already limited by a `not in (...)` check against literals are still
-    # dropped by the flow graph's closed/guard checks, and `builtin_callee`
-    # still drops a call through a name this file rebinds itself (a local
-    # `def eval`) -- those are the protections worth keeping; provenance was
-    # not. See tests/corpus/vulnerable/real_misses/eval_guarded_by_local_check.py
-    # for the guard/closed cases that still do not fire, and
+    # value one hop from one) used to be buried that way purely because the
+    # engine could not name which catalogued source produced the value -- not
+    # because the call was any safer. A value closed over names this program
+    # fixes (class_name = self.__class__.__name__) and one already limited by
+    # a `not in (...)` check against literals are still dropped by the flow
+    # graph's closed/guard checks, and `builtin_callee` still drops a call
+    # through a name this file rebinds itself (a local `def eval`) -- those
+    # are the protections worth keeping; provenance was not. See
+    # tests/corpus/vulnerable/real_misses/eval_guarded_by_local_check.py for
+    # the guard/closed cases that still do not fire, and
     # tests/corpus/vulnerable/real_misses/eval_compile_rce.py and
-    # exec_with_globals_dict.py for the untraceable-origin calls that now
-    # correctly report as defects instead of hidden observations.
+    # exec_with_globals_dict.py for the two untraceable-origin calls that now
+    # correctly report as defects instead of hidden observations (a third
+    # fixture, eval_on_untraceable_parameter.py, was added for this change
+    # and never had prior behavior of its own).
     flow:
       variable: ARG
       unguarded: true
@@ -1149,7 +1154,8 @@ rules:
       reported unconditionally, the same way a non-literal command reaching a
       shell (BAS-LLM10-009) is: a check the flow graph can prove closes over
       fixed literals, or a guard that already dominates the call, still drops
-      the match, but an untraceable origin no longer does.
+      the match, but an untraceable origin is now a full defect rather than a
+      hidden, low-confidence observation.
     remediation: >
       Never run eval()/exec() on anything other than a fixed literal. If the
       agent needs to run model-suggested logic, parse it into a constrained,

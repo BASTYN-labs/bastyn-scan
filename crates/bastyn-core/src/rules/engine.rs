@@ -229,11 +229,17 @@ impl CompiledUnproven {
 
 /// A rule's `flow:` clause, validated at load time.
 ///
-/// The provenance gate. Everything above it in [`CompiledRule`] decides
-/// whether a piece of code has the *shape* of a defect; this decides whether
-/// the value flowing through that shape actually came from somewhere
-/// untrusted. See [`crate::flow`] for why that distinction is the whole point
-/// of this tier.
+/// Everything above it in [`CompiledRule`] decides whether a piece of code
+/// has the *shape* of a defect; this decides whether the value flowing
+/// through that shape is one this rule should report at all. In its common
+/// form (`sources: Some(...)`) it is the provenance gate: the value must
+/// have come from somewhere untrusted, and [`crate::flow`] explains why that
+/// distinction is the whole point of this tier. In its other form (`sources:
+/// None`) there is no provenance question to ask -- every value not closed
+/// over literals this file fixes and (with `unguarded`) not already
+/// dominated by a guard is reported, whatever produced it; see
+/// [`super::schema::FlowDef`]'s own docs for when a rule reaches for this
+/// form instead.
 struct CompiledFlow {
     /// Which captured metavariable to test.
     variable: String,
@@ -508,6 +514,16 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
     // there is no untraceable path for `unproven:` to change anything about.
     if sources.is_none() && flow.unproven.is_some() {
         return Err(RuleError::UnprovenWithoutSource { id: def.id.clone() });
+    }
+    // A sourceless `flow:` clause combined with `flow.sink` would let the
+    // wrapper-sink pass report every call to a local wrapper whose argument
+    // is merely not closed and (with `unguarded`) not guarded -- a
+    // materially broader reach than any shipped rule exercises today, and
+    // genuinely untested behavior. Rejected here rather than shipped
+    // silently; a rule author who actually needs this combination can lift
+    // the restriction deliberately later.
+    if sources.is_none() && flow.sink.is_some() {
+        return Err(RuleError::FlowSinkWithoutSource { id: def.id.clone() });
     }
     // The wrapper-sink pass `flow.sink` turns on builds its findings
     // straight from `wrapper_sink_calls`, never through
