@@ -6,6 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- **Defects now require traced provenance.** `BAS-LLM10-002`, `-003`, `-004`, `BAS-ZT4-001` and
+  `-002` ask the Python flow graph where a value came from. A value traced to an untrusted source is
+  a defect. A literal, a value built only from literals, and one already limited by a fixed-set check
+  are not reported. A value whose origin cannot be traced in the file is reported as a low-confidence
+  observation: for `BAS-LLM10-004` always, for the others only when its name matches the rule's
+  former name list. Model output reaching a shell or SQL is now found under any variable name when
+  the file itself shows the value came from a model call.
+- **Observation-only rules.** `BAS-LLM10-005`, `-006`, `-007` and `BAS-ZT4-003` (TypeScript and
+  JavaScript, which have no dataflow graph yet) and `BAS-LLM03-001`/`-002` (tool name only) now
+  report observations. They appear with `--show-observations` and never affect the exit code.
+- `BAS-LLM10-001` and `-004` skip a call to a locally defined `eval`/`exec`. `BAS-ZT4-001` to `-003`
+  skip a prompt the same file sends in the user role.
+- The corpus gate accounts for every finding, enforces each expected finding's kind and severity, and
+  counts known false positives against defect precision.
+
+### Added
+
+- `CveStatus::Partial`: an OSV lookup whose later page or advisory requests failed now reports how
+  many dependencies may have incomplete results, in the terminal, JSON (`"status": "partial"`) and
+  SARIF (a tool-execution warning, also emitted for an unreachable lookup). Exit codes are unchanged.
+- Rule schema: `flow.unproven`, `flow.builtin_callee`, and `none_in_file`.
+
+### Fixed
+
+- A Compose file that is not valid YAML is listed as skipped instead of counted as scanned.
+
 ## [0.1.6] - 2026-09-22
 
 ### Added
