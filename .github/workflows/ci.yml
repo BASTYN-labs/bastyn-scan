@@ -108,10 +108,10 @@ jobs:
     env:
       # Overrides `rust-toolchain.toml`, which pins stable for contributors.
       # Keep in sync with `rust-version` in Cargo.toml.
-      RUSTUP_TOOLCHAIN: 1.88.0
+      RUSTUP_TOOLCHAIN: 1.90.0
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv

@@ -12,7 +12,7 @@ Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Setup
 
-You need Rust 1.88 or newer. [rustup](https://rustup.rs) will read `rust-toolchain.toml` and install the right toolchain and components automatically.
+You need Rust 1.90 or newer. [rustup](https://rustup.rs) will read `rust-toolchain.toml` and install the right toolchain and components automatically.
 
 ```console
 git clone https://github.com/BASTYN-labs/bastyn-scan.git

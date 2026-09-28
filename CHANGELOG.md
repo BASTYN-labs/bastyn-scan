@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Breaking
+
+- **Minimum supported Rust version raised from 1.88 to 1.90.** A routine dependency bump pulled in a
+  newer `tree-sitter` and `tree-sitter-language` (transitive dependencies of `ast-grep-language`) that
+  require rustc 1.90, breaking the project's previous 1.88 floor. Raised the declared MSRV to match
+  rather than pin the dependency back, since 1.90 is over a year old and not a meaningful floor for
+  users on stable or recent-stable toolchains.
+
 ## [0.1.8] - 2026-09-28
 
 ### Breaking (library API)
