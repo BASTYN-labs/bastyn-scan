@@ -323,6 +323,24 @@ rules:
   # itself, not the absence of a check, so a bypassable check does not
   # suppress it. Matches docs/rule-catalogue.md's LLM10.12.
   #
+  # 2026-09-28: a value returned by tempfile.mkdtemp/gettempdir/mkstemp/
+  # TemporaryDirectory is closed -- excluded by exclude_if: closed_value --
+  # when the call takes no arguments, or every argument it does take is
+  # itself already safe. The operating system generates the path end to
+  # end in the no-argument case (tar -xzf archive.tar.gz -C
+  # tempfile.mkdtemp() is not attacker-controlled), but every one of these
+  # functions also accepts a caller-supplied prefix/suffix/dir keyword
+  # argument that lands directly in the returned path --
+  # tempfile.mkdtemp(prefix=user_supplied) is a real shell-injection
+  # payload waiting in the prefix, so the callee name alone is not enough;
+  # every argument passed must itself already be safe. See
+  # tests/corpus/vulnerable/llm10_shell_injection_tool.py's unpack() (a
+  # tempfile value mixed with a real parameter, still fires) and
+  # make_workspace() (a tempfile call with a caller-supplied prefix, still
+  # fires) for the regression proofs, alongside
+  # tests/corpus/clean/tempdir_shell.py for the no-argument case that is
+  # correctly excluded.
+  #
   # Known false positives, documented rather than papered over:
   #   - a sink inside a function nothing in the file calls still fires when
   #     its command is built from more than a bare parameter (e.g. two
@@ -355,7 +373,7 @@ rules:
   #     container names through the graph is a materially larger change
   #     than this fix wave's scope. See
   #     tests/corpus/vulnerable/real_misses/shell_command_via_mutated_registry.py.
-  #     2026-09-28, fix round 3 (reviewer finding N1): the same limitation
+  #     2026-09-28: the same limitation
   #     applies to flow.passthrough_downgrade's own
   #     path_is_reassigned check below -- its exact-text-match search finds
   #     `hook.command = ...`/`opts["cmd"] = ...` in the same function, but
@@ -443,10 +461,21 @@ rules:
     # exactly as narrow: a command mixing a CLI-argument segment with any
     # other non-literal segment still fires. See
     # tests/corpus/clean/cli_argument_paths.py for the regression proof.
+    #
+    # 2026-09-28: a .parse_args()/.parse_known_args() call only counts when
+    # its receiver actually resolves to a call to argparse.ArgumentParser(...)
+    # -- written inline, or reached through a local variable. A
+    # Flask-RESTful/flask-restx request parser
+    # (reqparse.RequestParser().parse_args()) has the identical method
+    # name but parses HTTP request data, not the operator's own command
+    # line, and must not be trusted the same way a genuine argparse call
+    # is. See
+    # tests/corpus/vulnerable/llm10_shell_injection_via_request_parser.py
+    # for the regression proof.
     exclude_if:
       variable: ARG
       kind: [closed_value, shell_quoted, stdin_dispatch, cli_argument]
-    # 2026-09-28: added flow.passthrough_downgrade (Fix D). A bare parameter
+    # 2026-09-28: added flow.passthrough_downgrade. A bare parameter
     # reaching a shell with no other non-literal segment (def run(command):
     # subprocess.run(command, shell=True)) resolves Origin::Parameter, which
     # exclude_if above cannot touch -- none of closed_value/shell_quoted/
@@ -458,95 +487,75 @@ rules:
     # observation instead -- the value is proven to come from a parameter,
     # just not proven to be attacker-reachable. See
     # crate::flow::graph::FlowGraph::is_passthrough_observation_eligible for
-    # the four conditions and tests/corpus/observations/
+    # the full set of conditions and tests/corpus/observations/
     # shell_passthrough_helpers.py /
     # tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py for the
-    # observation-vs-still-a-defect regression pair.
+    # observation-vs-still-a-defect regression pairs. Four conditions all
+    # have to hold:
     #
-    # 2026-09-28, fix round 1 (security review findings C1/C2/C3/I1a/I1b/I1c
-    # against the initial Fix D landing): three corrected-condition-1 bugs, a
-    # corrected-condition-3 bug, and one documented, bounded remaining gap.
-    #   - C1/C2: condition 1 used to accept any identifier whose *text*
-    #     matched a parameter name, or whose most recent textual assignment
-    #     (regardless of branch) held a bare parameter reference. Both were
-    #     provably unsafe: a parameter reassigned to a composed value using
-    #     its own name (def ping_host(host): host = f"ping -c 1 {host}"),
-    #     a name bound differently in two branches of an if/else, and a
-    #     `for`-loop target all passed the old check and were wrongly
-    #     downgraded. `is_provably_bare_passthrough`
-    #     (crates/bastyn-core/src/flow/graph.rs) replaces this with a
-    #     stricter rule: a name is only a provable pass-through when it has
-    #     *zero* bindings anywhere in the function (the untouched parameter
-    #     case) or *exactly one* binding, of a plain `assignment` (not
-    #     `augmented_assignment`, not a `for`/`with`/`except` target, not a
-    #     walrus), whose own right-hand side is itself provably bare. Any
-    #     ambiguity this cannot fully resolve stays a defect. Also excludes
-    #     `self`/`cls` from ever counting as a qualifying parameter (I1b):
-    #     `self.cmd` read in one method after being set from a real
-    #     parameter in `__init__` is untraceable to this file-local analysis,
-    #     so it must stay a defect rather than being treated as "just
-    #     another parameter". See
-    #     tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py's
-    #     ping_reassigned()/run_branch_alias()/run_for_loop_alias()/Runner.go()
-    #     for the regression proofs.
-    #   - C3: "is this function an entry point" used to be decided by a
-    #     name-keyed map that dropped an ambiguous (multiply-defined) name
-    #     entirely -- correct for collect_source_returns/collect_wrapper_sinks
-    #     (a *call* to an ambiguous name cannot be attributed to either
-    #     `def`), wrong here, since two unrelated `def`s sharing a name (two
-    #     BaseHTTPRequestHandler subclasses each with their own do_GET) would
-    #     both silently lose their own entry-point status. Decided directly
-    #     from each function's own node now
-    #     (`FlowGraph::is_entry_point_function`), with nothing to be
-    #     ambiguous about. See
-    #     tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py's
-    #     HandlerA/HandlerB for the regression proof.
-    #   - I1a: widened the recognized decorator set to also include
-    #     `resource`, `prompt`, `call_tool`, and `api_route`
-    #     (`@mcp.resource`, `@mcp.prompt`, `@server.call_tool()`,
-    #     `@app.api_route`) -- a pure widening of entry-point recognition,
-    #     the safe direction.
-    #   - I1c, known limitation (not fixed, documented instead):
-    #     collect_entry_point_forwards matches a parameter forwarded exactly
-    #     one hop, through either a *bare* local-function call
-    #     (`@mcp.tool() def run(cmd): return _exec(cmd)`) or, as of fix round
-    #     2 (2026-09-28, reviewer finding I1b), a *qualified*
-    #     `self.NAME(...)`/`cls.NAME(...)` call on the same instance
-    #     (`@mcp.tool() def run(self, cmd): return self._exec(cmd)`) -- the
-    #     same bounded-depth precedent FlowGraph::wrapper_sink_parameters's
-    #     own doc comment already accepts on the sink side ("a wrapper around
-    #     a wrapper is out of reach by construction, not merely untested").
-    #     A longer chain still falls outside that one hop and is wrongly
-    #     downgraded to an observation: `run(cmd) -> _outer(cmd) ->
-    #     _inner(cmd)`, two hops instead of one, whether each hop is bare,
-    #     qualified, or a mix of the two -- see
-    #     tests/corpus/vulnerable/real_misses/shell_command_via_chained_tool_forward.py's
-    #     known_gap entry (which exercises the all-bare-calls case; a
-    #     qualified two-hop chain would fail the identical way, for the
-    #     identical reason, and is not separately fixtured). Extending this
-    #     to arbitrary-depth forwarding is materially larger than this fix
-    #     round's scope; recorded rather than attempted.
-    #
-    #     2026-09-28, fix round 3, broadened: the one-hop bound above is not
-    #     the only limit -- collect_entry_point_forwards also only recognizes
-    #     the callee SHAPE of that one hop as a direct bare-name call or a
-    #     self/cls-qualified method call. Any other way Python code can pass
-    #     a callable and its argument along -- a thread pool
-    #     (`asyncio.to_thread(_exec, cmd)`, `pool.submit(_exec, cmd)`), an
-    #     unbound-method call (`Class._exec(self, cmd)`), a `super()` call
-    #     (`super()._exec(cmd)`), a decorator registry, indirect dispatch
-    #     through a dict of callables, ... -- is invisible to it, and the
-    #     forwarded helper is wrongly downgraded to an observation. This is
-    #     now the third distinct callee shape this mechanism has needed to
-    #     special-case (bare call, then self/cls-qualified, now these), and
-    #     the space of "ways to pass a callable and its argument somewhere
-    #     else" is genuinely open-ended -- a fourth special case is not being
-    #     added. See
-    #     tests/corpus/vulnerable/real_misses/shell_command_via_thread_pool_forward.py's
-    #     known_gap entry for one representative shape (`asyncio.to_thread`,
-    #     chosen as the most realistic in an async MCP server); the others
-    #     named above fail identically, for the identical reason, and are not
-    #     separately fixtured.
+    # 1. The captured value must be a syntactically bare pass-through of a
+    #    named function's own parameter -- exactly `p`, `p.attr`, or
+    #    `p["key"]` (one level of attribute or subscript access, with a
+    #    literal subscript key), optionally reached through one plain local
+    #    alias (`command = hook.command` then a use of `command`).
+    #    `is_provably_bare_passthrough` proves this directly from the raw
+    #    syntax rather than from resolved provenance, because an f-string
+    #    that mixes the parameter with fixed text would otherwise resolve
+    #    the same provenance as a pure pass-through
+    #    (`Prov::combine` treats a literal segment as contributing
+    #    nothing, which is correct for constant_path/cli_argument/
+    #    stdin_dispatch but wrong for this check). A name qualifies as a
+    #    bare root only when it has zero bindings anywhere in the function
+    #    (an untouched parameter) or exactly one binding, of a plain
+    #    `assignment`, whose own right-hand side is itself provably bare;
+    #    any other binding -- a reassignment using the parameter's own name,
+    #    a branch-split alias, a `for`/comprehension target, a `with`/
+    #    `except`/match-case capture, a `nonlocal`/`global` declaration --
+    #    disqualifies the name. `self`/`cls` never qualify as a bare root at
+    #    all: state read through them may have been set in a different
+    #    method from a real parameter, which this file-local analysis
+    #    cannot trace. An attribute/subscript path reassigned in place
+    #    anywhere in the function (`hook.command = ...`) also disqualifies
+    #    it, by an exact text match against the path.
+    # 2. The value must not additionally trace to a catalogued untrusted
+    #    source, checked as defense-in-depth (structurally implied by
+    #    condition 1 already).
+    # 3. The function enclosing the sink call must not itself be a
+    #    recognized entry point (an `@mcp.tool()`/`@app.route()`/
+    #    `do_GET`-style function, decided directly from that function's own
+    #    decorators and name).
+    # 4. No entry point in the file may call the enclosing function with any
+    #    argument this graph cannot prove is safe -- not only when that
+    #    argument traces to the entry point's own parameter list. A route
+    #    handler with no function parameter carrying the request at all
+    #    (`@app.route(...) def run(): return _exec(request.args["cmd"])`)
+    #    and a value assigned from a model call to a local variable
+    #    (`@mcp.tool() def run(q): cmd = llm.invoke(q).content; return
+    #    _exec(cmd)`) both hand a helper untrusted input without going
+    #    through the entry point's own parameters, and both must disqualify
+    #    the callee the same way forwarding a parameter directly would.
+    #    A call through a bare name or a same-instance
+    #    `self.NAME(...)`/`cls.NAME(...)` call is matched; two known,
+    #    bounded limits remain and are recorded as known_gap fixtures
+    #    rather than chased further:
+    #      - a call chain longer than one hop (`run(cmd) -> _outer(cmd) ->
+    #        _inner(cmd)`) is invisible to this check, the same
+    #        bounded-depth precedent FlowGraph::wrapper_sink_parameters's
+    #        own doc comment already accepts on the sink side ("a wrapper
+    #        around a wrapper is out of reach by construction, not merely
+    #        untested"). See
+    #        tests/corpus/vulnerable/real_misses/shell_command_via_chained_tool_forward.py.
+    #      - a callee shape other than a direct bare-name call or a
+    #        same-instance self/cls-qualified method call -- a thread pool
+    #        (`asyncio.to_thread(_exec, cmd)`, `pool.submit(_exec, cmd)`),
+    #        an unbound-method call (`Class._exec(self, cmd)`), a `super()`
+    #        call (`super()._exec(cmd)`), a decorator registry, indirect
+    #        dispatch through a dict of callables, ... -- is also invisible
+    #        to it; the space of ways a callable and its argument can be
+    #        passed along elsewhere is open-ended, so this is recorded
+    #        rather than special-cased indefinitely. See
+    #        tests/corpus/vulnerable/real_misses/shell_command_via_thread_pool_forward.py
+    #        for one representative shape.
     flow:
       variable: ARG
       passthrough_downgrade: true
@@ -560,9 +569,12 @@ rules:
       a shell is a defect independent of whatever check happens to
       precede it. An argument provably drawn from a fixed set the file
       itself defines — for example a dict of literal commands looked up
-      by a key already checked for membership — is excluded: nothing in
-      it can be attacker-influenced regardless of the identifier's name.
-      Also excluded when every non-literal segment of the command is
+      by a key already checked for membership, or an OS-generated
+      temporary path from tempfile.mkdtemp/gettempdir/mkstemp/
+      TemporaryDirectory called with no arguments or only already-safe
+      arguments — is excluded: nothing in it can be attacker-influenced
+      regardless of the identifier's name. Also excluded when every
+      non-literal segment of the command is
       wrapped directly in shlex.quote(...)/shlex.join(...), which makes a
       shell treat it as one argument regardless of content. Also excluded
       when the command's entire non-literal content traces to an
@@ -656,6 +668,22 @@ rules:
   #     of a parameter reaching os.path.join with no literal-callers-only
   #     guarantee at all.
   #
+  # 2026-09-28: the constant_path fact now also understands pathlib, not
+  # just os.path.*: Path(__file__)/pathlib.Path(__file__) as a module-level
+  # root, and .parent/.resolve()/.absolute()/.with_name(...)/.with_suffix(...)
+  # chained on a value already proven constant_path. A file's own location
+  # written as a pathlib chain (HERE = Path(__file__).parent; open(HERE /
+  # "overlay.js")) is exactly as safe as the same root written with
+  # os.path.dirname, and previously fell outside this exclusion purely
+  # because it used a different, equally common stdlib API for the same
+  # thing. Also, a value returned by tempfile.mkdtemp/gettempdir/mkstemp/
+  # TemporaryDirectory (called with no arguments, or only arguments that
+  # are themselves already safe) is now closed the same way: the operating
+  # system generates the path, not any caller or the file's own location,
+  # but it is equally provably fixed. See tests/corpus/clean/tempdir_shell.py
+  # and the pathlib-rooted cases in tests/corpus/clean/near_misses.py for the
+  # regression proofs.
+  #
   # 2026-09-28: added exclude_if: cli_argument to close a false positive on
   # a path built from the operator's own command line -- an argparse
   # --eval-dir-style option joined into an open() path, the same
@@ -713,10 +741,15 @@ rules:
       is not detected — the matcher only inspects the argument's own text
       at the call site, not any earlier assignment. Also excluded when the
       joined path is built only from literals, __file__, and calls to
-      os.path.dirname/abspath/realpath/normpath/join/os.getcwd — a
-      module-level path root the file derives from its own location on
-      disk, not from anything a caller supplies. Also excluded when the
-      path's entire non-literal content traces to the operator's own
+      os.path.dirname/abspath/realpath/normpath/join/os.getcwd, a
+      pathlib.Path chain rooted the same way (Path(__file__).parent,
+      .resolve(), .with_name(...), .with_suffix(...)), or a value returned
+      by tempfile.mkdtemp/gettempdir/mkstemp/TemporaryDirectory called with
+      no arguments or only already-safe arguments — a module-level path
+      root the file derives from its own location on disk or an
+      OS-generated temporary path, not from anything a caller supplies.
+      Also excluded when the path's entire non-literal content traces to
+      the operator's own
       command line -- sys.argv[...], an attribute of
       <ArgumentParser>.parse_args()/.parse_known_args(), or a click/typer
       command function's own parameter -- not attacker-reachable input; a

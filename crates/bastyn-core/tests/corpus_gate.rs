@@ -117,37 +117,34 @@ struct KnownFalsePositive {
 /// Entries marked `requires_network` are excluded: they are measurement limits
 /// of an offline gate, not things the scanner cannot detect.
 const MAX_KNOWN_GAPS: usize = 17;
-// Raised from 16 to 17 on 2026-09-28 (Fix D fix round 3, coordinator-directed
-// documentation of a reviewer finding), admitting one deliberate new gap: a
+// Raised from 16 to 17 on 2026-09-28, admitting one deliberate new gap: a
 // known_gap entry for
 // vulnerable/real_misses/shell_command_via_thread_pool_forward.py.
 // collect_entry_point_forwards's callee-shape recognition (bare NAME(...) or
 // self/cls-qualified NAME(...)) does not cover a thread-pool/executor call
 // (asyncio.to_thread(_exec, cmd), pool.submit(_exec, cmd)), an unbound-method
-// call (Class._exec(self, cmd)), or a super() call (super()._exec(cmd)) --
-// this is the third distinct callee shape the mechanism has needed, and the
-// space of "ways to pass a callable and its argument somewhere else" is
-// open-ended, so a fourth special case was deliberately not added; see
+// call (Class._exec(self, cmd)), or a super() call (super()._exec(cmd)); the
+// space of ways a callable and its argument can be passed along elsewhere is
+// open-ended, so this is recorded rather than special-cased further; see
 // bastyn.yml's comment on BAS-LLM10-009 for the full writeup.
 //
-// Raised from 15 to 16 on 2026-09-28 (Fix D fix round 1, reviewer finding
-// I1c), admitting one deliberate new gap: a known_gap entry for
+// Raised from 15 to 16 on 2026-09-28, admitting one deliberate new gap: a
+// known_gap entry for
 // vulnerable/real_misses/shell_command_via_chained_tool_forward.py.
 // BAS-LLM10-009's flow.passthrough_downgrade clause forwards a tool's own
 // parameter through collect_entry_point_forwards
 // (crates/bastyn-core/src/flow/graph.rs) only one hop deep, through a bare
-// local-function call -- the same bounded-depth precedent
-// FlowGraph::wrapper_sink_parameters's own doc comment already accepts on
-// the sink side ("a wrapper around a wrapper is out of reach by
-// construction, not merely untested"). A parameter forwarded through a
-// second local function before reaching the shell-command helper
-// (@mcp.tool() run(cmd) -> _outer(cmd) -> _inner(cmd)) is invisible to it,
-// so the helper is wrongly reported as an observation instead of a defect.
-// Extending this to arbitrary-depth call chains is materially larger than
-// that fix round's scope -- recorded here rather than attempted. See
-// bastyn.yml's comment on BAS-LLM10-009 for the full writeup, which also
-// covers a second, closely related but undocumented-as-its-own-known_gap
-// shape (a *qualified* one-hop forward, self._exec(cmd)).
+// local-function call or a same-instance self/cls-qualified method call --
+// the same bounded-depth precedent FlowGraph::wrapper_sink_parameters's own
+// doc comment already accepts on the sink side ("a wrapper around a wrapper
+// is out of reach by construction, not merely untested"). A parameter
+// forwarded through a second local function before reaching the
+// shell-command helper (@mcp.tool() run(cmd) -> _outer(cmd) -> _inner(cmd))
+// is invisible to it, so the helper is wrongly reported as an observation
+// instead of a defect. Extending this to arbitrary-depth call chains is
+// materially larger in scope than the rest of this check -- recorded here
+// rather than attempted. See bastyn.yml's comment on BAS-LLM10-009 for the
+// full writeup.
 //
 // Raised from 14 to 15 on 2026-09-24, admitting one deliberate new gap: a
 // known_gap entry for vulnerable/real_misses/shell_command_via_mutated_registry.py,
