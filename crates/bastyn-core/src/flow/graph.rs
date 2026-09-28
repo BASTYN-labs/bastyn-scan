@@ -246,11 +246,18 @@ pub(crate) struct FlowGraph {
     /// `def`s in this file that forward a parameter into a catalogued sink,
     /// as (sink kind, parameter index) pairs, sorted.
     wrapper_sinks: HashMap<String, Vec<(SinkKind, usize)>>,
-    /// `def`s in this file recognized as an agent-framework or web-framework
-    /// entry point. See [`collect_entry_points`].
-    entry_points: HashSet<String>,
     /// `def`s in this file reached from an entry point's own body via a
     /// forwarded parameter. See [`collect_entry_point_forwards`].
+    ///
+    /// Whether the enclosing function of a *given call* is itself an entry
+    /// point is instead decided directly from that function's own node by
+    /// [`is_entry_point_function`], not from a name-keyed set like this one
+    /// -- see that function's doc comment for why: two unrelated `def`s
+    /// sharing a name (two `BaseHTTPRequestHandler` subclasses each with
+    /// their own `do_GET`) must not make either one lose its own answer.
+    /// This set exists only because [`collect_entry_point_forwards`]
+    /// genuinely needs to name *which* locally-called functions receive a
+    /// forwarded parameter, which a per-node check cannot express.
     entry_point_forwards: HashSet<String>,
 }
 
@@ -271,15 +278,12 @@ impl FlowGraph {
             guarded: HashSet::new(),
             source_returns: HashMap::new(),
             wrapper_sinks: HashMap::new(),
-            entry_points: HashSet::new(),
             entry_point_forwards: HashSet::new(),
         };
         graph.guarded = super::guards::collect_guarded(root, &graph);
         graph.source_returns = collect_source_returns(root, &graph);
         graph.wrapper_sinks = collect_wrapper_sinks(root, &graph);
-        graph.entry_points = collect_entry_points(root);
-        graph.entry_point_forwards =
-            collect_entry_point_forwards(root, &graph, &graph.entry_points);
+        graph.entry_point_forwards = collect_entry_point_forwards(root, &graph);
         graph
     }
 
@@ -405,30 +409,31 @@ impl FlowGraph {
     ///
     /// All four conditions below must hold:
     ///
-    /// 1. `arg` is a syntactically pure pass-through of one of the enclosing
-    ///    function's own parameters -- see [`is_syntactically_bare_passthrough`]
-    ///    for exactly what that means and why it cannot be answered from
-    ///    `Origin`/`Prov` alone (an f-string mixing a parameter with fixed
-    ///    text, once assigned to a local variable and forwarded, would
-    ///    otherwise be mistaken for a pure pass-through -- `Prov::combine`
-    ///    already resolves `Origin::Parameter` through it, correctly for
-    ///    `constant_path`/`cli_argument`/`stdin_dispatch`, wrongly for this).
-    ///    `self.origin_of(arg.node_id()) == Some(Origin::Parameter)` is
-    ///    checked too, as a cheap necessary pre-filter (e.g. it alone already
-    ///    rejects an f-string mixing *two different* parameters, which
-    ///    resolves `Origin::Unknown`).
+    /// 1. `arg` is a *provably* pure pass-through of one of the enclosing
+    ///    function's own parameters -- see [`is_provably_bare_passthrough`]
+    ///    for exactly what "provably" requires (no branch, no second
+    ///    binding, no binding kind it cannot fully account for) and why this
+    ///    cannot be answered from `Origin`/`Prov` alone (an f-string mixing
+    ///    a parameter with fixed text, once assigned to a local variable and
+    ///    forwarded, would otherwise be mistaken for a pure pass-through --
+    ///    `Prov::combine` already resolves `Origin::Parameter` through it,
+    ///    correctly for `constant_path`/`cli_argument`/`stdin_dispatch`,
+    ///    wrongly for this). `self.origin_of(arg.node_id()) ==
+    ///    Some(Origin::Parameter)` is checked too, as a cheap necessary
+    ///    pre-filter (e.g. it alone already rejects an f-string mixing *two
+    ///    different* parameters, which resolves `Origin::Unknown`).
     /// 2. The value does not additionally trace to a catalogued untrusted
     ///    source. Structurally implied by (1) -- `source_kind_of` only ever
-    ///    returns `Some` for `Origin::Call`, and a syntactically bare
-    ///    parameter reference is never `Origin::Call` -- but checked
-    ///    explicitly anyway, both because the fix this method implements
-    ///    treats it as an independent condition and as defense-in-depth
-    ///    against a future change to (1)'s definition silently breaking this
-    ///    guarantee.
+    ///    returns `Some` for `Origin::Call`, and a provably bare parameter
+    ///    reference is never `Origin::Call` -- but checked explicitly
+    ///    anyway, both because the fix this method implements treats it as
+    ///    an independent condition and as defense-in-depth against a future
+    ///    change to (1)'s definition silently breaking this guarantee.
     /// 3. The function enclosing `matched` is not itself a recognized
     ///    agent-framework or web-framework entry point (see
-    ///    [`collect_entry_points`]) -- such a function's own parameters are
-    ///    values this file itself hands to agent- or request-chosen input.
+    ///    [`is_entry_point_function`], decided directly from that function's
+    ///    own node) -- such a function's own parameters are values this file
+    ///    itself hands to agent- or request-chosen input.
     /// 4. No entry point in this file forwards its own parameter into a call
     ///    to the function enclosing `matched` (see
     ///    [`collect_entry_point_forwards`]).
@@ -455,17 +460,22 @@ impl FlowGraph {
         else {
             return false;
         };
+        if is_entry_point_function(&enclosing) {
+            return false;
+        }
         let parameters = enclosing
             .field("parameters")
             .map(|node| parameter_names(&node))
             .unwrap_or_default();
-        if !is_syntactically_bare_passthrough(arg, &enclosing, &parameters) {
+        // `hops: 1` -- "follow at most one plain local alias," per this
+        // fix's own design.
+        if !is_provably_bare_passthrough(arg, &enclosing, &parameters, 1) {
             return false;
         }
         let Some(name) = enclosing.field("name").map(|n| n.text().into_owned()) else {
             return false;
         };
-        !self.entry_points.contains(&name) && !self.entry_point_forwards.contains(&name)
+        !self.entry_point_forwards.contains(&name)
     }
 }
 
@@ -620,86 +630,85 @@ fn collect_wrapper_sinks<D: Doc>(
         .collect()
 }
 
-/// Names of `def`s in this file that are an agent-framework or web-framework
-/// entry point: decorated with `@tool`/`@$X.tool(...)`, `@function_tool`,
-/// `@$X.route(...)`, `@$X.get/post/put/patch/delete/websocket(...)`, or
-/// `@$X.command(...)` (any dotted decorator whose last segment is one of these
-/// names, plus the bare undotted forms `tool`/`function_tool`) -- or named
-/// `do_GET`/`do_POST`/... in the `http.server.BaseHTTPRequestHandler` handler
-/// convention. Consumed by BAS-LLM10-009's pass-through-observation downgrade
-/// (`FlowGraph::is_passthrough_observation_eligible`): a function this rejects
-/// is one whose parameters this file itself hands agent- or request-chosen
-/// values to, so a sink reachable only from inside it must stay a defect
-/// regardless of how "bare" its own parameter looks.
+/// Whether `function` (a `function_definition` node) is an agent-framework or
+/// web-framework entry point: decorated with `@tool`/`@$X.tool(...)`,
+/// `@function_tool`, `@$X.route(...)`, `@$X.get/post/put/patch/delete/
+/// websocket(...)`, `@$X.command(...)`, `@$X.resource(...)`,
+/// `@$X.prompt(...)`, `@$X.call_tool(...)`, or `@$X.api_route(...)` (any
+/// dotted decorator whose last segment is one of these names, plus the bare
+/// undotted forms `tool`/`function_tool`) -- or named `do_GET`/`do_POST`/...
+/// in the `http.server.BaseHTTPRequestHandler` handler convention. Consumed
+/// by BAS-LLM10-009's pass-through-observation downgrade
+/// (`FlowGraph::is_passthrough_observation_eligible`): a function this
+/// rejects is one whose parameters this file itself hands agent- or
+/// request-chosen values to, so a sink reachable only from inside it must
+/// stay a defect regardless of how "bare" its own parameter looks.
 ///
-/// A name defined more than once in the file is dropped entirely, the same
-/// redefinition-ambiguity handling [`collect_source_returns`] and
-/// [`collect_wrapper_sinks`] already apply: whether a call reaches this `def`
-/// cannot be attributed to either one.
-fn collect_entry_points<D: Doc>(root: &Node<'_, D>) -> HashSet<String> {
-    let mut answers: HashMap<String, Option<()>> = HashMap::new();
-
-    for function in root
-        .dfs()
-        .filter(|node| node.kind() == "function_definition")
-    {
-        let Some(name) = function.field("name").map(|n| n.text().into_owned()) else {
-            continue;
-        };
-        if let std::collections::hash_map::Entry::Occupied(mut entry) = answers.entry(name.clone())
-        {
-            // Redefinition: neither `def` can be named for certain.
-            entry.insert(None);
-            continue;
-        }
-
-        let is_do_verb = name.starts_with("do_")
-            && name[3..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase());
-        let is_decorated_entry_point = function
-            .parent()
-            .filter(|p| p.kind() == "decorated_definition")
-            .is_some_and(|decorated| {
-                decorated
-                    .children()
-                    .filter(|c| c.kind() == "decorator")
-                    .any(|decorator| {
-                        let Some(expr) = decorator.named_children().next() else {
-                            return false;
-                        };
-                        let expr = if expr.kind() == "call" {
-                            match expr.field("function") {
-                                Some(f) => f,
-                                None => return false,
-                            }
-                        } else {
-                            expr
-                        };
-                        let path = callee_path(&expr);
-                        matches!(
-                            path.rsplit('.').next().unwrap_or(&path),
-                            "tool"
-                                | "function_tool"
-                                | "route"
-                                | "get"
-                                | "post"
-                                | "put"
-                                | "patch"
-                                | "delete"
-                                | "websocket"
-                                | "command"
-                        )
-                    })
-            });
-        answers.insert(name, (is_do_verb || is_decorated_entry_point).then_some(()));
+/// Decided directly from `function`'s own decorators/name -- never from a
+/// name-keyed lookup. Earlier revisions of this check answered "is this
+/// name an entry point" via a `HashMap<String, Option<()>>` built the same
+/// way [`collect_source_returns`]/[`collect_wrapper_sinks`] handle a name
+/// defined twice (dropping it from the map entirely, since a *call* to it
+/// cannot be attributed to either `def`). That pattern is wrong here: two
+/// unrelated `def`s sharing a name -- two `BaseHTTPRequestHandler`
+/// subclasses each with their own `do_GET`, or an `@mcp.tool()` method named
+/// `run` next to an unrelated `run` method elsewhere in the file -- would
+/// both be dropped, silently letting the genuine entry point's own body lose
+/// its protection. There is no "which `def` does this name refer to"
+/// question to answer here at all, only "is this specific `def`, right
+/// here, an entry point" -- so this function takes the node directly and
+/// answers per-node, with nothing to get ambiguous.
+fn is_entry_point_function<D: Doc>(function: &Node<'_, D>) -> bool {
+    let Some(name) = function.field("name").map(|n| n.text().into_owned()) else {
+        return false;
+    };
+    let is_do_verb = name.starts_with("do_")
+        && name[3..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase());
+    if is_do_verb {
+        return true;
     }
-
-    answers
-        .into_iter()
-        .filter_map(|(name, marker)| marker.map(|()| name))
-        .collect()
+    function
+        .parent()
+        .filter(|p| p.kind() == "decorated_definition")
+        .is_some_and(|decorated| {
+            decorated
+                .children()
+                .filter(|c| c.kind() == "decorator")
+                .any(|decorator| {
+                    let Some(expr) = decorator.named_children().next() else {
+                        return false;
+                    };
+                    let expr = if expr.kind() == "call" {
+                        match expr.field("function") {
+                            Some(f) => f,
+                            None => return false,
+                        }
+                    } else {
+                        expr
+                    };
+                    let path = callee_path(&expr);
+                    matches!(
+                        path.rsplit('.').next().unwrap_or(&path),
+                        "tool"
+                            | "function_tool"
+                            | "route"
+                            | "get"
+                            | "post"
+                            | "put"
+                            | "patch"
+                            | "delete"
+                            | "websocket"
+                            | "command"
+                            | "resource"
+                            | "prompt"
+                            | "call_tool"
+                            | "api_route"
+                    )
+                })
+        })
 }
 
 /// Names of `def`s in this file that receive, at a call site inside an
@@ -712,26 +721,22 @@ fn collect_entry_points<D: Doc>(root: &Node<'_, D>) -> HashSet<String> {
 /// from model-chosen input" even though its own body sees only a bare
 /// parameter.
 ///
-/// Only entry points from `entry_points` are iterated, and only a call
-/// through a bare `identifier` (`_exec(cmd)`) is matched -- a qualified call
-/// like `self.method(cmd)` is out of scope, since this is matching local
-/// `def` names specifically, not catalogued sinks the way
-/// [`collect_wrapper_sinks`] does.
-fn collect_entry_point_forwards<D: Doc>(
-    root: &Node<'_, D>,
-    graph: &FlowGraph,
-    entry_points: &HashSet<String>,
-) -> HashSet<String> {
+/// Every `function_definition` in the file is checked against
+/// [`is_entry_point_function`] directly (no name-keyed set, and so no
+/// redefinition ambiguity -- see that function's own doc comment), and only
+/// a call through a bare `identifier` (`_exec(cmd)`) is matched -- a
+/// qualified call like `self.method(cmd)` is out of scope, since this is
+/// matching local `def` names specifically, not catalogued sinks the way
+/// [`collect_wrapper_sinks`] does. (This is a known, bounded limitation, not
+/// an oversight: see `bastyn.yml`'s comment on `BAS-LLM10-009`.)
+fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -> HashSet<String> {
     let mut forwards = HashSet::new();
 
     for function in root
         .dfs()
         .filter(|node| node.kind() == "function_definition")
     {
-        let Some(name) = function.field("name").map(|n| n.text().into_owned()) else {
-            continue;
-        };
-        if !entry_points.contains(&name) {
+        if !is_entry_point_function(&function) {
             continue;
         }
         let parameters = function
@@ -774,93 +779,150 @@ fn collect_entry_point_forwards<D: Doc>(
     forwards
 }
 
-/// Whether `node`, peeled through any `attribute`/`subscript` wrapper, is
-/// rooted in one of `parameters` -- `p`, `p.attr`, `p["key"]`, `p.a["b"].c`,
-/// ... naming a parameter of the enclosing function directly, with no
-/// intervening alias.
-fn is_bare_parameter_expr<D: Doc>(node: &Node<'_, D>, parameters: &[String]) -> bool {
-    match node.kind().as_ref() {
-        "identifier" => parameters.iter().any(|p| p == node.text().as_ref()),
-        "attribute" => node
-            .field("object")
-            .is_some_and(|object| is_bare_parameter_expr(&object, parameters)),
-        "subscript" => node
-            .field("value")
-            .is_some_and(|value| is_bare_parameter_expr(&value, parameters)),
-        _ => false,
-    }
+/// Whether `name` is `self` or `cls` -- the implicit first parameter of an
+/// instance or class method.
+///
+/// Both are technically "a parameter of the enclosing function" as far as
+/// [`parameter_names`] is concerned, but neither is ever "the untraceable
+/// value itself" in the sense [`is_provably_bare_passthrough`]'s condition 1
+/// means. `self.cmd`/`cls.cmd` reads state this file-local analysis cannot
+/// trace: some *other* method (commonly `__init__`) may have set it from a
+/// real tool entry point's own parameter, and there is no attempt anywhere
+/// in this module to connect attribute writes in one method to attribute
+/// reads in another. Treating `self`/`cls` as disqualified here, rather than
+/// as an ordinary parameter, is what keeps `class Runner: def __init__(self,
+/// cmd): self.cmd = cmd` / `def go(self): subprocess.run(self.cmd,
+/// shell=True)` a defect -- the safe, conservative answer, since this
+/// analysis genuinely cannot rule out `cmd` having come from an entry point.
+fn is_self_or_cls(name: &str) -> bool {
+    matches!(name, "self" | "cls")
 }
 
-/// The right-hand side of the textually latest `name = ...` assignment
-/// inside `enclosing`'s own body whose end falls at or before byte offset
-/// `before`, if there is one.
+/// Every place `name` is bound (not merely read) anywhere in `enclosing`'s
+/// own body: a plain `assignment` or `augmented_assignment` target, a
+/// `named_expression` (walrus `:=`) target, a `for` loop's own target, or a
+/// `with`/`except` `as`-pattern target. Returned as the binding node itself
+/// (`assignment`/`augmented_assignment`/`named_expression`/`for_statement`/
+/// `as_pattern`), so a caller can both count how many bindings exist and,
+/// for the one binding kind ([`is_provably_bare_passthrough`] treats as
+/// possibly "a plain local alias"), read its right-hand side.
 ///
 /// Deliberately simpler than the graph's own binding resolution
 /// ([`Analyzer`]'s branch-dominance rules in this module's "Resolution
-/// rules" docs): every `name = ...` assignment in the function counts,
-/// regardless of which branch it sits in, and the textually latest one
-/// before `before` wins. That is good enough for "follow at most one plain
-/// local alias" -- getting it wrong only ever makes
-/// [`is_syntactically_bare_passthrough`] answer `false` when a fuller
-/// analysis might have said `true`, which is the safe direction (a
-/// pass-through helper stays a defect rather than being wrongly downgraded).
-fn last_assignment_before<'r, D: Doc>(
-    enclosing: &Node<'r, D>,
-    name: &str,
-    before: usize,
-) -> Option<Node<'r, D>> {
+/// rules" docs): every binding of `name` in the function counts, regardless
+/// of which branch it sits in or whether it comes before or after any
+/// particular use. That is deliberate, not a shortcut taken for
+/// convenience: [`is_provably_bare_passthrough`] needs to know whether
+/// there is *any* ambiguity about what value reaches the sink, and a branch
+/// a fuller, dominance-aware analysis might rule out is still a branch this
+/// conservative count cannot rule out. Overcounting only ever makes
+/// [`is_provably_bare_passthrough`] answer `false` when a fuller analysis
+/// might have said `true`, which is the safe direction (a pass-through
+/// helper stays a defect rather than being wrongly downgraded).
+fn bindings_of<'r, D: Doc>(enclosing: &Node<'r, D>, name: &str) -> Vec<Node<'r, D>> {
     own_body(enclosing)
-        .flat_map(|statement| {
-            statement
-                .dfs()
-                .filter(|node| node.kind() == "assignment")
-                .collect::<Vec<_>>()
+        .flat_map(|statement| statement.dfs().collect::<Vec<_>>())
+        .filter(|node| match node.kind().as_ref() {
+            "assignment" | "augmented_assignment" => node
+                .field("left")
+                .is_some_and(|left| left.kind() == "identifier" && left.text() == name),
+            "named_expression" => node
+                .field("name")
+                .is_some_and(|target| target.text() == name),
+            "for_statement" => node
+                .field("left")
+                .is_some_and(|left| left.kind() == "identifier" && left.text() == name),
+            // `with EXPR as X:` / `except EXPR as X:` -- tree-sitter-python
+            // wraps the target one level down in an `as_pattern_target`
+            // rather than exposing it through a named field on `as_pattern`
+            // itself; mirrors `Analyzer::collect`'s own `"as_pattern"` arm.
+            "as_pattern" => node
+                .children()
+                .find(|child| child.kind() == "as_pattern_target")
+                .and_then(|target| target.named_children().next())
+                .is_some_and(|inner| inner.kind() == "identifier" && inner.text() == name),
+            _ => false,
         })
-        .filter(|assignment| {
-            assignment.range().end <= before
-                && assignment
-                    .field("left")
-                    .is_some_and(|left| left.kind() == "identifier" && left.text() == name)
-        })
-        .max_by_key(|assignment| assignment.range().end)
-        .and_then(|assignment| assignment.field("right"))
+        .collect()
 }
 
-/// Whether `arg` is a syntactically pure pass-through of one of
-/// `enclosing`'s own parameters: either `arg` itself is `p`/`p.attr`/
-/// `p["key"]` naming a parameter directly (zero hops), or `arg` is a plain
-/// `identifier` whose nearest preceding assignment inside `enclosing`'s own
-/// body binds it, in exactly one hop, to such an expression (`command =
-/// hook.command` then a use of `command` still counts, matching the fix's
-/// own "follow at most one plain local alias" rule).
+/// Whether `node`, peeled through any `attribute`/`subscript` wrapper, is a
+/// *provably* pure pass-through of one of `enclosing`'s own parameters, with
+/// `hops` plain local aliases still available to follow (the public entry
+/// point, [`FlowGraph::is_passthrough_observation_eligible`], passes `1`,
+/// per this fix's own "follow at most one plain local alias" rule).
 ///
-/// Deliberately does not consult [`FlowGraph::origin_of`]/[`Prov`] for this:
-/// `Prov::combine` already resolves `Origin::Parameter` through an f-string
-/// that mixes the parameter with literal text -- right for
+/// "Provably" is load-bearing: this deliberately does not consult
+/// [`FlowGraph::origin_of`]/[`Prov`] at all, because `Prov::combine` already
+/// resolves `Origin::Parameter` through an f-string that mixes the
+/// parameter with literal text -- right for
 /// `constant_path`/`cli_argument`/`stdin_dispatch`, where a literal
-/// "contributes nothing," but wrong here, since it would call
-/// `f"ping -c 1 {host}"` assigned to a local variable and forwarded a pure
-/// pass-through of `host` once the assignment collapses that fact away.
-/// `tests/corpus/vulnerable/llm10_shell_injection_tool.py`'s `ping_host()`
-/// is exactly that shape, and must stay a defect. Walking the raw syntax
-/// instead means an f-string, a `+`/`%` concatenation, `.format(...)`, or
-/// `.join(...)` anywhere between the parameter and the sink is never
-/// mistaken for a bare pass-through, matching the fix's own "'pure' means no
-/// f-string, +, %, .format, or .join anywhere between the parameter and the
-/// sink" rule exactly.
-fn is_syntactically_bare_passthrough<D: Doc>(
-    arg: &Node<'_, D>,
+/// "contributes nothing," but wrong here. Walking the raw syntax and
+/// [`bindings_of`] directly instead means:
+///
+/// - **The root parameter must have zero bindings anywhere in the
+///   function.** A parameter *reassigned* to a composed value using its own
+///   name (`def ping_host(host): host = f"ping -c 1 {host}"`) is not exempt
+///   just because the name matches a parameter -- the reassignment is
+///   itself a binding, so the zero-bindings rule catches it the same as any
+///   other name.
+/// - **A local alias name must have *exactly one* binding in the whole
+///   function, and that one binding must be a plain `assignment`** (not
+///   `augmented_assignment`, not a `for`/`with`/`except` target, not a
+///   walrus) **whose right-hand side is itself provably pure with one fewer
+///   hop available.** A second binding anywhere -- including one in a
+///   sibling branch this walk does not attempt to prove unreachable from the
+///   sink (`if cond: cmd = f"..." else: cmd = p`) -- makes the name
+///   ineligible, and so does any non-`assignment` binding kind (a `for cmd
+///   in [...]:` target, in particular, is *counted* as a binding by
+///   [`bindings_of`] specifically so it disqualifies the name here, even
+///   though this function has no way to reason about what a `for` target
+///   actually iterates over).
+/// - **`self`/`cls` never qualify as a parameter root** -- see
+///   [`is_self_or_cls`].
+///
+/// Any of the above that this walk cannot fully account for answers `false`
+/// (stays a defect) rather than guessing `true`. Confirmed against this
+/// repo's own `llm10_shell_injection_tool.py`'s `ping_host()` (an f-string
+/// mixing a parameter with literal text, aliased through a local variable)
+/// and a set of constructed probes covering a reassigned parameter, a
+/// branch-split alias, and a `for`-loop rebinding -- see this module's own
+/// tests.
+fn is_provably_bare_passthrough<D: Doc>(
+    node: &Node<'_, D>,
     enclosing: &Node<'_, D>,
     parameters: &[String],
+    hops: u8,
 ) -> bool {
-    if is_bare_parameter_expr(arg, parameters) {
-        return true;
+    match node.kind().as_ref() {
+        "attribute" => node.field("object").is_some_and(|object| {
+            is_provably_bare_passthrough(&object, enclosing, parameters, hops)
+        }),
+        "subscript" => node
+            .field("value")
+            .is_some_and(|value| is_provably_bare_passthrough(&value, enclosing, parameters, hops)),
+        "identifier" => {
+            let name = node.text();
+            if is_self_or_cls(&name) {
+                return false;
+            }
+            let bindings = bindings_of(enclosing, &name);
+            if bindings.is_empty() {
+                return parameters.iter().any(|p| p == name.as_ref());
+            }
+            if hops == 0 {
+                return false;
+            }
+            let [only] = bindings.as_slice() else {
+                return false; // more than one binding: which one reaches the sink is ambiguous.
+            };
+            only.kind() == "assignment"
+                && only.field("right").is_some_and(|value| {
+                    is_provably_bare_passthrough(&value, enclosing, parameters, hops - 1)
+                })
+        }
+        _ => false,
     }
-    if arg.kind() != "identifier" {
-        return false;
-    }
-    last_assignment_before(enclosing, &arg.text(), arg.range().start)
-        .is_some_and(|value| is_bare_parameter_expr(&value, parameters))
 }
 
 /// Whether this file calls a catalogued `kind` sink anywhere.
@@ -2639,6 +2701,165 @@ def ping_host(host):
             .field("arguments")
             .and_then(|args| args.named_children().next())
             .expect("subprocess.check_output's first argument");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// The `call` node and its first positional argument for the first call
+    /// whose callee's own text equals `callee` -- a small shared helper for
+    /// the fix-round-1 regression tests below, which all need both the
+    /// whole sink call and its captured argument.
+    fn call_and_first_arg<'r>(
+        root: &'r AstGrep<StrDoc<Python>>,
+        callee: &str,
+    ) -> (Node<'r, StrDoc<Python>>, Node<'r, StrDoc<Python>>) {
+        let call = root
+            .root()
+            .dfs()
+            .find(|node| {
+                node.kind() == "call" && node.field("function").is_some_and(|f| f.text() == callee)
+            })
+            .unwrap_or_else(|| panic!("a call to {callee}"));
+        let arg = call
+            .field("arguments")
+            .and_then(|args| args.named_children().next())
+            .unwrap_or_else(|| panic!("{callee}'s first argument"));
+        (call, arg)
+    }
+
+    /// Fix round 1, reviewer finding C1: a parameter *reassigned* to a
+    /// composed value using its own name must not be treated as bare just
+    /// because the identifier's text still matches a parameter name -- the
+    /// reassignment is itself a binding.
+    #[test]
+    fn a_parameter_reassigned_to_a_composed_value_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def ping_host(host):
+    host = f\"ping -c 1 {host}\"
+    subprocess.check_output(host, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.check_output");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 1, reviewer finding C2: a name bound differently in two
+    /// arms of an `if`/`else` is ambiguous -- this file-local syntactic
+    /// check has no way to prove which arm's binding reaches the sink, so a
+    /// second binding anywhere disqualifies the name regardless of branch.
+    #[test]
+    fn a_branch_split_alias_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(p, condition):
+    if condition:
+        cmd = f\"ping -v {p}\"
+    else:
+        cmd = p
+    subprocess.run(cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 1, reviewer finding C2: a `for` loop's own target is a
+    /// binding [`is_provably_bare_passthrough`] cannot reason about (it
+    /// only ever follows a plain `assignment`), so it disqualifies the name
+    /// even though, in this particular case, the loop runs exactly once.
+    #[test]
+    fn a_for_loop_target_alias_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(p):
+    for cmd in [f\"ping {p}\"]:
+        subprocess.run(cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 1, reviewer finding C3: two unrelated
+    /// `BaseHTTPRequestHandler` subclasses each defining their own `do_GET`
+    /// must each be independently recognized as an entry point -- deciding
+    /// entry-point status from a name-keyed map that drops an ambiguous
+    /// (multiply-defined) name would wrongly strip *both* of their
+    /// protection.
+    #[test]
+    fn each_of_two_same_named_do_get_methods_is_independently_an_entry_point() {
+        let source = "\
+import subprocess
+
+
+class HandlerA:
+    def do_GET(self):
+        cmd = self.path
+        subprocess.run(cmd, shell=True)
+
+
+class HandlerB:
+    def do_GET(self):
+        cmd = self.headers.get(\"X-Cmd\")
+        subprocess.run(cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        // Both calls are textually identical shapes (`subprocess.run(cmd,
+        // shell=True)`), so `call_and_first_arg` would always find the same
+        // one -- resolve each occurrence explicitly instead.
+        let calls: Vec<_> = root
+            .root()
+            .dfs()
+            .filter(|node| {
+                node.kind() == "call"
+                    && node
+                        .field("function")
+                        .is_some_and(|f| f.text() == "subprocess.run")
+            })
+            .collect();
+        assert_eq!(calls.len(), 2, "expected both do_GET bodies to match");
+        for call in calls {
+            let arg = call
+                .field("arguments")
+                .and_then(|args| args.named_children().next())
+                .expect("subprocess.run's first argument");
+            assert!(
+                !graph.is_passthrough_observation_eligible(&call, &arg),
+                "each do_GET must independently be recognized as an entry point"
+            );
+        }
+    }
+
+    /// Fix round 1, reviewer finding I1b: `self`/`cls` must never qualify as
+    /// a bare-parameter root. `self.cmd` here was set in `__init__` from a
+    /// real parameter, but this file-local analysis has no way to trace an
+    /// attribute write in one method to a read in another, so it must stay
+    /// ineligible rather than being treated as "just another parameter".
+    #[test]
+    fn a_self_attribute_is_never_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+class Runner:
+    def __init__(self, cmd):
+        self.cmd = cmd
+
+    def go(self):
+        subprocess.run(self.cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
 
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
