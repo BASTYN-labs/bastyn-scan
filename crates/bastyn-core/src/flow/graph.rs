@@ -454,12 +454,37 @@ impl FlowGraph {
         if self.source_kind_of(arg.node_id()).is_some() {
             return false; // defense-in-depth; see this fn's own doc comment
         }
+        // `SCOPE_KINDS`, not just `"function_definition"`: a `lambda` opens
+        // its own scope exactly as a `def` does (see this module's own
+        // `Analyzer`, which already treats the two identically -- both are
+        // in `SCOPE_KINDS`). An earlier revision of this check walked
+        // straight past an intervening `lambda` looking only for the
+        // nearest `function_definition`, so `list(map(lambda cmd:
+        // subprocess.run(cmd, shell=True), cmds))` asked whether the
+        // *outer* function's own `cmd` parameter was untouched -- the wrong
+        // question entirely, since the lambda's own `cmd` parameter shadows
+        // it and is what the sink actually reads. Stopping at the nearest
+        // `SCOPE_KINDS` ancestor here is what keeps this search consistent
+        // with `own_scope_descendants`, which already stops at the same
+        // boundary when walking a function's own body.
         let Some(enclosing) = matched
             .ancestors()
-            .find(|n| n.kind() == "function_definition")
+            .find(|n| SCOPE_KINDS.contains(&n.kind().as_ref()))
         else {
             return false;
         };
+        if enclosing.kind() == "lambda" {
+            // A lambda has no name, so it can never itself be a recognized
+            // entry point or be found in `entry_point_forwards` --
+            // `flow.passthrough_downgrade` is about named `def`s, per the
+            // spec. This also covers the immediately-invoked-lambda and
+            // default-argument-capture variants of the same shape: whatever
+            // the lambda's own parameter traces back to outside the lambda
+            // is exactly the "value from a caller this graph does not see"
+            // case `Origin::Parameter` already means, so it stays a defect
+            // rather than being evaluated as if it were a named function.
+            return false;
+        }
         if is_entry_point_function(&enclosing) {
             return false;
         }
@@ -853,6 +878,39 @@ enum Occurrence {
     Other,
 }
 
+/// Node kinds that only ever delegate their own role in a read/write
+/// question to what they immediately contain: a `(cmd)` parenthesized
+/// wrapper, an `await`ed expression, a `tuple`/`list`/`set` literal, or a
+/// conditional expression's own arms. Each of these can appear equally well
+/// in a read position (`f((cmd))`) or wrapping the target of a binding --
+/// confirmed against this repo's own tree-sitter-python grammar: `with
+/// ctx() as (cmd):` parses `(cmd)` as a plain `parenthesized_expression`,
+/// not a dedicated pattern kind, since a single name with no comma never
+/// becomes a tuple pattern. Whether an identifier inside one of these is a
+/// read or a write depends entirely on where the WRAPPER itself sits, not
+/// on the wrapper's own kind, so [`classify_occurrence`] climbs through a
+/// chain of these before deciding, rather than [`is_definitely_safe_read`]
+/// accepting them unconditionally at whatever depth it first meets one (the
+/// bug this constant and the climb exist to fix: `is_definitely_safe_read`
+/// used to accept these kinds outright, so `(cmd)` right there as an
+/// `as`-pattern target was wrongly called a safe read of `cmd`).
+///
+/// `argument_list` is deliberately NOT included, even though it is exactly
+/// as much a syntactic "wrapper": unlike the others, it can never
+/// legitimately sit in a write position (`f(cmd) = x` is not valid Python),
+/// and climbing past it would ask whether the *`argument_list` itself* is the
+/// `function` field of the enclosing `call` -- always false -- wrongly
+/// disqualifying every ordinary call argument. It stays a terminal safe
+/// read in [`is_definitely_safe_read`] instead.
+const WRAPPER_KINDS: &[&str] = &[
+    "parenthesized_expression",
+    "await",
+    "tuple",
+    "list",
+    "set",
+    "conditional_expression",
+];
+
 /// Whether `id`, as a child of `parent`, sits in a position this analysis
 /// can prove is a value-read -- one that cannot possibly rebind `id`'s own
 /// name, whatever else the surrounding code does.
@@ -864,6 +922,9 @@ enum Occurrence {
 /// treated as safe. A construct not on THIS list, whatever it is, falls to
 /// [`Occurrence::Other`] instead ([`classify_occurrence`]'s job), which
 /// disqualifies the whole name -- fails closed on anything unrecognized.
+/// Only ever called by [`classify_occurrence`] on the first NON-[`WRAPPER_KINDS`]
+/// ancestor it finds, so `parent` here is never itself one of those wrapper
+/// kinds.
 ///
 /// `attribute`'s and `subscript`'s own object/value fields are read
 /// positions of the *base* name, not a rebinding of it: mutating what a
@@ -885,15 +946,9 @@ fn is_definitely_safe_read<D: Doc>(id: &Node<'_, D>, parent: &Node<'_, D>) -> bo
             is_field("left") || is_field("right")
         }
         "unary_operator" | "not_operator" => is_field("argument"),
-        "conditional_expression"
-        | "parenthesized_expression"
-        | "await"
-        | "return_statement"
+        "return_statement"
         | "interpolation"
         | "argument_list"
-        | "list"
-        | "tuple"
-        | "set"
         | "dictionary"
         | "pair"
         | "expression_statement"
@@ -911,25 +966,52 @@ fn is_definitely_safe_read<D: Doc>(id: &Node<'_, D>, parent: &Node<'_, D>) -> bo
 /// one reads or binds a variable called that; they are field/parameter
 /// labels this scan must not count as an occurrence of the name at all,
 /// positive or negative.
+///
+/// Climbs through a chain of [`WRAPPER_KINDS`] ancestors before deciding --
+/// `(cmd)` as a `with ... as (cmd):` target is a `parenthesized_expression`
+/// wrapping `cmd`, and that wrapper's *own* relationship to its parent
+/// (`as_pattern_target`, not a read context) is what actually determines
+/// whether `cmd` is bound here, not the fact that a parenthesized expression
+/// can also, elsewhere, be an ordinary read.
 fn classify_occurrence<D: Doc>(id: &Node<'_, D>) -> Option<Occurrence> {
-    let parent = id.parent()?;
-    let is_field = |field: &str| {
-        parent
-            .field(field)
-            .is_some_and(|node| node.node_id() == id.node_id())
-    };
-    if (parent.kind() == "attribute" && is_field("attribute"))
-        || (parent.kind() == "keyword_argument" && is_field("name"))
-    {
-        return None;
+    let mut current = id.clone();
+    loop {
+        let Some(parent) = current.parent() else {
+            return Some(Occurrence::SafeRead);
+        };
+        let is_field = |field: &str| {
+            parent
+                .field(field)
+                .is_some_and(|node| node.node_id() == current.node_id())
+        };
+        if current.node_id() == id.node_id()
+            && ((parent.kind() == "attribute" && is_field("attribute"))
+                || (parent.kind() == "keyword_argument" && is_field("name")))
+        {
+            return None;
+        }
+        if parent.kind() == "assignment" && is_field("left") {
+            return Some(if current.node_id() == id.node_id() {
+                Occurrence::PlainAssignmentTarget
+            } else {
+                // `id` is bound only via a pattern wrapped around it
+                // (`(cmd) = x`), not a bare `identifier = ...` -- not the
+                // "one plain local alias" shape this analysis follows, but
+                // still very much a binding, so it must disqualify rather
+                // than fall through to a read check.
+                Occurrence::Other
+            });
+        }
+        if WRAPPER_KINDS.contains(&parent.kind().as_ref()) {
+            current = parent;
+            continue;
+        }
+        return Some(if is_definitely_safe_read(&current, &parent) {
+            Occurrence::SafeRead
+        } else {
+            Occurrence::Other
+        });
     }
-    if parent.kind() == "assignment" && is_field("left") {
-        return Some(Occurrence::PlainAssignmentTarget);
-    }
-    if is_definitely_safe_read(id, &parent) {
-        return Some(Occurrence::SafeRead);
-    }
-    Some(Occurrence::Other)
 }
 
 /// Every real occurrence of the identifier `name` within `enclosing`'s own
@@ -3161,6 +3243,52 @@ def run(cmd):
         cmd = f\"ping {cmd}\"
     fix()
     subprocess.run(cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 3, reviewer finding (lambda scope-boundary mismatch): a
+    /// `lambda`'s own parameter shadows a same-named parameter of the
+    /// enclosing named function. Finding "the enclosing function" by
+    /// walking up to the nearest `SCOPE_KINDS` ancestor (not just the
+    /// nearest `function_definition`) is what makes this stop at the
+    /// lambda -- which, having no name, is never eligible for the downgrade
+    /// at all.
+    #[test]
+    fn a_lambda_parameter_shadowing_the_outer_function_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run_all(cmd):
+    cmds = [f\"ping {cmd}\", f\"traceroute {cmd}\"]
+    return list(map(lambda cmd: subprocess.run(cmd, shell=True), cmds))
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 3, reviewer finding (wrapper-node-in-write-position fails
+    /// open): `with ctx(...) as (cmd):` parses `(cmd)` as a
+    /// `parenthesized_expression` wrapping the bound name, not a dedicated
+    /// pattern kind -- `classify_occurrence` must climb through the
+    /// wrapper to see that it sits inside an `as_pattern_target` (a binding
+    /// context), rather than accepting `parenthesized_expression` as an
+    /// unconditionally safe read.
+    #[test]
+    fn a_parenthesized_as_target_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(cmd):
+    with ctx(f\"ping {cmd}\") as (cmd):
+        subprocess.run(cmd, shell=True)
 ";
         let (root, graph) = build_python_graph(source);
         let (call, arg) = call_and_first_arg(&root, "subprocess.run");
