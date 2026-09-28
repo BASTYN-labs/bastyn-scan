@@ -723,12 +723,18 @@ fn is_entry_point_function<D: Doc>(function: &Node<'_, D>) -> bool {
 ///
 /// Every `function_definition` in the file is checked against
 /// [`is_entry_point_function`] directly (no name-keyed set, and so no
-/// redefinition ambiguity -- see that function's own doc comment), and only
-/// a call through a bare `identifier` (`_exec(cmd)`) is matched -- a
-/// qualified call like `self.method(cmd)` is out of scope, since this is
-/// matching local `def` names specifically, not catalogued sinks the way
-/// [`collect_wrapper_sinks`] does. (This is a known, bounded limitation, not
-/// an oversight: see `bastyn.yml`'s comment on `BAS-LLM10-009`.)
+/// redefinition ambiguity -- see that function's own doc comment). A call
+/// through a bare `identifier` (`_exec(cmd)`) is matched, and so is one
+/// through `self.NAME(...)`/`cls.NAME(...)` (`self._exec(cmd)`) -- an
+/// entry-point *method* calling a sibling method the same class defines is
+/// exactly as much "reachable from this entry point" as a bare local
+/// function call is, and mistaking it for out-of-scope (as an earlier
+/// revision of this function did) let a real `@mcp.tool()` method's own
+/// forwarded parameter go unrecognized. Any other qualified call
+/// (`obj.method(cmd)` for some other receiver, or a call two hops removed
+/// through an intermediate local function) is still out of scope -- see
+/// `bastyn.yml`'s comment on `BAS-LLM10-009` for the remaining, documented,
+/// bounded limitation.
 fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -> HashSet<String> {
     let mut forwards = HashSet::new();
 
@@ -753,9 +759,20 @@ fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -
             let Some(callee) = call.field("function") else {
                 continue;
             };
-            if callee.kind() != "identifier" {
+            let forwarded_name = match callee.kind().as_ref() {
+                "identifier" => Some(callee.text().into_owned()),
+                "attribute" => callee
+                    .field("object")
+                    .filter(|object| {
+                        object.kind() == "identifier" && is_self_or_cls(&object.text())
+                    })
+                    .and_then(|_| callee.field("attribute"))
+                    .map(|attribute| attribute.text().into_owned()),
+                _ => None,
+            };
+            let Some(forwarded_name) = forwarded_name else {
                 continue;
-            }
+            };
             let Some(arguments) = call.field("arguments") else {
                 continue;
             };
@@ -771,7 +788,7 @@ fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -
                     .is_some_and(|parameter| parameters.iter().any(|p| p == parameter))
             });
             if forwards_a_parameter {
-                forwards.insert(callee.text().into_owned());
+                forwards.insert(forwarded_name);
             }
         }
     }
@@ -798,52 +815,194 @@ fn is_self_or_cls(name: &str) -> bool {
     matches!(name, "self" | "cls")
 }
 
-/// Every place `name` is bound (not merely read) anywhere in `enclosing`'s
-/// own body: a plain `assignment` or `augmented_assignment` target, a
-/// `named_expression` (walrus `:=`) target, a `for` loop's own target, or a
-/// `with`/`except` `as`-pattern target. Returned as the binding node itself
-/// (`assignment`/`augmented_assignment`/`named_expression`/`for_statement`/
-/// `as_pattern`), so a caller can both count how many bindings exist and,
-/// for the one binding kind ([`is_provably_bare_passthrough`] treats as
-/// possibly "a plain local alias"), read its right-hand side.
+/// The descendants of `node` that belong to `node`'s own lexical scope:
+/// every descendant reached without crossing into a nested
+/// `function_definition`/`lambda`'s own body ([`SCOPE_KINDS`]). Callers pass
+/// a function's own `body` block, not the `function_definition` node itself,
+/// so the function's own parameter *declarations* are never included --
+/// only what its body actually does.
+fn own_scope_descendants<'r, D: Doc>(node: &Node<'r, D>) -> Vec<Node<'r, D>> {
+    let mut out = Vec::new();
+    for child in node.children() {
+        if SCOPE_KINDS.contains(&child.kind().as_ref()) {
+            continue;
+        }
+        out.push(child.clone());
+        out.extend(own_scope_descendants(&child));
+    }
+    out
+}
+
+/// What role one occurrence of a name plays, for
+/// [`is_provably_bare_passthrough`]'s purposes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Occurrence {
+    /// The target of a plain `identifier = ...` assignment -- the only
+    /// shape this analysis is willing to follow as "one plain local alias".
+    PlainAssignmentTarget,
+    /// A read this analysis can prove never rebinds the name -- see
+    /// [`is_definitely_safe_read`].
+    SafeRead,
+    /// Anything else: a `for`/comprehension target, a `with`/`except`
+    /// `as`-target, a walrus target, a match/case capture, one name in a
+    /// tuple-unpacking assignment, a `del` target, or any construct this
+    /// function does not specifically recognize. Deliberately the default
+    /// for anything not explicitly matched by the other two variants, so an
+    /// unrecognized construct fails closed rather than silently passing as
+    /// safe.
+    Other,
+}
+
+/// Whether `id`, as a child of `parent`, sits in a position this analysis
+/// can prove is a value-read -- one that cannot possibly rebind `id`'s own
+/// name, whatever else the surrounding code does.
 ///
-/// Deliberately simpler than the graph's own binding resolution
-/// ([`Analyzer`]'s branch-dominance rules in this module's "Resolution
-/// rules" docs): every binding of `name` in the function counts, regardless
-/// of which branch it sits in or whether it comes before or after any
-/// particular use. That is deliberate, not a shortcut taken for
-/// convenience: [`is_provably_bare_passthrough`] needs to know whether
-/// there is *any* ambiguity about what value reaches the sink, and a branch
-/// a fuller, dominance-aware analysis might rule out is still a branch this
-/// conservative count cannot rule out. Overcounting only ever makes
-/// [`is_provably_bare_passthrough`] answer `false` when a fuller analysis
-/// might have said `true`, which is the safe direction (a pass-through
-/// helper stays a defect rather than being wrongly downgraded).
-fn bindings_of<'r, D: Doc>(enclosing: &Node<'r, D>, name: &str) -> Vec<Node<'r, D>> {
-    own_body(enclosing)
-        .flat_map(|statement| statement.dfs().collect::<Vec<_>>())
-        .filter(|node| match node.kind().as_ref() {
-            "assignment" | "augmented_assignment" => node
-                .field("left")
-                .is_some_and(|left| left.kind() == "identifier" && left.text() == name),
-            "named_expression" => node
-                .field("name")
-                .is_some_and(|target| target.text() == name),
-            "for_statement" => node
-                .field("left")
-                .is_some_and(|left| left.kind() == "identifier" && left.text() == name),
-            // `with EXPR as X:` / `except EXPR as X:` -- tree-sitter-python
-            // wraps the target one level down in an `as_pattern_target`
-            // rather than exposing it through a named field on `as_pattern`
-            // itself; mirrors `Analyzer::collect`'s own `"as_pattern"` arm.
-            "as_pattern" => node
-                .children()
-                .find(|child| child.kind() == "as_pattern_target")
-                .and_then(|target| target.named_children().next())
-                .is_some_and(|inner| inner.kind() == "identifier" && inner.text() == name),
-            _ => false,
-        })
+/// Deliberately a whitelist of safe reads, not a blacklist of unsafe writes:
+/// the reverse -- this module's own original design -- missed a `for`-loop
+/// target, a comprehension target, and a match/case capture in turn, each
+/// time because "not on the list of writes I thought of" was silently
+/// treated as safe. A construct not on THIS list, whatever it is, falls to
+/// [`Occurrence::Other`] instead ([`classify_occurrence`]'s job), which
+/// disqualifies the whole name -- fails closed on anything unrecognized.
+///
+/// `attribute`'s and `subscript`'s own object/value fields are read
+/// positions of the *base* name, not a rebinding of it: mutating what a
+/// name points to (`hook.command = ...`) does not rebind `hook` itself --
+/// that is [`path_is_reassigned`]'s separate question, about the
+/// *attribute/subscript path*, not the base identifier.
+fn is_definitely_safe_read<D: Doc>(id: &Node<'_, D>, parent: &Node<'_, D>) -> bool {
+    let is_field = |field: &str| {
+        parent
+            .field(field)
+            .is_some_and(|node| node.node_id() == id.node_id())
+    };
+    match parent.kind().as_ref() {
+        "attribute" => is_field("object"),
+        "subscript" | "keyword_argument" => is_field("value"),
+        "assignment" | "augmented_assignment" => is_field("right"),
+        "call" => is_field("function"),
+        "binary_operator" | "boolean_operator" | "comparison_operator" => {
+            is_field("left") || is_field("right")
+        }
+        "unary_operator" | "not_operator" => is_field("argument"),
+        "conditional_expression"
+        | "parenthesized_expression"
+        | "await"
+        | "return_statement"
+        | "interpolation"
+        | "argument_list"
+        | "list"
+        | "tuple"
+        | "set"
+        | "dictionary"
+        | "pair"
+        | "expression_statement"
+        | "assert_statement"
+        | "print_statement"
+        | "yield" => true,
+        _ => false,
+    }
+}
+
+/// Classify one `identifier` node's occurrence, or `None` when it is not
+/// really a variable reference at all -- an attribute's own *name* (the
+/// `command` in `hook.command`) or a keyword argument's own *name* (the
+/// `shell` in `shell=True`) happen to be `identifier` nodes too, but neither
+/// one reads or binds a variable called that; they are field/parameter
+/// labels this scan must not count as an occurrence of the name at all,
+/// positive or negative.
+fn classify_occurrence<D: Doc>(id: &Node<'_, D>) -> Option<Occurrence> {
+    let parent = id.parent()?;
+    let is_field = |field: &str| {
+        parent
+            .field(field)
+            .is_some_and(|node| node.node_id() == id.node_id())
+    };
+    if (parent.kind() == "attribute" && is_field("attribute"))
+        || (parent.kind() == "keyword_argument" && is_field("name"))
+    {
+        return None;
+    }
+    if parent.kind() == "assignment" && is_field("left") {
+        return Some(Occurrence::PlainAssignmentTarget);
+    }
+    if is_definitely_safe_read(id, &parent) {
+        return Some(Occurrence::SafeRead);
+    }
+    Some(Occurrence::Other)
+}
+
+/// Every real occurrence of the identifier `name` within `enclosing`'s own
+/// lexical scope (not counting a nested function's/lambda's own body -- see
+/// [`own_scope_descendants`]), classified by [`classify_occurrence`], paired
+/// with the occurrence's own node so [`is_provably_bare_passthrough`] can
+/// read the right-hand side of the one binding it might turn out to permit.
+fn occurrences_of<'r, D: Doc>(
+    enclosing: &Node<'r, D>,
+    name: &str,
+) -> Vec<(Node<'r, D>, Occurrence)> {
+    let Some(body) = enclosing.field("body") else {
+        return Vec::new();
+    };
+    own_scope_descendants(&body)
+        .into_iter()
+        .filter(|node| node.kind() == "identifier" && node.text() == name)
+        .filter_map(|node| classify_occurrence(&node).map(|occurrence| (node, occurrence)))
         .collect()
+}
+
+/// Whether `enclosing`, or any function nested inside it, contains a
+/// `nonlocal`/`global` declaration naming `name`.
+///
+/// Checked separately from, and more broadly than, [`occurrences_of`]:
+/// `nonlocal` specifically pulls a name from an *enclosing* scope into a
+/// nested function, which is exactly the case [`own_scope_descendants`]'s
+/// scope boundary is designed to NOT see (an identically-named local in a
+/// nested function is ordinarily unrelated to the outer one). Rather than
+/// modelling `nonlocal`'s scope-crossing semantics precisely, any mention
+/// anywhere disqualifies the name outright, unconditionally -- the safe
+/// direction, since it only ever prevents a downgrade, never causes a wrong
+/// one, so no fixture proving this needs to be a `known_gap`: disqualifying
+/// unconditionally can never leak a real defect as an observation.
+fn is_declared_nonlocal_or_global<D: Doc>(enclosing: &Node<'_, D>, name: &str) -> bool {
+    enclosing.dfs().any(|node| {
+        matches!(
+            node.kind().as_ref(),
+            "nonlocal_statement" | "global_statement"
+        ) && node
+            .children()
+            .any(|child| child.kind() == "identifier" && child.text() == name)
+    })
+}
+
+/// Whether `path` (an `attribute` or `subscript` expression, e.g.
+/// `hook.command` or `opts["cmd"]`) is itself the target of an `assignment`
+/// or `augmented_assignment` anywhere in `enclosing` -- an exact text match
+/// on the assignment's own left-hand side against `path`'s own text.
+///
+/// This is a narrow, bounded check, not general mutated-container tracking:
+/// it catches `hook.command = f"..."` / `run(hook.command)` in the same
+/// function, but not a mutation reached only through a different alias of
+/// the same underlying object, or one in a different function. That is
+/// deliberate -- see `tests/corpus/vulnerable/real_misses/
+/// shell_command_via_mutated_registry.py`'s own `known_gap` entry and
+/// `bastyn.yml`'s comment on `BAS-LLM10-009` for the existing, larger,
+/// out-of-scope version of this same class of problem (a module-level
+/// container mutated through a subscript/attribute-call target that the
+/// graph's binding model does not track at all). Exact text matching is a
+/// bounded, cheap approximation of that same idea, scoped to one function
+/// and one specific path.
+fn path_is_reassigned<D: Doc>(enclosing: &Node<'_, D>, path: &Node<'_, D>) -> bool {
+    let Some(body) = enclosing.field("body") else {
+        return false;
+    };
+    let text = path.text();
+    own_scope_descendants(&body).into_iter().any(|node| {
+        matches!(node.kind().as_ref(), "assignment" | "augmented_assignment")
+            && node.field("left").is_some_and(|left| {
+                matches!(left.kind().as_ref(), "attribute" | "subscript") && left.text() == text
+            })
+    })
 }
 
 /// Whether `node`, peeled through any `attribute`/`subscript` wrapper, is a
@@ -857,37 +1016,41 @@ fn bindings_of<'r, D: Doc>(enclosing: &Node<'r, D>, name: &str) -> Vec<Node<'r, 
 /// resolves `Origin::Parameter` through an f-string that mixes the
 /// parameter with literal text -- right for
 /// `constant_path`/`cli_argument`/`stdin_dispatch`, where a literal
-/// "contributes nothing," but wrong here. Walking the raw syntax and
-/// [`bindings_of`] directly instead means:
+/// "contributes nothing," but wrong here. Walking the raw syntax directly
+/// instead means:
 ///
-/// - **The root parameter must have zero bindings anywhere in the
-///   function.** A parameter *reassigned* to a composed value using its own
-///   name (`def ping_host(host): host = f"ping -c 1 {host}"`) is not exempt
-///   just because the name matches a parameter -- the reassignment is
-///   itself a binding, so the zero-bindings rule catches it the same as any
-///   other name.
-/// - **A local alias name must have *exactly one* binding in the whole
-///   function, and that one binding must be a plain `assignment`** (not
-///   `augmented_assignment`, not a `for`/`with`/`except` target, not a
-///   walrus) **whose right-hand side is itself provably pure with one fewer
-///   hop available.** A second binding anywhere -- including one in a
-///   sibling branch this walk does not attempt to prove unreachable from the
-///   sink (`if cond: cmd = f"..." else: cmd = p`) -- makes the name
-///   ineligible, and so does any non-`assignment` binding kind (a `for cmd
-///   in [...]:` target, in particular, is *counted* as a binding by
-///   [`bindings_of`] specifically so it disqualifies the name here, even
-///   though this function has no way to reason about what a `for` target
-///   actually iterates over).
 /// - **`self`/`cls` never qualify as a parameter root** -- see
 ///   [`is_self_or_cls`].
+/// - **A name declared `nonlocal`/`global` anywhere never qualifies** -- see
+///   [`is_declared_nonlocal_or_global`].
+/// - **The root parameter must have zero occurrences classified as anything
+///   other than a safe read, and at most one occurrence that is the target
+///   of a plain assignment, anywhere in the function.** A parameter
+///   *reassigned* to a composed value using its own name (`def
+///   ping_host(host): host = f"ping -c 1 {host}"`) is not exempt just
+///   because the name matches a parameter -- the reassignment counts as an
+///   occurrence, so the zero-non-read-occurrences rule catches it. A `for`
+///   target, a comprehension target, a match/case capture, or a second
+///   assignment anywhere (including a sibling branch this walk does not
+///   attempt to prove unreachable from the sink) all classify as
+///   [`Occurrence::Other`] via [`classify_occurrence`] and disqualify the
+///   name outright -- not because each shape is individually enumerated as
+///   unsafe, but because [`is_definitely_safe_read`] does not recognize any
+///   of them as safe, and unrecognized is disqualifying by construction.
+/// - **A local alias name's one permitted assignment's right-hand side must
+///   itself be provably pure, with one fewer hop available.**
+/// - **An `attribute`/`subscript` path that is itself reassigned anywhere
+///   in the function is never eligible**, regardless of what its root
+///   parameter looks like -- see [`path_is_reassigned`].
 ///
 /// Any of the above that this walk cannot fully account for answers `false`
 /// (stays a defect) rather than guessing `true`. Confirmed against this
 /// repo's own `llm10_shell_injection_tool.py`'s `ping_host()` (an f-string
 /// mixing a parameter with literal text, aliased through a local variable)
 /// and a set of constructed probes covering a reassigned parameter, a
-/// branch-split alias, and a `for`-loop rebinding -- see this module's own
-/// tests.
+/// branch-split alias, a `for`-loop rebinding, a comprehension target, a
+/// match/case capture, a `nonlocal` write, and an attribute/subscript path
+/// reassigned in place -- see this module's own tests.
 fn is_provably_bare_passthrough<D: Doc>(
     node: &Node<'_, D>,
     enclosing: &Node<'_, D>,
@@ -895,31 +1058,44 @@ fn is_provably_bare_passthrough<D: Doc>(
     hops: u8,
 ) -> bool {
     match node.kind().as_ref() {
-        "attribute" => node.field("object").is_some_and(|object| {
-            is_provably_bare_passthrough(&object, enclosing, parameters, hops)
-        }),
-        "subscript" => node
-            .field("value")
-            .is_some_and(|value| is_provably_bare_passthrough(&value, enclosing, parameters, hops)),
+        "attribute" => {
+            !path_is_reassigned(enclosing, node)
+                && node.field("object").is_some_and(|object| {
+                    is_provably_bare_passthrough(&object, enclosing, parameters, hops)
+                })
+        }
+        "subscript" => {
+            !path_is_reassigned(enclosing, node)
+                && node.field("value").is_some_and(|value| {
+                    is_provably_bare_passthrough(&value, enclosing, parameters, hops)
+                })
+        }
         "identifier" => {
             let name = node.text();
-            if is_self_or_cls(&name) {
+            if is_self_or_cls(&name) || is_declared_nonlocal_or_global(enclosing, &name) {
                 return false;
             }
-            let bindings = bindings_of(enclosing, &name);
-            if bindings.is_empty() {
-                return parameters.iter().any(|p| p == name.as_ref());
-            }
-            if hops == 0 {
+            let occurrences = occurrences_of(enclosing, &name);
+            if occurrences
+                .iter()
+                .any(|(_, occurrence)| *occurrence == Occurrence::Other)
+            {
                 return false;
             }
-            let [only] = bindings.as_slice() else {
-                return false; // more than one binding: which one reaches the sink is ambiguous.
-            };
-            only.kind() == "assignment"
-                && only.field("right").is_some_and(|value| {
-                    is_provably_bare_passthrough(&value, enclosing, parameters, hops - 1)
-                })
+            let writes: Vec<_> = occurrences
+                .iter()
+                .filter(|(_, occurrence)| *occurrence == Occurrence::PlainAssignmentTarget)
+                .collect();
+            match writes.as_slice() {
+                [] => parameters.iter().any(|p| p == name.as_ref()),
+                [(target, _)] if hops > 0 => target
+                    .parent()
+                    .and_then(|assignment| assignment.field("right"))
+                    .is_some_and(|value| {
+                        is_provably_bare_passthrough(&value, enclosing, parameters, hops - 1)
+                    }),
+                _ => false, // no hops left, or more than one write: ambiguous either way.
+            }
         }
         _ => false,
     }
@@ -2857,6 +3033,134 @@ class Runner:
 
     def go(self):
         subprocess.run(self.cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 2, reviewer finding I1b (the real fix): an entry-point
+    /// *method* forwarding its own parameter into a sibling method via a
+    /// qualified `self.NAME(...)` call must be recognized the same way a
+    /// bare `NAME(...)` call already is.
+    #[test]
+    fn a_qualified_self_forward_from_an_entry_point_method_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+class Tool:
+    def _exec(self, cmd):
+        return subprocess.check_output(cmd, shell=True)
+
+    @mcp.tool()
+    def run(self, cmd):
+        return self._exec(cmd)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.check_output");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 2, reviewer finding N1: an attribute path reassigned in
+    /// place before reaching the sink must not be treated as bare just
+    /// because the sink's own argument looks like an untouched attribute
+    /// read.
+    #[test]
+    fn an_attribute_path_reassigned_in_place_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(hook):
+    hook.command = f\"sh -c {hook.command}\"
+    subprocess.run(hook.command, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 2, reviewer finding N1: the same reasoning as the
+    /// attribute-path test above, for a subscript path.
+    #[test]
+    fn a_subscript_path_reassigned_in_place_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(opts):
+    opts[\"cmd\"] = \"ping \" + opts[\"cmd\"]
+    subprocess.run(opts[\"cmd\"], shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 2, reviewer finding N2: a list comprehension's own `for`
+    /// target shadows the outer parameter of the same name. The read-only
+    /// whitelist in `is_definitely_safe_read` does not recognize a
+    /// `for_in_clause` target as a safe read, so it disqualifies the name
+    /// without needing to specifically enumerate comprehensions as unsafe.
+    #[test]
+    fn a_comprehension_target_shadowing_the_parameter_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(cmd):
+    return [subprocess.run(cmd, shell=True) for cmd in [f\"ping {cmd}\"]]
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 2, reviewer finding N2: a `match`/`case` capture pattern
+    /// shadows the outer parameter of the same name, the same as a
+    /// comprehension target above.
+    #[test]
+    fn a_match_case_capture_shadowing_the_parameter_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(cmd):
+    payload = [f\"ping {cmd}\"]
+    match payload:
+        case [cmd]:
+            subprocess.run(cmd, shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// Fix round 2, reviewer finding N2: a nested function's `nonlocal`
+    /// declaration and reassignment of the outer parameter is invisible to
+    /// `occurrences_of`'s own-scope boundary (a nested function's body is
+    /// deliberately not walked, since an identically-named local there is
+    /// ordinarily unrelated) -- `is_declared_nonlocal_or_global` catches it
+    /// separately and unconditionally.
+    #[test]
+    fn a_nonlocal_reassignment_from_a_nested_function_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(cmd):
+    def fix():
+        nonlocal cmd
+        cmd = f\"ping {cmd}\"
+    fix()
+    subprocess.run(cmd, shell=True)
 ";
         let (root, graph) = build_python_graph(source);
         let (call, arg) = call_and_first_arg(&root, "subprocess.run");
