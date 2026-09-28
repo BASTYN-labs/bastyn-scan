@@ -116,7 +116,26 @@ struct KnownFalsePositive {
 ///
 /// Entries marked `requires_network` are excluded: they are measurement limits
 /// of an offline gate, not things the scanner cannot detect.
-const MAX_KNOWN_GAPS: usize = 15;
+const MAX_KNOWN_GAPS: usize = 16;
+// Raised from 15 to 16 on 2026-09-28 (Fix D fix round 1, reviewer finding
+// I1c), admitting one deliberate new gap: a known_gap entry for
+// vulnerable/real_misses/shell_command_via_chained_tool_forward.py.
+// BAS-LLM10-009's flow.passthrough_downgrade clause forwards a tool's own
+// parameter through collect_entry_point_forwards
+// (crates/bastyn-core/src/flow/graph.rs) only one hop deep, through a bare
+// local-function call -- the same bounded-depth precedent
+// FlowGraph::wrapper_sink_parameters's own doc comment already accepts on
+// the sink side ("a wrapper around a wrapper is out of reach by
+// construction, not merely untested"). A parameter forwarded through a
+// second local function before reaching the shell-command helper
+// (@mcp.tool() run(cmd) -> _outer(cmd) -> _inner(cmd)) is invisible to it,
+// so the helper is wrongly reported as an observation instead of a defect.
+// Extending this to arbitrary-depth call chains is materially larger than
+// that fix round's scope -- recorded here rather than attempted. See
+// bastyn.yml's comment on BAS-LLM10-009 for the full writeup, which also
+// covers a second, closely related but undocumented-as-its-own-known_gap
+// shape (a *qualified* one-hop forward, self._exec(cmd)).
+//
 // Raised from 14 to 15 on 2026-09-24, admitting one deliberate new gap: a
 // known_gap entry for vulnerable/real_misses/shell_command_via_mutated_registry.py,
 // found during the final review of this round's precision fixes.

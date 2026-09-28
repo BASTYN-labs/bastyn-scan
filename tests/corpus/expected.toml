@@ -668,7 +668,7 @@ why      = "subprocess.run(COMMANDS[component], shell=True), where COMMANDS is a
 
 [[expect]]
 file     = "vulnerable/real_misses/shell_command_via_unreachable_function.py"
-line     = 21
+line     = 23
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "observation"
@@ -1408,7 +1408,7 @@ why      = "HookExecutor.execute(): command is one plain local alias of hook.com
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 19
+line     = 20
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1417,7 +1417,7 @@ why      = "execute_command(): command is a bare pass-through, but execute_comma
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 26
+line     = 27
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1426,7 +1426,7 @@ why      = "_exec(): cmd is a bare pass-through and _exec is not itself an entry
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 39
+line     = 40
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1435,9 +1435,75 @@ why      = "apply_manifest(): manifest traces to json.load(open(path)), a file_r
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 45
+line     = 46
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
 why      = "ping(): the command is an f-string composed around host, not host itself -- not a syntactically bare identifier/attribute/subscript, so flow.passthrough_downgrade's condition 1 fails and this stays a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 58
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "ping_reassigned() (fix round 1 regression, reviewer finding C1): host is reassigned to a composed f-string using its own name before reaching the sink. The reassignment is itself a binding of `host`, so is_provably_bare_passthrough's zero-bindings rule for a parameter root disqualifies it, the same as any other reassigned name would be."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 72
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_branch_alias() (fix round 1 regression, reviewer finding C2): cmd is bound once in each arm of an if/else, one arm composed, the other a bare pass-through. A second binding of the name anywhere in the function -- regardless of which branch -- disqualifies it, since this file-local syntactic check cannot prove which arm's binding reaches the sink."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 82
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_for_loop_alias() (fix round 1 regression, reviewer finding C2): cmd is bound by a for-loop target, not a plain assignment -- is_provably_bare_passthrough only ever follows a plain assignment as its one permitted local-alias hop, so a for-loop target disqualifies the name."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 97
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "HandlerA.do_GET() (fix round 1 regression, reviewer finding C3): two unrelated BaseHTTPRequestHandler subclasses each define their own do_GET. Entry-point status is decided directly from each function's own node, never from a name-keyed map that could drop an ambiguously-defined name, so this do_GET is independently, correctly recognized as an entry point despite HandlerB below sharing its method name."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 106
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "HandlerB.do_GET() (fix round 1 regression, reviewer finding C3): the second do_GET sharing HandlerA's method name above -- both are independently recognized as entry points, so neither is wrongly downgraded."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 121
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "Runner.go() (fix round 1 regression, reviewer finding I1b): self.cmd was set in __init__ from run_tool()'s own @mcp.tool()-decorated parameter, but this file-local analysis cannot trace an attribute write in one method to a read in another. self/cls never qualify as a bare-parameter root, so self.cmd stays a defect."
+
+# ---------------------------------------------------------------------
+# Fix D fix round 1 (2026-09-28), reviewer finding I1c: known, bounded
+# limitation of collect_entry_point_forwards, documented rather than
+# fixed -- see bastyn.yml's comment on BAS-LLM10-009.
+# ---------------------------------------------------------------------
+
+[[known_gap]]
+file     = "vulnerable/real_misses/shell_command_via_chained_tool_forward.py"
+line     = 25
+category = "LLM10"
+why      = "_inner()'s cmd is forwarded from run() (an @mcp.tool() entry point) through _outer() -- two hops, not the one hop collect_entry_point_forwards checks for. flow.passthrough_downgrade wrongly reports this as an observation instead of a defect. The same bounded-depth precedent FlowGraph::wrapper_sink_parameters's own doc comment already accepts for the sink side (\"a wrapper around a wrapper is out of reach by construction, not merely untested\") applies here on the entry-point-forwarding side; extending it to arbitrary-depth call chains is out of this fix's scope."

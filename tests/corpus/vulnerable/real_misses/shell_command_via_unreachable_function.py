@@ -1,21 +1,23 @@
-"""Known false positive: a shell-injection sink inside a function nothing
-in this file calls.
+"""A shell-injection sink inside a function nothing in this file calls,
+reached through a bare pass-through of its own parameter.
 
 BAS-LLM10-009 fires on the function's own body -- a non-literal command
 reaching a shell -- with no reachability analysis: "does anything call
 this" is a whole-program question this file-local engine cannot answer
 (a caller could live in another file, another package, or nowhere at
-all). Recorded as a known_false_positive rather than attempting dead-code
-elimination, which is out of scope for a structural/flow rule -- see
-bastyn.yml's comment on BAS-LLM10-009.
+all). Fix D's flow.passthrough_downgrade clause (2026-09-28) turns this
+specific shape -- a bare pass-through of a non-entry-point function's own
+parameter -- into a correctly-handled observation rather than a false
+positive: see bastyn.yml's comment on BAS-LLM10-009.
 """
 
 import subprocess
 
 
 def run_raw_command(command: str) -> str:
-    """known_false_positive (LLM10): nothing in this corpus imports or
-    calls run_raw_command -- BAS-LLM10-009 has no reachability analysis,
-    so it reports the shape regardless of whether the function is ever
-    invoked."""
+    """Observation (LLM10): nothing in this corpus imports or calls
+    run_raw_command, and command is a bare pass-through of its own
+    parameter with no recognized entry point in this file reaching it --
+    flow.passthrough_downgrade reports this as an observation rather than
+    a defect."""
     return subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT).decode()

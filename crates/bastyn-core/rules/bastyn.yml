@@ -447,6 +447,70 @@ rules:
     # shell_passthrough_helpers.py /
     # tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py for the
     # observation-vs-still-a-defect regression pair.
+    #
+    # 2026-09-28, fix round 1 (security review findings C1/C2/C3/I1a/I1b/I1c
+    # against the initial Fix D landing): three corrected-condition-1 bugs, a
+    # corrected-condition-3 bug, and one documented, bounded remaining gap.
+    #   - C1/C2: condition 1 used to accept any identifier whose *text*
+    #     matched a parameter name, or whose most recent textual assignment
+    #     (regardless of branch) held a bare parameter reference. Both were
+    #     provably unsafe: a parameter reassigned to a composed value using
+    #     its own name (def ping_host(host): host = f"ping -c 1 {host}"),
+    #     a name bound differently in two branches of an if/else, and a
+    #     `for`-loop target all passed the old check and were wrongly
+    #     downgraded. `is_provably_bare_passthrough`
+    #     (crates/bastyn-core/src/flow/graph.rs) replaces this with a
+    #     stricter rule: a name is only a provable pass-through when it has
+    #     *zero* bindings anywhere in the function (the untouched parameter
+    #     case) or *exactly one* binding, of a plain `assignment` (not
+    #     `augmented_assignment`, not a `for`/`with`/`except` target, not a
+    #     walrus), whose own right-hand side is itself provably bare. Any
+    #     ambiguity this cannot fully resolve stays a defect. Also excludes
+    #     `self`/`cls` from ever counting as a qualifying parameter (I1b):
+    #     `self.cmd` read in one method after being set from a real
+    #     parameter in `__init__` is untraceable to this file-local analysis,
+    #     so it must stay a defect rather than being treated as "just
+    #     another parameter". See
+    #     tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py's
+    #     ping_reassigned()/run_branch_alias()/run_for_loop_alias()/Runner.go()
+    #     for the regression proofs.
+    #   - C3: "is this function an entry point" used to be decided by a
+    #     name-keyed map that dropped an ambiguous (multiply-defined) name
+    #     entirely -- correct for collect_source_returns/collect_wrapper_sinks
+    #     (a *call* to an ambiguous name cannot be attributed to either
+    #     `def`), wrong here, since two unrelated `def`s sharing a name (two
+    #     BaseHTTPRequestHandler subclasses each with their own do_GET) would
+    #     both silently lose their own entry-point status. Decided directly
+    #     from each function's own node now
+    #     (`FlowGraph::is_entry_point_function`), with nothing to be
+    #     ambiguous about. See
+    #     tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py's
+    #     HandlerA/HandlerB for the regression proof.
+    #   - I1a: widened the recognized decorator set to also include
+    #     `resource`, `prompt`, `call_tool`, and `api_route`
+    #     (`@mcp.resource`, `@mcp.prompt`, `@server.call_tool()`,
+    #     `@app.api_route`) -- a pure widening of entry-point recognition,
+    #     the safe direction.
+    #   - I1c, known limitation (not fixed, documented instead):
+    #     collect_entry_point_forwards only matches a parameter forwarded
+    #     one hop, through a *bare* local-function call
+    #     (`@mcp.tool() def run(cmd): return _exec(cmd)`) -- the same
+    #     bounded-depth precedent FlowGraph::wrapper_sink_parameters's own
+    #     doc comment already accepts on the sink side ("a wrapper around a
+    #     wrapper is out of reach by construction, not merely untested").
+    #     Two shapes fall outside that one hop and are wrongly downgraded to
+    #     observations: a longer bare-call chain (`run(cmd) -> _outer(cmd) ->
+    #     _inner(cmd)`, two hops instead of one -- see
+    #     tests/corpus/vulnerable/real_misses/shell_command_via_chained_tool_forward.py's
+    #     known_gap entry) and a *qualified* one-hop forward
+    #     (`@mcp.tool() def run(self, cmd): return self._exec(cmd)` -- out of
+    #     scope for the same reason `collect_entry_point_forwards`'s own doc
+    #     comment already gives for excluding `self.method(cmd)`: matching
+    #     local `def` names specifically, not catalogued sinks, has no
+    #     concept of "this attribute access names a sibling method").
+    #     Extending either to arbitrary-depth or qualified-call forwarding is
+    #     materially larger than this fix round's scope; recorded rather than
+    #     attempted.
     flow:
       variable: ARG
       passthrough_downgrade: true
