@@ -208,6 +208,15 @@ severity = "high"
 why      = "HERE is a module-level, pathlib Path(__file__)-derived constant_path (Fix A's own case, added to teach constant_path about pathlib), but name is a function parameter interpolated into the same f-string as HERE -- exclude_if: constant_path ANDs constant_path across every interpolation, so a parameter mixed in with an otherwise-constant f-string must still fire."
 
 [[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 69
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "args.root traces to the operator's own command line (argparse's parse_args()) -- BAS-LLM10-012's new exclude_if: cli_argument clause (Fix B, added 2026-09-28) would suppress that half on its own -- but it is joined with request.args[\"f\"], flask's own HTTP query-parameter dict, a second non-literal segment cli_argument knows nothing about. Both exclude_if: constant_path and exclude_if: cli_argument AND their predicate across every argument of os.path.join, so mixing one CLI-sourced segment with one HTTP-sourced segment must still fire."
+
+[[expect]]
 file     = "vulnerable/llm10_unparameterized_sql_tool.py"
 line     = 9
 rule     = "BAS-LLM10-017"
@@ -919,6 +928,10 @@ why  = "privileged: false, network_mode: bridge, a project-relative bind mount a
 [[expect_none]]
 file = "clean/stdin_dispatch_hook.py"
 why = "command traces to an unprocessed sys.stdin read (json.load(sys.stdin)) -- the hook/skill-runner dispatch shape, excluded via exclude_if: stdin_dispatch."
+
+[[expect_none]]
+file = "clean/cli_argument_paths.py"
+why = "Fix B (2026-09-28): every value traces entirely to the operator's own command line, excluded via the new exclude_if: cli_argument clause on BAS-LLM10-009/BAS-LLM10-012. main() is the spec's own must-NOT-fire snippet verbatim: argparse's --eval-dir joined into an open() path (args.eval_dir, from parse_args()) and sys.argv[1] interpolated into a shell command. cli() and run() exercise the click/typer command-parameter source shape in isolation: a @click.command()/@click.option(...)-decorated function and an @app.command()-decorated function (app = typer.Typer()) whose own parameter reaches subprocess.run(..., shell=True)."
 
 [[expect_none]]
 file = "clean/module_constant_path_join.py"

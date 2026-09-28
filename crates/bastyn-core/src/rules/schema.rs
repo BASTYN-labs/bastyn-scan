@@ -350,4 +350,9 @@ pub(crate) enum ExcludeIfKind {
     /// Every non-literal segment traces to a direct, unprocessed read of
     /// `sys.stdin` (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`).
     StdinDispatch,
+    /// Every non-literal segment traces to the operator's own command line:
+    /// `sys.argv[...]`, an attribute of `<ArgumentParser>.parse_args()`/
+    /// `.parse_known_args()`, or a `click`/`typer` command function's own
+    /// parameter.
+    CliArgument,
 }

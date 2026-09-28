@@ -50,3 +50,20 @@ def read_user_file(name: str) -> str:
     interpolation with the surrounding literal text, so mixing a parameter
     into an otherwise-constant f-string must still fire."""
     return open(f"{HERE}/uploads/{name}").read()
+
+
+import argparse
+from flask import request
+
+
+def export() -> str:
+    """BAS-LLM10-012: args.root traces to the operator's own command line
+    (argparse's parse_args()) -- Fix B's new exclude_if: cli_argument clause
+    would suppress that half on its own -- but it is joined with
+    request.args["f"], flask's own HTTP query-parameter dict, a second
+    non-literal segment cli_argument knows nothing about. Both
+    exclude_if: constant_path and exclude_if: cli_argument AND their
+    predicate across every argument of os.path.join, so mixing one
+    CLI-sourced segment with one HTTP-sourced segment must still fire."""
+    args = argparse.ArgumentParser().parse_args()
+    return open(os.path.join(args.root, request.args["f"])).read()

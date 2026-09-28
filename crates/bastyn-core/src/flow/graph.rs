@@ -159,6 +159,15 @@ pub(crate) struct Resolved {
     /// attacker-reachable input. Consumed by an `exclude_if: stdin_dispatch`
     /// rule clause (`BAS-LLM10-009`).
     pub(crate) stdin_dispatch: bool,
+    /// Whether every non-literal segment of this value traces to the
+    /// operator's own command line -- `sys.argv[...]`, an attribute of
+    /// `<ArgumentParser>.parse_args()`/`.parse_known_args()`, or a
+    /// `click`/`typer` command function's own parameter -- the same "handed
+    /// over the process's own control channel, not attacker-reachable"
+    /// trust boundary [`Resolved::stdin_dispatch`] grants a hook's stdin
+    /// read. Consumed by an `exclude_if: cli_argument` rule clause
+    /// (`BAS-LLM10-009`, `BAS-LLM10-012`).
+    pub(crate) cli_argument: bool,
 }
 
 impl Resolved {
@@ -169,6 +178,7 @@ impl Resolved {
             shell_quoted: false,
             constant_path: false,
             stdin_dispatch: false,
+            cli_argument: false,
         }
     }
 
@@ -179,6 +189,7 @@ impl Resolved {
             shell_quoted: true,
             constant_path: true,
             stdin_dispatch: true,
+            cli_argument: true,
         }
     }
 
@@ -189,6 +200,7 @@ impl Resolved {
             shell_quoted: self.shell_quoted && other.shell_quoted,
             constant_path: self.constant_path && other.constant_path,
             stdin_dispatch: self.stdin_dispatch && other.stdin_dispatch,
+            cli_argument: self.cli_argument && other.cli_argument,
         }
     }
 }
@@ -304,6 +316,19 @@ impl FlowGraph {
         self.resolved
             .get(&node_id)
             .is_some_and(|resolved| resolved.stdin_dispatch)
+    }
+
+    /// Whether the value at `node_id` traces, with no other non-literal
+    /// segment along the way, to the operator's own command line
+    /// (`sys.argv[...]`, an attribute of `<ArgumentParser>.parse_args()`/
+    /// `.parse_known_args()`, or a `click`/`typer` command function's own
+    /// parameter) -- not attacker-reachable input. Consumed by an
+    /// `exclude_if: cli_argument` rule clause (`BAS-LLM10-009`,
+    /// `BAS-LLM10-012`).
+    pub(crate) fn is_cli_argument(&self, node_id: usize) -> bool {
+        self.resolved
+            .get(&node_id)
+            .is_some_and(|resolved| resolved.cli_argument)
     }
 
     /// Whether a guard dominates the call argument at `node_id`.
@@ -777,6 +802,12 @@ impl<'r, D: Doc> Analyzer<'r, D> {
         });
         self.scope_of_node.insert(node.node_id(), inner);
 
+        // A `lambda` cannot be decorated -- the Python grammar has no
+        // `decorated_definition` production wrapping one -- so this is only
+        // ever worth checking for a `function_definition`.
+        let cli_command_parameters =
+            node.kind() == "function_definition" && self.is_click_or_typer_command(node);
+
         if let Some(parameters) = node.field("parameters") {
             let visible_from = parameters.range().end;
             for name in parameter_names(&parameters) {
@@ -793,6 +824,13 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                             shell_quoted: false,
                             constant_path: false,
                             stdin_dispatch: false,
+                            // A parameter is untrusted unless it belongs to a
+                            // click/typer command function, in which case
+                            // every one of its parameters is populated from
+                            // the operator's own command line by the
+                            // framework, the same trust boundary as
+                            // `sys.argv`/`argparse` below.
+                            cli_argument: cli_command_parameters,
                         }),
                         scope: inner,
                         branches: Vec::new(),
@@ -800,6 +838,78 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             }
         }
         inner
+    }
+
+    /// Whether `function` (a `function_definition` node) is wrapped in a
+    /// `decorated_definition` carrying a `@click.command`/`@click.option`/
+    /// `@click.argument` decorator, or a `@$APP.command()` decorator where
+    /// `$APP` is a name this file's module scope bound to a call to
+    /// `typer.Typer()`.
+    fn is_click_or_typer_command(&self, function: &Node<'r, D>) -> bool {
+        let Some(parent) = function.parent() else {
+            return false;
+        };
+        if parent.kind() != "decorated_definition" {
+            return false;
+        }
+        parent
+            .children()
+            .filter(|child| child.kind() == "decorator")
+            .filter_map(|decorator| decorator.named_children().next())
+            .any(|expression| self.decorator_is_cli_command(&expression))
+    }
+
+    /// Whether one decorator's decorated expression (`click.command()`,
+    /// `click.option("--eval-dir")`, `app.command()`, a bare `click.command`
+    /// with no call, ...) names a click command/option/argument decorator, or
+    /// a `.command()` call whose receiver is a name this file's module scope
+    /// bound to `typer.Typer()`.
+    ///
+    /// `click.command`/`click.option`/`click.argument` are matched by exact
+    /// dotted path, since those three names are specific and well-known; a
+    /// bare `*.command` suffix is accepted only once its receiver is proven
+    /// to be a `typer.Typer()` instance, so an unrelated `foo.command()` does
+    /// not qualify.
+    fn decorator_is_cli_command(&self, expression: &Node<'r, D>) -> bool {
+        let target = if expression.kind() == "call" {
+            let Some(function) = expression.field("function") else {
+                return false;
+            };
+            function
+        } else {
+            expression.clone()
+        };
+        let dotted = callee_path(&target);
+        if matches!(
+            dotted.as_str(),
+            "click.command" | "click.option" | "click.argument"
+        ) {
+            return true;
+        }
+        let Some((receiver, last)) = dotted.rsplit_once('.') else {
+            return false;
+        };
+        last == "command" && self.module_binds_receiver_to_typer_app(receiver)
+    }
+
+    /// Whether this file's module scope has a binding for `name` whose value
+    /// is written exactly as a call to `typer.Typer()` -- the `app =
+    /// typer.Typer()` shape a `@app.command()` decorator relies on. Module
+    /// scope is always index `0` (see [`Analyzer::new`]).
+    fn module_binds_receiver_to_typer_app(&self, name: &str) -> bool {
+        self.scopes[0]
+            .bindings
+            .get(name)
+            .into_iter()
+            .flatten()
+            .any(|binding| {
+                binding.value.as_ref().is_some_and(|value| {
+                    value.kind() == "call"
+                        && value
+                            .field("function")
+                            .is_some_and(|f| callee_path(&f) == "typer.Typer")
+                })
+            })
     }
 
     /// Record a binding for every plain name in an assignment target.
@@ -921,6 +1031,9 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                 }
             }
             "attribute" => {
+                if let Some(argv) = sys_argv_resolved(node) {
+                    return argv;
+                }
                 let closed_here = node
                     .field("attribute")
                     .is_some_and(|attr| CLOSED_ATTRIBUTES.contains(&attr.text().as_ref()));
@@ -1039,11 +1152,45 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     };
                     value.is_some_and(|value| is_sys_stdin_expr(&value))
                 }));
+        // `<ArgumentParser>.parse_args()`/`.parse_known_args()`: matched by
+        // method name alone, the same receiver-agnostic precedent
+        // `STDIN_READ_CALLEES` already accepts, since there is no reliable
+        // way to prove a receiver is really an `ArgumentParser` without type
+        // inference this graph does not do.
+        let cli_argument_call = node.field("function").is_some_and(|function| {
+            function.kind() == "attribute"
+                && function.field("attribute").is_some_and(|attribute| {
+                    matches!(attribute.text().as_ref(), "parse_args" | "parse_known_args")
+                })
+        });
+        // The same "pure function of already-safe arguments" whitelist
+        // `constant_path` above trusts: `os.path.join(args.eval_dir,
+        // "output.jsonl")` is entirely built from the operator's own command
+        // line (plus a literal), so it deserves `cli_argument` too, even
+        // though it is not itself `constant_path` (its root is `args.eval_dir`,
+        // not `__file__`). Two independent AND-reductions over the same
+        // argument list, since a value can satisfy one predicate without the
+        // other.
+        let cli_argument = cli_argument_call
+            || (PATH_CONST_FUNCTIONS.contains(&callee.as_str())
+                && node.field("arguments").is_some_and(|arguments| {
+                    arguments.named_children().all(|argument| {
+                        let value = if argument.kind() == "keyword_argument" {
+                            argument.field("value")
+                        } else {
+                            Some(argument)
+                        };
+                        value.is_some_and(|value| {
+                            self.resolve(&value, scope, depth + 1).cli_argument
+                        })
+                    })
+                }));
         Resolved {
             closed: callee == "type",
             shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
             constant_path,
             stdin_dispatch,
+            cli_argument,
             prov: Prov::Call { callee },
         }
     }
@@ -1238,6 +1385,7 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     shell_quoted: previous.shell_quoted && resolved.shell_quoted,
                     constant_path: previous.constant_path && resolved.constant_path,
                     stdin_dispatch: previous.stdin_dispatch && resolved.stdin_dispatch,
+                    cli_argument: previous.cli_argument && resolved.cli_argument,
                 },
                 Some(previous) => Resolved {
                     prov: Prov::Unknown,
@@ -1245,6 +1393,7 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     shell_quoted: previous.shell_quoted && resolved.shell_quoted,
                     constant_path: previous.constant_path && resolved.constant_path,
                     stdin_dispatch: previous.stdin_dispatch && resolved.stdin_dispatch,
+                    cli_argument: previous.cli_argument && resolved.cli_argument,
                 },
             });
         }
@@ -1324,6 +1473,20 @@ fn is_sys_stdin_expr<D: Doc>(node: &Node<'_, D>) -> bool {
         && node
             .field("attribute")
             .is_some_and(|attribute| attribute.text() == "stdin")
+}
+
+/// `sys.argv` resolved, when `node` is written exactly as that dotted path --
+/// the operator's own command line, fixed at process start, the same
+/// command-line trust boundary [`Resolved::cli_argument`] names. Checked in
+/// [`Analyzer::compute`]'s `"attribute"` arm the same way `__file__` is
+/// checked in its `"identifier"` arm, since `sys` is not a name this graph
+/// ever binds. Everything else about the value is unproven: not `closed`,
+/// not `constant_path`, not `shell_quoted`.
+fn sys_argv_resolved<D: Doc>(node: &Node<'_, D>) -> Option<Resolved> {
+    (callee_path(node) == "sys.argv").then(|| Resolved {
+        cli_argument: true,
+        ..Resolved::unknown()
+    })
 }
 
 /// The dotted path of a callee, as written, with subscripts and call results

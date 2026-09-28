@@ -412,9 +412,18 @@ rules:
     # -- kept deliberately narrow: a value that merely also touches stdin
     # somewhere in a longer chain (a network read with a stdin fallback,
     # say) does not qualify.
+    #
+    # 2026-09-28: added cli_argument to close a false positive on the
+    # operator's own command line -- sys.argv, argparse's parse_args()/
+    # parse_known_args(), and click/typer command parameters -- the same
+    # "handed over the process's own control channel, not attacker-reachable"
+    # trust boundary stdin_dispatch already grants a hook's stdin read. Kept
+    # exactly as narrow: a command mixing a CLI-argument segment with any
+    # other non-literal segment still fires. See
+    # tests/corpus/clean/cli_argument_paths.py for the regression proof.
     exclude_if:
       variable: ARG
-      kind: [closed_value, shell_quoted, stdin_dispatch]
+      kind: [closed_value, shell_quoted, stdin_dispatch, cli_argument]
     description: >
       A command string that is not a fixed literal reaches a shell
       (subprocess...shell=True, os.system, or os.popen). A shell
@@ -437,7 +446,12 @@ rules:
       argv rather than attacker-reachable input. This exclusion trusts the
       stdin-sourced value's role as a control-channel command wherever it
       appears in the file; it does not verify the surrounding code is
-      actually a hook or skill-runner entry point.
+      actually a hook or skill-runner entry point. Also excluded when the
+      command's entire non-literal content traces to the operator's own
+      command line -- sys.argv[...], an attribute of
+      <ArgumentParser>.parse_args()/.parse_known_args(), or a click/typer
+      command function's own parameter -- the same argv-is-trusted boundary,
+      not attacker-reachable input.
     remediation: >
       Never build a shell command string from anything other than a fixed
       literal. Call the target program directly with an argv list and
@@ -509,6 +523,17 @@ rules:
   #     read_bundled_asset() for the adjacent, correctly-still-firing case
   #     of a parameter reaching os.path.join with no literal-callers-only
   #     guarantee at all.
+  #
+  # 2026-09-28: added exclude_if: cli_argument to close a false positive on
+  # a path built from the operator's own command line -- an argparse
+  # --eval-dir-style option joined into an open() path, the same
+  # "handed over the process's own control channel, not attacker-reachable"
+  # trust boundary BAS-LLM10-009's stdin_dispatch/cli_argument exclusions
+  # already grant. Kept exactly as narrow as those: a path mixing a
+  # CLI-argument segment with any other non-literal segment (HTTP request
+  # data, say) still fires. See tests/corpus/clean/cli_argument_paths.py and
+  # vulnerable/llm10_path_traversal_tool.py's export() for the regression
+  # proofs.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-012
@@ -536,7 +561,7 @@ rules:
       ARG: '^os\.path\.join\(\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*''))(\s*,\s*(("([^"\\]|\\.)*")|(''([^''\\]|\\.)*'')))*\s*\)$'
     exclude_if:
       variable: ARG
-      kind: constant_path
+      kind: [constant_path, cli_argument]
     description: >
       A file is opened at a path built inline, directly inside the
       open(...) call, by os.path.join, f-string interpolation, or string
@@ -558,7 +583,13 @@ rules:
       joined path is built only from literals, __file__, and calls to
       os.path.dirname/abspath/realpath/normpath/join/os.getcwd — a
       module-level path root the file derives from its own location on
-      disk, not from anything a caller supplies.
+      disk, not from anything a caller supplies. Also excluded when the
+      path's entire non-literal content traces to the operator's own
+      command line -- sys.argv[...], an attribute of
+      <ArgumentParser>.parse_args()/.parse_known_args(), or a click/typer
+      command function's own parameter -- not attacker-reachable input; a
+      path mixing a CLI-argument segment with any other non-literal segment
+      still fires.
     remediation: >
       Resolve the joined path with os.path.realpath (not just
       os.path.abspath, which does not follow symlinks) before using it,
