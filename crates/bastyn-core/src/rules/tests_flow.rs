@@ -896,7 +896,7 @@ fn bas_zt4_001_skips_a_value_already_limited_by_a_fixed_set_check() {
     );
 }
 
-/// Fix D: `flow.passthrough_downgrade` reports a bare pass-through of a
+/// `flow.passthrough_downgrade` reports a bare pass-through of a
 /// non-entry-point function's own parameter as an observation, not a
 /// defect, when nothing in the file wires it to a recognized entry point.
 #[test]

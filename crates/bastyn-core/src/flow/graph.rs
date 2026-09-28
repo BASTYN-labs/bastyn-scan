@@ -246,8 +246,9 @@ pub(crate) struct FlowGraph {
     /// `def`s in this file that forward a parameter into a catalogued sink,
     /// as (sink kind, parameter index) pairs, sorted.
     wrapper_sinks: HashMap<String, Vec<(SinkKind, usize)>>,
-    /// `def`s in this file reached from an entry point's own body via a
-    /// forwarded parameter. See [`collect_entry_point_forwards`].
+    /// `def`s in this file called from an entry point's own body with an
+    /// argument that is not provably safe. See
+    /// [`collect_entry_point_forwards`].
     ///
     /// Whether the enclosing function of a *given call* is itself an entry
     /// point is instead decided directly from that function's own node by
@@ -256,8 +257,8 @@ pub(crate) struct FlowGraph {
     /// sharing a name (two `BaseHTTPRequestHandler` subclasses each with
     /// their own `do_GET`) must not make either one lose its own answer.
     /// This set exists only because [`collect_entry_point_forwards`]
-    /// genuinely needs to name *which* locally-called functions receive a
-    /// forwarded parameter, which a per-node check cannot express.
+    /// genuinely needs to name *which* locally-called functions receive an
+    /// untrusted argument, which a per-node check cannot express.
     entry_point_forwards: HashSet<String>,
 }
 
@@ -434,8 +435,8 @@ impl FlowGraph {
     ///    [`is_entry_point_function`], decided directly from that function's
     ///    own node) -- such a function's own parameters are values this file
     ///    itself hands to agent- or request-chosen input.
-    /// 4. No entry point in this file forwards its own parameter into a call
-    ///    to the function enclosing `matched` (see
+    /// 4. No entry point in this file calls the function enclosing `matched`
+    ///    with an argument that is not provably safe (see
     ///    [`collect_entry_point_forwards`]).
     pub(crate) fn is_passthrough_observation_eligible<D: Doc>(
         &self,
@@ -731,20 +732,33 @@ fn is_entry_point_function<D: Doc>(function: &Node<'_, D>) -> bool {
                             | "prompt"
                             | "call_tool"
                             | "api_route"
+                            | "tool_plain"
+                            | "kernel_function"
+                            | "on"
                     )
                 })
         })
 }
 
-/// Names of `def`s in this file that receive, at a call site inside an
-/// entry-point function's own body, one of that entry point's own parameters
-/// as an argument. A near-twin of [`collect_wrapper_sinks`]: same shape (for
-/// each function, for each call in its own body, does an argument trace to
-/// one of the function's own parameters), except the target here is "a local
-/// function name" rather than "a catalogued external sink". Consumed the same
-/// way: a helper reached this way from an entry point is not "unreachable
-/// from model-chosen input" even though its own body sees only a bare
-/// parameter.
+/// Names of `def`s in this file that an entry-point function's own body
+/// calls with at least one argument this graph cannot prove is a fixed,
+/// file-defined value.
+///
+/// Deliberately broader than "forwards one of the entry point's own
+/// parameters": an entry point's own function-parameter list is not the
+/// only place agent- or request-chosen input can come from inside its
+/// body. A Flask route with no parameter carrying the request at all
+/// (`@app.route(...) def run(): return _exec(request.args["cmd"])`) and a
+/// value drawn from a model call assigned to a local variable
+/// (`@mcp.tool() def run(q): cmd = llm.invoke(q).content; return
+/// _exec(cmd)`) are exactly as much "this entry point hands a helper an
+/// untrusted value" as forwarding its own parameter would be -- an earlier
+/// revision of this function checked only the parameter-forwarding case
+/// and missed both. The entry-point model's whole premise is "this
+/// function receives agent- or request-chosen input from somewhere"; this
+/// check no longer requires that "somewhere" to be specifically the
+/// function's own parameter list, only that whatever is passed is not
+/// itself provably safe (`FlowGraph::is_closed`).
 ///
 /// Every `function_definition` in the file is checked against
 /// [`is_entry_point_function`] directly (no name-keyed set, and so no
@@ -753,13 +767,10 @@ fn is_entry_point_function<D: Doc>(function: &Node<'_, D>) -> bool {
 /// through `self.NAME(...)`/`cls.NAME(...)` (`self._exec(cmd)`) -- an
 /// entry-point *method* calling a sibling method the same class defines is
 /// exactly as much "reachable from this entry point" as a bare local
-/// function call is, and mistaking it for out-of-scope (as an earlier
-/// revision of this function did) let a real `@mcp.tool()` method's own
-/// forwarded parameter go unrecognized. Any other qualified call
-/// (`obj.method(cmd)` for some other receiver, or a call two hops removed
-/// through an intermediate local function) is still out of scope -- see
-/// `bastyn.yml`'s comment on `BAS-LLM10-009` for the remaining, documented,
-/// bounded limitation.
+/// function call is. Any other qualified call (`obj.method(cmd)` for some
+/// other receiver, or a call two hops removed through an intermediate
+/// local function) is still out of scope -- see `bastyn.yml`'s comment on
+/// `BAS-LLM10-009` for the remaining, documented, bounded limitation.
 fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -> HashSet<String> {
     let mut forwards = HashSet::new();
 
@@ -770,10 +781,6 @@ fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -
         if !is_entry_point_function(&function) {
             continue;
         }
-        let parameters = function
-            .field("parameters")
-            .map(|node| parameter_names(&node))
-            .unwrap_or_default();
 
         for call in own_body(&function).flat_map(|statement| {
             statement
@@ -801,18 +808,15 @@ fn collect_entry_point_forwards<D: Doc>(root: &Node<'_, D>, graph: &FlowGraph) -
             let Some(arguments) = call.field("arguments") else {
                 continue;
             };
-            let forwards_a_parameter = arguments.named_children().any(|argument| {
+            let forwards_untrusted_input = arguments.named_children().any(|argument| {
                 let value = if argument.kind() == "keyword_argument" {
                     argument.field("value")
                 } else {
                     Some(argument)
                 };
-                value
-                    .as_ref()
-                    .and_then(|node| graph.parameter_of(node.node_id()))
-                    .is_some_and(|parameter| parameters.iter().any(|p| p == parameter))
+                value.is_some_and(|value| !graph.is_closed(value.node_id()))
             });
-            if forwards_a_parameter {
+            if forwards_untrusted_input {
                 forwards.insert(forwarded_name);
             }
         }
@@ -1133,6 +1137,18 @@ fn path_is_reassigned<D: Doc>(enclosing: &Node<'_, D>, path: &Node<'_, D>) -> bo
 /// branch-split alias, a `for`-loop rebinding, a comprehension target, a
 /// match/case capture, a `nonlocal` write, and an attribute/subscript path
 /// reassigned in place -- see this module's own tests.
+///
+/// `attribute`/`subscript` peeling is bounded to exactly one level on a
+/// bare identifier root, matching the spec's own condition 1 literally:
+/// `p`, `p.attr`, or `p["key"]`, not `p.a.b` or `opts[k]["cmd"]`. A Django
+/// view's `request.GET["cmd"]` is two levels (an attribute, `.GET`, then a
+/// subscript on the result) -- confirmed as a real regression when this
+/// bound was missing, since `request` is technically a "parameter" but
+/// `request.GET` is itself a request-derived mapping this graph cannot
+/// prove anything about. The subscript key must itself be
+/// [`is_syntactic_literal`]: `opts[k]` where `k` is a variable could hold
+/// anything, so only a literal key (`opts["cmd"]`) qualifies, matching the
+/// spec's own `p["key"]` wording.
 fn is_provably_bare_passthrough<D: Doc>(
     node: &Node<'_, D>,
     enclosing: &Node<'_, D>,
@@ -1143,43 +1159,83 @@ fn is_provably_bare_passthrough<D: Doc>(
         "attribute" => {
             !path_is_reassigned(enclosing, node)
                 && node.field("object").is_some_and(|object| {
-                    is_provably_bare_passthrough(&object, enclosing, parameters, hops)
+                    object.kind() == "identifier"
+                        && is_provably_bare_identifier(&object, enclosing, parameters, hops)
                 })
         }
         "subscript" => {
             !path_is_reassigned(enclosing, node)
+                && node
+                    .field("subscript")
+                    .is_some_and(|key| is_syntactic_literal(&key))
                 && node.field("value").is_some_and(|value| {
-                    is_provably_bare_passthrough(&value, enclosing, parameters, hops)
+                    value.kind() == "identifier"
+                        && is_provably_bare_identifier(&value, enclosing, parameters, hops)
                 })
         }
-        "identifier" => {
-            let name = node.text();
-            if is_self_or_cls(&name) || is_declared_nonlocal_or_global(enclosing, &name) {
-                return false;
-            }
-            let occurrences = occurrences_of(enclosing, &name);
-            if occurrences
-                .iter()
-                .any(|(_, occurrence)| *occurrence == Occurrence::Other)
-            {
-                return false;
-            }
-            let writes: Vec<_> = occurrences
-                .iter()
-                .filter(|(_, occurrence)| *occurrence == Occurrence::PlainAssignmentTarget)
-                .collect();
-            match writes.as_slice() {
-                [] => parameters.iter().any(|p| p == name.as_ref()),
-                [(target, _)] if hops > 0 => target
-                    .parent()
-                    .and_then(|assignment| assignment.field("right"))
-                    .is_some_and(|value| {
-                        is_provably_bare_passthrough(&value, enclosing, parameters, hops - 1)
-                    }),
-                _ => false, // no hops left, or more than one write: ambiguous either way.
-            }
-        }
+        "identifier" => is_provably_bare_identifier(node, enclosing, parameters, hops),
         _ => false,
+    }
+}
+
+/// The identifier-only half of [`is_provably_bare_passthrough`]: whether
+/// `node` (an `identifier`) is itself a provable bare parameter root, with
+/// `hops` plain local aliases still available to follow. Split out so the
+/// `attribute`/`subscript` cases above can require their own object/value
+/// to be exactly this -- a plain identifier, not another level of
+/// attribute/subscript nesting -- rather than recursing back through the
+/// whole match and silently allowing unbounded depth.
+fn is_provably_bare_identifier<D: Doc>(
+    node: &Node<'_, D>,
+    enclosing: &Node<'_, D>,
+    parameters: &[String],
+    hops: u8,
+) -> bool {
+    let name = node.text();
+    if is_self_or_cls(&name) || is_declared_nonlocal_or_global(enclosing, &name) {
+        return false;
+    }
+    let occurrences = occurrences_of(enclosing, &name);
+    if occurrences
+        .iter()
+        .any(|(_, occurrence)| *occurrence == Occurrence::Other)
+    {
+        return false;
+    }
+    let writes: Vec<_> = occurrences
+        .iter()
+        .filter(|(_, occurrence)| *occurrence == Occurrence::PlainAssignmentTarget)
+        .collect();
+    match writes.as_slice() {
+        [] => parameters.iter().any(|p| p == name.as_ref()),
+        [(target, _)] if hops > 0 => target
+            .parent()
+            .and_then(|assignment| assignment.field("right"))
+            .is_some_and(|value| {
+                is_provably_bare_passthrough(&value, enclosing, parameters, hops - 1)
+            }),
+        _ => false, // no hops left, or more than one write: ambiguous either way.
+    }
+}
+
+/// Whether `node` is written as a fixed, file-defined value: a plain literal
+/// token, a non-interpolated string, or a unary-negated literal (`-1`).
+///
+/// Used only to gate a subscript's own key in
+/// [`is_provably_bare_passthrough`], matching the spec's `p["key"]`
+/// condition literally -- `opts[k]` where `k` is itself a variable could
+/// hold anything, so only a literal key qualifies. Deliberately syntactic,
+/// not a `FlowGraph`/`Analyzer` lookup: [`is_provably_bare_passthrough`] and
+/// its helpers never consult resolved provenance at all, for the same
+/// reason their own module-level doc comment already gives (an f-string
+/// mixing a parameter with literal text must not be mistaken for bare).
+fn is_syntactic_literal<D: Doc>(node: &Node<'_, D>) -> bool {
+    match node.kind().as_ref() {
+        "string" => node.dfs().all(|part| part.kind() != "interpolation"),
+        "unary_operator" => node
+            .field("argument")
+            .is_some_and(|argument| is_syntactic_literal(&argument)),
+        kind => LITERAL_KINDS.contains(&kind),
     }
 }
 
@@ -1301,8 +1357,14 @@ const PATH_CONST_FUNCTIONS: &[&str] = &[
 const CLOSED_WRAP_FUNCTIONS: &[&str] = &["Path", "pathlib.Path", "str"];
 
 /// Callee paths whose return value is an OS-generated temporary-file/directory
-/// path -- no caller or attacker-influenced input shapes it, so it reads as
-/// both `closed` (BAS-LLM10-009) and `constant_path` (BAS-LLM10-012).
+/// path when called with no arguments, or with only arguments that are
+/// themselves already safe -- see [`Analyzer::tempfile_args_safe`], which is
+/// what actually gates `closed`/`constant_path` on this list; membership
+/// here alone is necessary but not sufficient. Every one of these functions
+/// also accepts caller-supplied keyword arguments (`prefix`/`suffix`/`dir`)
+/// that land directly in the returned path, so a call like
+/// `tempfile.mkdtemp(prefix=request.args["p"])` must not read as safe just
+/// because the callee name matches.
 /// `tempfile.mkstemp` is included because the `"subscript"` arm already
 /// propagates a call's whole `Resolved` regardless of index, so
 /// `tempfile.mkstemp()[1]` (the path; `[0]`, the fd, comes along for the ride
@@ -1856,7 +1918,9 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                 })
             }))
             || self.is_pathlib_method_constant_path(node, scope, depth)
-            || TEMPFILE_CLOSED_CALLEES.contains(&callee.as_str());
+            || self.tempfile_args_safe(node, scope, depth, callee.as_str(), |resolved| {
+                resolved.constant_path
+            });
         // Mirrors the `constant_path` all-args check directly above, but
         // restricted to CLOSED_WRAP_FUNCTIONS rather than the whole
         // PATH_CONST_FUNCTIONS whitelist -- see that const's doc comment for
@@ -1909,15 +1973,29 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     };
                     value.is_some_and(|value| is_sys_stdin_expr(&value))
                 }));
-        // `<ArgumentParser>.parse_args()`/`.parse_known_args()`: matched by
-        // method name alone, the same receiver-agnostic precedent
-        // `STDIN_READ_CALLEES` already accepts, since there is no reliable
-        // way to prove a receiver is really an `ArgumentParser` without type
-        // inference this graph does not do.
+        // `<ArgumentParser>.parse_args()`/`.parse_known_args()`: the receiver
+        // must actually resolve to a call to `argparse.ArgumentParser(...)`
+        // -- either written inline (`argparse.ArgumentParser().parse_args()`)
+        // or through a name bound to that call anywhere in the file (`p =
+        // argparse.ArgumentParser(); ...; p.parse_args()`), the same
+        // "resolve the receiver, check its own callee" proof
+        // `is_pathlib_method_constant_path` already applies for a pathlib
+        // method chain. Matching on the method name alone would also trust
+        // `reqparse.RequestParser().parse_args()` (Flask-RESTful/flask-restx,
+        // which parses HTTP *request* data, attacker-reachable) as if it
+        // were the operator's own command line -- confirmed as a real
+        // regression against Flask-RESTful-style code, so the receiver check
+        // is load-bearing here, not defense-in-depth.
         let cli_argument_call = node.field("function").is_some_and(|function| {
             function.kind() == "attribute"
                 && function.field("attribute").is_some_and(|attribute| {
                     matches!(attribute.text().as_ref(), "parse_args" | "parse_known_args")
+                })
+                && function.field("object").is_some_and(|object| {
+                    matches!(
+                        self.resolve(&object, scope, depth + 1).prov,
+                        Prov::Call { callee } if callee == "argparse.ArgumentParser"
+                    )
                 })
         });
         // The same "pure function of already-safe arguments" whitelist
@@ -1927,24 +2005,37 @@ impl<'r, D: Doc> Analyzer<'r, D> {
         // though it is not itself `constant_path` (its root is `args.eval_dir`,
         // not `__file__`). Two independent AND-reductions over the same
         // argument list, since a value can satisfy one predicate without the
-        // other.
+        // other. Requires at least one argument, unlike the `constant_path`
+        // reduction above: `os.path.join(args.eval_dir, "output.jsonl")` (two
+        // arguments) is exactly the shape this exists for, but
+        // `os.getcwd()` (zero arguments, also in `PATH_CONST_FUNCTIONS`)
+        // would otherwise satisfy an all-args check vacuously -- the current
+        // working directory has nothing to do with the operator's own
+        // command line, so a bare `os.getcwd()` call must not resolve
+        // `cli_argument: true` the same way it must not resolve `closed: true`
+        // (see `CLOSED_WRAP_FUNCTIONS`'s own doc comment for the identical
+        // vacuous-truth shape).
         let cli_argument = cli_argument_call
             || (PATH_CONST_FUNCTIONS.contains(&callee.as_str())
                 && node.field("arguments").is_some_and(|arguments| {
-                    arguments.named_children().all(|argument| {
-                        let value = if argument.kind() == "keyword_argument" {
-                            argument.field("value")
-                        } else {
-                            Some(argument)
-                        };
-                        value.is_some_and(|value| {
-                            self.resolve(&value, scope, depth + 1).cli_argument
+                    let mut children = arguments.named_children().peekable();
+                    children.peek().is_some()
+                        && children.all(|argument| {
+                            let value = if argument.kind() == "keyword_argument" {
+                                argument.field("value")
+                            } else {
+                                Some(argument)
+                            };
+                            value.is_some_and(|value| {
+                                self.resolve(&value, scope, depth + 1).cli_argument
+                            })
                         })
-                    })
                 }));
         Resolved {
             closed: callee == "type"
-                || TEMPFILE_CLOSED_CALLEES.contains(&callee.as_str())
+                || self.tempfile_args_safe(node, scope, depth, callee.as_str(), |resolved| {
+                    resolved.closed
+                })
                 || closed_args_closed,
             shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
             constant_path,
@@ -2061,6 +2152,41 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             && function
                 .field("object")
                 .is_some_and(|object| self.resolve(&object, scope, depth + 1).constant_path)
+    }
+
+    /// Whether `node` is a call to one of [`TEMPFILE_CLOSED_CALLEES`] and
+    /// every argument passed to it (there may be none) satisfies `safe`.
+    ///
+    /// `tempfile.mkdtemp()`/`tempfile.TemporaryDirectory()` with no
+    /// arguments are OS-generated end to end, but every one of these
+    /// functions also accepts caller-supplied keyword arguments --
+    /// `prefix`/`suffix`/`dir` -- that land directly in the returned path.
+    /// `tempfile.mkdtemp(prefix=request.args["p"])` puts attacker-controlled
+    /// text in a value a bare callee-name check would otherwise call
+    /// unconditionally safe; the same all-args-must-already-be-safe pattern
+    /// [`PATH_CONST_FUNCTIONS`]'s own `constant_path` check already applies
+    /// closes it here too. An empty argument list still passes (`.all()`
+    /// over no arguments is vacuously `true`, and correctly so: no arguments
+    /// means nothing but the OS shaped the result).
+    fn tempfile_args_safe(
+        &mut self,
+        node: &Node<'r, D>,
+        scope: usize,
+        depth: usize,
+        callee: &str,
+        safe: impl Fn(&Resolved) -> bool,
+    ) -> bool {
+        TEMPFILE_CLOSED_CALLEES.contains(&callee)
+            && node.field("arguments").is_some_and(|arguments| {
+                arguments.named_children().all(|argument| {
+                    let value = if argument.kind() == "keyword_argument" {
+                        argument.field("value")
+                    } else {
+                        Some(argument)
+                    };
+                    value.is_some_and(|value| safe(&self.resolve(&value, scope, depth + 1)))
+                })
+            })
     }
 
     /// Resolve a name against the bindings visible at `offset` in `scope`.
@@ -2859,8 +2985,106 @@ def sync_repo():
         );
     }
 
+    /// The same vacuous-truth-on-zero-arguments shape as
+    /// `os_getcwd_is_not_closed` above, for `cli_argument` instead of
+    /// `closed`: `os.getcwd()` is in `PATH_CONST_FUNCTIONS`, and an all-args
+    /// check over an empty argument list is vacuously true, so a bare
+    /// `os.getcwd()` call must not resolve `cli_argument: true` -- reading
+    /// the current working directory has nothing to do with the operator's
+    /// own command line.
+    #[test]
+    fn os_getcwd_is_not_cli_argument() {
+        let (root, graph) = build_python_graph("def f():\n    return os.getcwd()\n");
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find_map(|stmt| stmt.named_children().next())
+            .expect("a return statement returning os.getcwd()");
+
+        assert!(
+            !graph.is_cli_argument(return_value.node_id()),
+            "os.getcwd() must not resolve cli_argument: true -- it has nothing to do with the operator's own command line"
+        );
+    }
+
+    /// `.parse_args()` only resolves `cli_argument: true` when its receiver
+    /// actually resolves to a call to `argparse.ArgumentParser(...)` -- a
+    /// same-named method on an unrelated class (a Flask-RESTful-style HTTP
+    /// request parser, here) must not be trusted the same way, since it
+    /// parses attacker-reachable request data, not the operator's own
+    /// command line.
+    #[test]
+    fn parse_args_on_a_non_argparse_receiver_is_not_cli_argument() {
+        let source = "\
+def run():
+    parser = reqparse.RequestParser()
+    args = parser.parse_args()
+    return args
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find_map(|stmt| stmt.named_children().next())
+            .expect("a return statement returning args");
+
+        assert!(!graph.is_cli_argument(return_value.node_id()));
+    }
+
+    /// The genuine case `parse_args_on_a_non_argparse_receiver_is_not_cli_argument`
+    /// above is the negative control for: a receiver that really does
+    /// resolve to `argparse.ArgumentParser(...)`, reached through a local
+    /// variable rather than written inline, still resolves
+    /// `cli_argument: true`.
+    #[test]
+    fn parse_args_on_a_genuine_argparse_receiver_is_cli_argument() {
+        let source = "\
+def main():
+    p = argparse.ArgumentParser()
+    args = p.parse_args()
+    return args
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find_map(|stmt| stmt.named_children().next())
+            .expect("a return statement returning args");
+
+        assert!(graph.is_cli_argument(return_value.node_id()));
+    }
+
+    /// A tempfile-closed callee only resolves `closed`/`constant_path` when
+    /// every argument passed to it (there may be none) is itself already
+    /// safe -- a caller-supplied `prefix` lands directly in the returned
+    /// path, so `tempfile.mkdtemp(prefix=prefix)` must not resolve
+    /// `closed: true` just because the callee name matches.
+    #[test]
+    fn tempfile_mkdtemp_with_a_caller_supplied_prefix_is_not_closed() {
+        let source = "\
+import tempfile
+
+
+def run(prefix):
+    return tempfile.mkdtemp(prefix=prefix)
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find_map(|stmt| stmt.named_children().next())
+            .expect("a return statement returning tempfile.mkdtemp(...)");
+
+        assert!(!graph.is_closed(return_value.node_id()));
+    }
+
     // -----------------------------------------------------------------
-    // Fix D: pass-through-observation eligibility
+    // Pass-through-observation eligibility (BAS-LLM10-009's
+    // flow.passthrough_downgrade)
     // -----------------------------------------------------------------
 
     /// A bare parameter reaching a shell from a function with no recognized
@@ -2985,7 +3209,7 @@ def ping_host(host):
         (call, arg)
     }
 
-    /// Fix round 1, reviewer finding C1: a parameter *reassigned* to a
+    /// A parameter *reassigned* to a
     /// composed value using its own name must not be treated as bare just
     /// because the identifier's text still matches a parameter name -- the
     /// reassignment is itself a binding.
@@ -3005,7 +3229,7 @@ def ping_host(host):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 1, reviewer finding C2: a name bound differently in two
+    /// A name bound differently in two
     /// arms of an `if`/`else` is ambiguous -- this file-local syntactic
     /// check has no way to prove which arm's binding reaches the sink, so a
     /// second binding anywhere disqualifies the name regardless of branch.
@@ -3028,7 +3252,7 @@ def run(p, condition):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 1, reviewer finding C2: a `for` loop's own target is a
+    /// A `for` loop's own target is a
     /// binding [`is_provably_bare_passthrough`] cannot reason about (it
     /// only ever follows a plain `assignment`), so it disqualifies the name
     /// even though, in this particular case, the loop runs exactly once.
@@ -3048,7 +3272,7 @@ def run(p):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 1, reviewer finding C3: two unrelated
+    /// Two unrelated
     /// `BaseHTTPRequestHandler` subclasses each defining their own `do_GET`
     /// must each be independently recognized as an entry point -- deciding
     /// entry-point status from a name-keyed map that drops an ambiguous
@@ -3098,7 +3322,7 @@ class HandlerB:
         }
     }
 
-    /// Fix round 1, reviewer finding I1b: `self`/`cls` must never qualify as
+    /// `self`/`cls` must never qualify as
     /// a bare-parameter root. `self.cmd` here was set in `__init__` from a
     /// real parameter, but this file-local analysis has no way to trace an
     /// attribute write in one method to a read in another, so it must stay
@@ -3122,7 +3346,7 @@ class Runner:
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 2, reviewer finding I1b (the real fix): an entry-point
+    /// An entry-point
     /// *method* forwarding its own parameter into a sibling method via a
     /// qualified `self.NAME(...)` call must be recognized the same way a
     /// bare `NAME(...)` call already is.
@@ -3146,7 +3370,7 @@ class Tool:
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 2, reviewer finding N1: an attribute path reassigned in
+    /// An attribute path reassigned in
     /// place before reaching the sink must not be treated as bare just
     /// because the sink's own argument looks like an untouched attribute
     /// read.
@@ -3166,7 +3390,7 @@ def run(hook):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 2, reviewer finding N1: the same reasoning as the
+    /// The same reasoning as the
     /// attribute-path test above, for a subscript path.
     #[test]
     fn a_subscript_path_reassigned_in_place_is_not_passthrough_eligible() {
@@ -3184,7 +3408,7 @@ def run(opts):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 2, reviewer finding N2: a list comprehension's own `for`
+    /// A list comprehension's own `for`
     /// target shadows the outer parameter of the same name. The read-only
     /// whitelist in `is_definitely_safe_read` does not recognize a
     /// `for_in_clause` target as a safe read, so it disqualifies the name
@@ -3204,7 +3428,7 @@ def run(cmd):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 2, reviewer finding N2: a `match`/`case` capture pattern
+    /// A `match`/`case` capture pattern
     /// shadows the outer parameter of the same name, the same as a
     /// comprehension target above.
     #[test]
@@ -3225,7 +3449,7 @@ def run(cmd):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 2, reviewer finding N2: a nested function's `nonlocal`
+    /// A nested function's `nonlocal`
     /// declaration and reassignment of the outer parameter is invisible to
     /// `occurrences_of`'s own-scope boundary (a nested function's body is
     /// deliberately not walked, since an identically-named local there is
@@ -3250,7 +3474,7 @@ def run(cmd):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 3, reviewer finding (lambda scope-boundary mismatch): a
+    /// A
     /// `lambda`'s own parameter shadows a same-named parameter of the
     /// enclosing named function. Finding "the enclosing function" by
     /// walking up to the nearest `SCOPE_KINDS` ancestor (not just the
@@ -3273,8 +3497,7 @@ def run_all(cmd):
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
     }
 
-    /// Fix round 3, reviewer finding (wrapper-node-in-write-position fails
-    /// open): `with ctx(...) as (cmd):` parses `(cmd)` as a
+    /// `with ctx(...) as (cmd):` parses `(cmd)` as a
     /// `parenthesized_expression` wrapping the bound name, not a dedicated
     /// pattern kind -- `classify_occurrence` must climb through the
     /// wrapper to see that it sits inside an `as_pattern_target` (a binding
@@ -3294,5 +3517,89 @@ def run(cmd):
         let (call, arg) = call_and_first_arg(&root, "subprocess.run");
 
         assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// An entry point disqualifies a callee it invokes with any argument
+    /// this graph cannot prove is safe, not only when that argument traces
+    /// to one of the entry point's own parameters. A route handler with no
+    /// function parameter carrying the request at all -- the value comes
+    /// from a global `request` object instead -- is exactly as much an
+    /// entry point handing a helper untrusted input as forwarding its own
+    /// parameter would be.
+    #[test]
+    fn an_entry_point_forwarding_a_non_parameter_value_disqualifies_the_callee() {
+        let source = "\
+import subprocess
+
+
+def _exec(cmd):
+    subprocess.run(cmd, shell=True)
+
+
+@app.route(\"/run\")
+def run():
+    _exec(request.args[\"cmd\"])
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// A bare pass-through is bounded to exactly one level of
+    /// attribute/subscript access on the root parameter, matching the
+    /// specification's own `p`/`p.attr`/`p["key"]` condition literally.
+    /// `request.GET["cmd"]` is two levels (an attribute, then a subscript
+    /// on the result), which must not qualify even though its root,
+    /// `request`, is a genuine parameter.
+    #[test]
+    fn a_two_level_attribute_then_subscript_chain_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(request):
+    subprocess.run(request.GET[\"cmd\"], shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// A bare pass-through's subscript key must itself be a literal,
+    /// matching the specification's `p["key"]` wording: `opts[key]` where
+    /// `key` is itself a variable could hold anything.
+    #[test]
+    fn a_non_literal_subscript_key_is_not_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(opts, key):
+    subprocess.run(opts[key], shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(!graph.is_passthrough_observation_eligible(&call, &arg));
+    }
+
+    /// The positive control for the two tests above: a genuinely bare
+    /// one-level attribute/subscript access, with a literal key, must
+    /// still be eligible.
+    #[test]
+    fn a_one_level_literal_subscript_is_still_passthrough_eligible() {
+        let source = "\
+import subprocess
+
+
+def run(opts):
+    subprocess.run(opts[\"cmd\"], shell=True)
+";
+        let (root, graph) = build_python_graph(source);
+        let (call, arg) = call_and_first_arg(&root, "subprocess.run");
+
+        assert!(graph.is_passthrough_observation_eligible(&call, &arg));
     }
 }

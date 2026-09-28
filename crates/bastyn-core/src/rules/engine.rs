@@ -1005,8 +1005,8 @@ fn scan_with<L: LanguageExt + Copy>(
                     }
                 }
             }
-            // Fix D: keyed on who can reach this call, not on whether the
-            // value's origin is provable -- see `passthrough_observation_for`.
+            // Keyed on who can reach this call, not on whether the value's
+            // origin is provable -- see `passthrough_observation_for`.
             let passthrough_observation = rule.flow.as_ref().is_some_and(|flow| {
                 passthrough_observation_for(flow, candidate.get_env(), matched, &node, &mut graph)
             });
@@ -1077,7 +1077,7 @@ fn scan_with<L: LanguageExt + Copy>(
 }
 
 /// Whether `flow.passthrough_downgrade` proves the pass-through-observation
-/// shape (Fix D) at `matched`'s captured value, building the flow graph on
+/// shape at `matched`'s captured value, building the flow graph on
 /// first use. Split out of [`scan_with`] to keep that function within
 /// clippy's line-count lint, the same reason [`compile_flow`] is split out of
 /// [`CompiledRule::compile`].
