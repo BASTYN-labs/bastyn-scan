@@ -597,6 +597,10 @@ const SHELL_QUOTE_CALLEES: &[&str] = &["shlex.quote", "shlex.join"];
 /// Callee paths this module accepts as pure functions of their own
 /// arguments when computing [`Resolved::constant_path`] -- no environment,
 /// no attacker input, deterministic given the module's own file location.
+/// `Path`/`pathlib.Path` and `str` fit the same description: each is a
+/// constructor applied to an already-proven-constant value (most often
+/// `__file__`, or the result of another entry in this list), so the value
+/// it produces stays constant too.
 const PATH_CONST_FUNCTIONS: &[&str] = &[
     "os.path.dirname",
     "os.path.abspath",
@@ -604,7 +608,20 @@ const PATH_CONST_FUNCTIONS: &[&str] = &[
     "os.path.normpath",
     "os.path.join",
     "os.getcwd",
+    "Path",
+    "pathlib.Path",
+    "str",
 ];
+
+/// `Path` method names that take no argument and, called on a receiver
+/// already proven `constant_path`, preserve that fact -- each is a pure
+/// transformation of the path text with no external input.
+const PATHLIB_ZERO_ARG_METHODS: &[&str] = &["resolve", "absolute"];
+
+/// `Path` method names that take exactly one argument, which must itself be
+/// `constant_path` (ordinarily a literal), and preserve `constant_path` on a
+/// receiver already proven so.
+const PATHLIB_ONE_ARG_METHODS: &[&str] = &["with_name", "with_suffix"];
 
 /// Callee paths that, called with no argument, are themselves a direct,
 /// unprocessed read of `sys.stdin` -- the hook/skill-runner control-channel
@@ -982,11 +999,12 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             .field("function")
             .map(|f| callee_path(&f))
             .unwrap_or_default();
-        // Only walked for a callee already on the whitelist: every other
-        // call in the file (the overwhelming majority) skips argument
-        // resolution entirely, so this costs nothing on files with no
-        // os.path chain.
-        let constant_path = PATH_CONST_FUNCTIONS.contains(&callee.as_str())
+        // Only walked for a callee already on the whitelist, or a pathlib
+        // method call whose receiver resolution below turns out to be
+        // constant_path: every other call in the file (the overwhelming
+        // majority) skips argument resolution entirely, so this costs
+        // nothing on files with no os.path/pathlib chain.
+        let constant_path = (PATH_CONST_FUNCTIONS.contains(&callee.as_str())
             && node.field("arguments").is_some_and(|arguments| {
                 arguments.named_children().all(|argument| {
                     let value = if argument.kind() == "keyword_argument" {
@@ -996,7 +1014,8 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     };
                     value.is_some_and(|value| self.resolve(&value, scope, depth + 1).constant_path)
                 })
-            });
+            }))
+            || self.is_pathlib_method_constant_path(node, scope, depth);
         // `sys.stdin.read()`/`input()` need no argument check: the call
         // itself is the read. `json.load(sys.stdin)` is the same shape but
         // only when its sole argument is `sys.stdin` written exactly that
@@ -1067,6 +1086,75 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             answer = answer.combine(inner);
         }
         Some(answer)
+    }
+
+    /// `<receiver>.resolve()` / `.absolute()` / `.with_name(<arg>)` /
+    /// `.with_suffix(<arg>)` where the receiver already resolves
+    /// `constant_path: true`: each of these is a pure transformation of the
+    /// path text, so the call carries the receiver's `constant_path` too.
+    ///
+    /// [`PATH_CONST_FUNCTIONS`]'s whole-dotted-name match cannot reach these
+    /// -- the receiver expression is arbitrary (`HERE.resolve()`,
+    /// `Path(__file__).absolute()`, ...) -- so this checks the call's
+    /// `function` shape directly: an `"attribute"` node whose `object`
+    /// resolves `constant_path` and whose `attribute` name is one of
+    /// [`PATHLIB_ZERO_ARG_METHODS`]/[`PATHLIB_ONE_ARG_METHODS`]. Matching by
+    /// method name alone, regardless of the receiver's actual type, is the
+    /// same imprecision [`SHELL_QUOTE_CALLEES`] and `PATH_CONST_FUNCTIONS`
+    /// already accept for their own whitelist entries -- safe here
+    /// specifically because the receiver itself must already be proven
+    /// `constant_path`, so the marginal risk is bounded to "this
+    /// whitelisted method name happens to exist on some other type with the
+    /// same receiver-already-constant shape," which cannot introduce
+    /// attacker-influenced content.
+    fn is_pathlib_method_constant_path(
+        &mut self,
+        node: &Node<'r, D>,
+        scope: usize,
+        depth: usize,
+    ) -> bool {
+        let Some(function) = node.field("function") else {
+            return false;
+        };
+        if function.kind() != "attribute" {
+            return false;
+        }
+        // The method-name check first, because it needs no recursive
+        // resolution and rejects every attribute call whose name is not one
+        // of the two short whitelists -- the overwhelming majority -- before
+        // this walks the (potentially deep) receiver expression at all.
+        let Some(name) = function.field("attribute").map(|attr| attr.text()) else {
+            return false;
+        };
+        let is_zero_arg = PATHLIB_ZERO_ARG_METHODS.contains(&name.as_ref());
+        let is_one_arg = PATHLIB_ONE_ARG_METHODS.contains(&name.as_ref());
+        if !is_zero_arg && !is_one_arg {
+            return false;
+        }
+        let Some(arguments) = node.field("arguments") else {
+            return false;
+        };
+        let mut args = arguments.named_children();
+        let arity_matches = if is_zero_arg {
+            args.next().is_none()
+        } else {
+            let Some(first) = args.next() else {
+                return false;
+            };
+            if args.next().is_some() {
+                return false;
+            }
+            let value = if first.kind() == "keyword_argument" {
+                first.field("value")
+            } else {
+                Some(first)
+            };
+            value.is_some_and(|value| self.resolve(&value, scope, depth + 1).constant_path)
+        };
+        arity_matches
+            && function
+                .field("object")
+                .is_some_and(|object| self.resolve(&object, scope, depth + 1).constant_path)
     }
 
     /// Resolve a name against the bindings visible at `offset` in `scope`.
@@ -1620,6 +1708,50 @@ def load_named(name):
         let arg = argument_node_of_call(&root, "open");
 
         assert!(!graph.is_constant_path(arg));
+    }
+
+    #[test]
+    fn a_pathlib_path_of_file_root_is_a_constant_path() {
+        let source = "\
+from pathlib import Path
+
+HERE = Path(__file__).parent
+
+
+def load_overlay():
+    with open(f\"{HERE}/overlay.js\") as handle:
+        return handle.read()
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "open");
+
+        assert!(
+            graph.is_constant_path(arg),
+            "expected a pathlib Path(__file__) root to be a constant path"
+        );
+    }
+
+    /// `.resolve()` (zero-arg) and `.with_name(...)` (one-arg, itself a
+    /// literal) both preserve `constant_path` on a receiver already proven
+    /// so -- the two pathlib method shapes `PATH_CONST_FUNCTIONS`'s
+    /// whole-dotted-name match cannot reach.
+    #[test]
+    fn pathlib_resolve_and_with_name_preserve_constant_path() {
+        let source = "\
+from pathlib import Path
+
+
+def load_readme():
+    with open(Path(__file__).resolve().with_name(\"README.md\")) as handle:
+        return handle.read()
+";
+        let (root, graph) = build_python_graph(source);
+        let arg = argument_node_of_call(&root, "open");
+
+        assert!(
+            graph.is_constant_path(arg),
+            "expected .resolve().with_name(...) on a constant_path receiver to stay constant"
+        );
     }
 
     #[test]

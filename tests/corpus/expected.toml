@@ -199,6 +199,15 @@ severity = "high"
 why      = "asset_root is a function parameter, not a module-level __file__-derived constant -- BAS-LLM10-012's new exclude_if: constant_path clause (added 2026-09-24 to fix 6 of 7 report false positives, all the module-level __file__-derived-constant shape) does not, and by design cannot without interprocedural call-site analysis, prove a bare parameter safe, so this must still fire."
 
 [[expect]]
+file     = "vulnerable/llm10_path_traversal_tool.py"
+line     = 52
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "HERE is a module-level, pathlib Path(__file__)-derived constant_path (Fix A's own case, added to teach constant_path about pathlib), but name is a function parameter interpolated into the same f-string as HERE -- exclude_if: constant_path ANDs constant_path across every interpolation, so a parameter mixed in with an otherwise-constant f-string must still fire."
+
+[[expect]]
 file     = "vulnerable/llm10_unparameterized_sql_tool.py"
 line     = 9
 rule     = "BAS-LLM10-017"
@@ -914,6 +923,10 @@ why = "command traces to an unprocessed sys.stdin read (json.load(sys.stdin)) --
 [[expect_none]]
 file = "clean/module_constant_path_join.py"
 why = "DATA_DIR is a module-level literal assignment; constant_path already traces a Name node through a module-scope binding to its own literal via the existing lookup/decide mechanism in flow/graph.rs, so this case is correctly excluded without any code change. Added as a regression-locking fixture."
+
+[[expect_none]]
+file = "clean/pathlib_constant_root.py"
+why = "Fix A: constant_path learns pathlib. HERE and ASSETS both trace back to __file__ through Path(__file__), .parent, the / operator, .resolve(), .parents[...] (a subscript, which already passes constant_path through unchanged like any other attribute read), and str() -- every one of them either already generic (attribute/subscript/binary_operator resolution) or newly whitelisted (PATH_CONST_FUNCTIONS' Path/str entries, PATHLIB_ZERO_ARG_METHODS' resolve). load_overlay's f-string and load_readme's + concatenation both already fold constant_path across their parts once the root itself resolves correctly, so no separate string-shape handling was needed."
 
 # clean/dotenv_example/.env.example carries no [[expect_none]] entry here for
 # the same reachability reason documented next to vulnerable/dotenv_leak/.env

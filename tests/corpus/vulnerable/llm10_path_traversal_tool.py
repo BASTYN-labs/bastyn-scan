@@ -36,3 +36,17 @@ def read_bundled_asset(asset_root: str, filename: str) -> str:
     analysis) prove it safe, so this must still fire."""
     with open(os.path.join(asset_root, filename)) as handle:
         return handle.read()
+
+
+from pathlib import Path
+
+HERE = Path(__file__).parent
+
+
+def read_user_file(name: str) -> str:
+    """BAS-LLM10-012: HERE is a module-level, __file__-derived constant_path
+    -- Fix A's own case -- but name is a function parameter interpolated
+    into the same f-string. exclude_if: constant_path ANDs every
+    interpolation with the surrounding literal text, so mixing a parameter
+    into an otherwise-constant f-string must still fire."""
+    return open(f"{HERE}/uploads/{name}").read()
