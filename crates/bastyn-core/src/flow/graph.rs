@@ -638,6 +638,24 @@ const PATH_CONST_FUNCTIONS: &[&str] = &[
     "str",
 ];
 
+/// The subset of [`PATH_CONST_FUNCTIONS`] eligible for the all-args
+/// `Resolved::closed` check in `resolve_call` (`closed_args_closed`), which
+/// is a narrower bar than `constant_path`'s: `closed` claims the value is
+/// "drawn from a set this file itself fixes", not merely "deterministic
+/// given the module's own file location". `Path()`/`str()` qualify because
+/// even their zero-argument form returns a fixed literal-equivalent value
+/// (`Path()` is `.`, `str()` is `''`), so an all-args check is never
+/// vacuously true for the wrong reason. The rest of `PATH_CONST_FUNCTIONS`
+/// does not qualify -- most importantly `os.getcwd`, which takes no
+/// arguments at all: an all-args check over it would be vacuously `true`,
+/// wrongly marking a read of the process's actual working directory
+/// (external environment state, not anything this file fixes) as `closed`.
+/// `os.path.join`/`os.path.dirname`/etc. are excluded for the same reason
+/// applied more narrowly -- none of them needs to contribute to `closed`
+/// for any fixture this task added, so there is no pressure to widen this
+/// beyond `Path`/`str`, the two names the spec names explicitly.
+const CLOSED_WRAP_FUNCTIONS: &[&str] = &["Path", "pathlib.Path", "str"];
+
 /// Callee paths whose return value is an OS-generated temporary-file/directory
 /// path -- no caller or attacker-influenced input shapes it, so it reads as
 /// both `closed` (BAS-LLM10-009) and `constant_path` (BAS-LLM10-012).
@@ -660,11 +678,11 @@ const TEMPFILE_CLOSED_CALLEES: &[&str] = &[
 /// temp file the call just created -- `tempfile.NamedTemporaryFile(...).name`
 /// -- no attacker input shapes it, the same trust boundary
 /// [`TEMPFILE_CLOSED_CALLEES`] grants the tempfile APIs whose *return* value
-/// is itself the path. Checked in the `"attribute"` arm of
-/// [`Analyzer::compute`] against the object's own resolved callee, not the
-/// attribute name alone the way [`CLOSED_ATTRIBUTES`] matches `__name__`
-/// etc. regardless of receiver -- `.name` alone is far too common an
-/// attribute to whitelist unconditionally.
+/// is itself the path. Checked in [`Analyzer::resolve_attribute`] against
+/// the object's own resolved callee, not the attribute name alone the way
+/// [`CLOSED_ATTRIBUTES`] matches `__name__` etc. regardless of receiver --
+/// `.name` alone is far too common an attribute to whitelist
+/// unconditionally.
 const TEMPFILE_NAME_ATTRIBUTE_RECEIVERS: &[&str] = &["tempfile.NamedTemporaryFile"];
 
 /// `Path` method names that take no argument and, called on a receiver
@@ -951,8 +969,8 @@ impl<'r, D: Doc> Analyzer<'r, D> {
     /// `as_pattern_target` -- the target half of `with expr as X:` /
     /// `except E as X:` -- is not itself an `identifier`; tree-sitter-python
     /// wraps the real target one level down (`as_pattern_target` -> a single
-    /// named child, ordinarily `identifier`, occasionally `tuple_pattern`/
-    /// `list_pattern` for `with expr as (a, b):`). Unwrapping one level and
+    /// named child, ordinarily `identifier`, occasionally a plain `tuple`/
+    /// `list` for `with expr as (a, b):`). Unwrapping one level and
     /// recursing with the same `value` lets the identifier/tuple arms above
     /// decide how to bind it, exactly as if the grammar had not interposed
     /// the wrapper node at all.
@@ -1195,20 +1213,25 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             }))
             || self.is_pathlib_method_constant_path(node, scope, depth)
             || TEMPFILE_CLOSED_CALLEES.contains(&callee.as_str());
-        // Mirrors the `constant_path` all-args check directly above: a
-        // PATH_CONST_FUNCTIONS call (`Path(...)`, `str(...)`,
-        // `os.path.join(...)`, ...) applied only to already-`closed`
-        // arguments is itself closed -- a pure function of a value drawn
-        // from a fixed set still draws from a fixed set. Needed so
-        // `workspace = Path(tmpdir)` (`tmpdir` bound to a
-        // `tempfile.TemporaryDirectory()` call, `closed: true` via
+        // Mirrors the `constant_path` all-args check directly above, but
+        // restricted to CLOSED_WRAP_FUNCTIONS rather than the whole
+        // PATH_CONST_FUNCTIONS whitelist -- see that const's doc comment for
+        // why `os.path.join`/`os.path.dirname`/`os.getcwd` etc. must NOT
+        // share this check: `os.getcwd()` takes no arguments, so an all-args
+        // check over PATH_CONST_FUNCTIONS would be vacuously true for it,
+        // wrongly marking a read of the process's actual working directory
+        // (external, not-file-fixed state) as `closed`. `Path(...)`/`str(...)`
+        // applied only to already-`closed` arguments is itself closed -- a
+        // pure function of a value drawn from a fixed set still draws from a
+        // fixed set. Needed so `workspace = Path(tmpdir)` (`tmpdir` bound to
+        // a `tempfile.TemporaryDirectory()` call, `closed: true` via
         // TEMPFILE_CLOSED_CALLEES below) itself ends up `closed: true`:
         // `constant_path` alone already propagated through `Path(...)`
         // before this task, but `.closed` -- what BAS-LLM10-009's own
         // `exclude_if: closed_value` clause actually consults -- did not,
         // and `str(tempfile.mkdtemp())`/`Path(tmpdir)` are exactly the
         // shapes a tempfile value reaches a shell command through.
-        let closed_args_closed = PATH_CONST_FUNCTIONS.contains(&callee.as_str())
+        let closed_args_closed = CLOSED_WRAP_FUNCTIONS.contains(&callee.as_str())
             && node.field("arguments").is_some_and(|arguments| {
                 arguments.named_children().all(|argument| {
                     let value = if argument.kind() == "keyword_argument" {
@@ -2164,6 +2187,31 @@ def sync_repo():
         assert!(
             graph.is_closed(return_value.node_id()),
             "expected tmpdir, bound via as_pattern_target to tempfile.TemporaryDirectory(), to be closed"
+        );
+    }
+
+    /// `os.getcwd()` is in `PATH_CONST_FUNCTIONS` (so it correctly resolves
+    /// `constant_path: true` -- deterministic given the process's own
+    /// location), but it must NOT resolve `closed: true`: it takes no
+    /// arguments at all, so an all-args check over the whole
+    /// `PATH_CONST_FUNCTIONS` whitelist would be vacuously true for it,
+    /// wrongly treating a read of external process/environment state as
+    /// "drawn from a set this file itself fixes". `closed_args_closed` is
+    /// restricted to `CLOSED_WRAP_FUNCTIONS` (`Path`/`str`) specifically to
+    /// keep this call out of it.
+    #[test]
+    fn os_getcwd_is_not_closed() {
+        let (root, graph) = build_python_graph("def f():\n    return os.getcwd()\n");
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find_map(|stmt| stmt.named_children().next())
+            .expect("a return statement returning os.getcwd()");
+
+        assert!(
+            !graph.is_closed(return_value.node_id()),
+            "os.getcwd() must not resolve closed: true -- it reads external process state, not a value this file fixes"
         );
     }
 }
