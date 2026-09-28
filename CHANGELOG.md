@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Pre-1.0, the minor version may carry breaking changes; they will always be listed here.
 
-## [Unreleased]
+## [0.1.8] - 2026-09-25
 
 ### Breaking (library API)
 
@@ -15,13 +15,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- **Defects now require traced provenance.** `BAS-LLM10-002`, `-003`, `-004`, `BAS-ZT4-001` and
-  `-002` ask the Python flow graph where a value came from. A value traced to an untrusted source is
-  a defect. A literal, a value built only from literals, and one already limited by a fixed-set check
-  are not reported. A value whose origin cannot be traced in the file is reported as a low-confidence
-  observation: for `BAS-LLM10-004` always, for the others only when its name matches the rule's
-  former name list. Model output reaching a shell or SQL is now found under any variable name when
-  the file itself shows the value came from a model call.
+- **Defects now require traced provenance.** `BAS-LLM10-002`, `-003`, `BAS-ZT4-001` and `-002` ask the
+  Python flow graph where a value came from. A value traced to an untrusted source is a defect. A
+  literal, a value built only from literals, and one already limited by a fixed-set check are not
+  reported. A value whose origin cannot be traced in the file is reported as a low-confidence
+  observation, only when its name matches the rule's former name list. Model output reaching a shell
+  or SQL is now found under any variable name when the file itself shows the value came from a model
+  call.
+- **`BAS-LLM10-004` (`eval()`/`exec()` on a non-literal argument) no longer gates on provenance at
+  all.** It previously asked the flow graph where the argument came from, same as the rules above,
+  with a `source:` list that already named every `SourceKind` this engine knows: traced to one of
+  them it was a defect, traced to nowhere (an untraceable origin, such as a bare function parameter)
+  it was a hidden, low-confidence observation behind `flow.unproven`, out of the default report. That
+  gate was hiding real findings for little precision gained — legitimate `eval()`/`exec()` on a
+  non-literal value is rare — so an untraceable origin is now reported as a defect unconditionally,
+  the same composition-is-the-defect philosophy `BAS-LLM10-009`/`-017`/`-018` already use. A value the
+  flow graph proves is built only from literals this file fixes, or one a guard already dominates, is
+  still not reported, and a call through a locally rebound `eval`/`exec` name is still not the builtin
+  — only the provenance requirement is gone. This can surface a call previously visible only with
+  `--show-observations` as a defect that affects a scan's exit code.
+- **The provenance-based downgrade above does not apply to `BAS-LLM10-004`, `-009`, `-017`, or
+  `-018`.** These rules report a defect unconditionally on the composition they match — `eval()`/
+  `exec()` on a non-literal argument, a non-literal command reaching a shell, or an unparameterized
+  query reaching execution — regardless of whether the specific value's provenance can be traced in
+  the file. At a location where both one of these unconditional rules and a provenance-gated rule above
+  would match, the unconditional rule's defect is what gets reported: the engine keeps a defect over an
+  observation at the same location. This can change a scan's exit code for a codebase that previously
+  relied on the provenance-gated behavior alone to keep that location at observation level.
 - **Observation-only rules.** `BAS-LLM10-005`, `-006`, `-007` and `BAS-ZT4-003` (TypeScript and
   JavaScript, which have no dataflow graph yet) and `BAS-LLM03-001`/`-002` (tool name only) now
   report observations. They appear with `--show-observations` and never affect the exit code.
@@ -36,10 +56,81 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   many dependencies may have incomplete results, in the terminal, JSON (`"status": "partial"`) and
   SARIF (a tool-execution warning, also emitted for an unreachable lookup). Exit codes are unchanged.
 - Rule schema: `flow.unproven`, `flow.builtin_callee`, and `none_in_file`.
+- Rule schema: `flow.source` is now optional. A `flow:` clause that omits it does not gate on
+  provenance at all — it matches any value that is not built only from literals this file fixes and
+  (with `flow.unguarded`) not already dominated by a guard, whatever produced it. `flow.unproven` has
+  no effect once every non-closed, non-guarded value is already proven, so a rule fails to load if it
+  declares `flow.unproven` while `flow.source` is omitted. `flow.sink` is rejected the same way when
+  `flow.source` is omitted, since a sourceless wrapper-forwarding search is a materially broader,
+  currently untested reach no shipped rule asks for. This is what `BAS-LLM10-004` now uses; see the
+  `Changed` entry above.
+- **`BAS-LLM10-009`: non-literal command run through a shell, regardless of any allowlist/denylist
+  check.** Flags a `subprocess`/`os.system`/`os.popen` shell call fed a non-literal command even when
+  the surrounding code has an allowlist or denylist gate, since neither actually prevents the shell
+  from receiving attacker-controlled input. Python only for now — no `child_process` (JS/TS) twin
+  ships in this change. Closes a detection gap where a shell call fed a non-literal command was
+  missed whenever an allowlist/denylist check preceded it, even though such a check never actually
+  prevents attacker-controlled input from reaching the shell.
+- **`BAS-LLM10-012`: file opened at an unresolved path built by joining or interpolating a non-literal
+  value.** Flags `open()` calls assembled inline via `os.path.join`/f-string/string concatenation with
+  no `realpath`/`abspath` resolution — including when the only existing guard is a bypassable
+  string-prefix containment check. Python only for now — no JS/TS twin ships in this change. Closes a
+  detection gap where such a path was missed whenever any containment check preceded the `open()`
+  call, even a string-prefix check that does not resolve `..` segments or symlinks.
+- **`BAS-ZT1-018`/`-019`/`-020`: hardcoded JWT literal, hardcoded AWS access key ID, and a
+  credential-shaped default value read from an environment variable.** Three new hardcoded-secret
+  shapes — a JWT literal, an AWS access key ID, and a credential-shaped default argument to an
+  environment-variable lookup — that the existing `ZT1` rules' name-and-value checks did not cover.
+  Python only for now — no JS/TS twin ships in this change.
+- **`BAS-LLM10-017`/`-018`: unparameterized SQL query reaches execution, directly or via a local
+  variable.** Flags an interpolation-built query string that reaches `.execute()` either inline or
+  after first being assigned to a local variable. Closes a detection gap where the query was missed
+  once it was stored in a local variable before being executed, rather than passed to `.execute()`
+  directly. Python only for now — no JS/TS twin ships in this change.
+- **`BAS-LLM01-002`/`-003`: hidden instruction block and suspicious instruction-override phrase in a
+  tool's own description.** Detects MCP "tool poisoning" — an adversarial instruction riding along
+  inside a tool's docstring that a human reviewer approving the tool would never read as an
+  instruction. Closes a gap where a tool's description field was never inspected as a
+  prompt-injection surface at all, even though a host's tool-discovery mechanism reads it directly.
+  Python only for now — no JS/TS twin ships in this change.
+- **`BAS-ZT1-021`/`-022`: a provider API key literal, and any other credential-shaped literal, in a
+  committed `.env` file.** `.env` files were always walked (the walker's own allowlist calls them
+  "exactly the material a scanner should not miss") but no analyser claimed the format, so a real key
+  committed to one produced no finding and was not even recorded as skipped. Reuses the same
+  credential-shape judgment already backing `BAS-INFRA-002`/`-006`
+  (`credential::is_provider_key_literal`, `looks_like_credential_key`,
+  `is_hardcoded_credential_value`). `.env.example`, `.env.sample`, `.env.template`, and `.env.dist`
+  are still analysed, so they count as scanned, but never flagged. Rust-native, like the
+  Dockerfile/Compose checks — no YAML rule file for either id.
 
 ### Fixed
 
 - A Compose file that is not valid YAML is listed as skipped instead of counted as scanned.
+- `BAS-LLM10-009` no longer fires on a shell command whose entire non-literal content traces to an
+  unprocessed `sys.stdin` read (`sys.stdin.read()`, `json.load(sys.stdin)`, `input()`) — a hook or
+  skill-runner's own command-dispatch control-channel shape, the same trust boundary as `argv` rather
+  than attacker-reachable input. A command that reaches a shell via any other non-literal path is
+  unaffected.
+- `BAS-LLM10-012`'s `constant_path` check (a file path proven to come only from this file's own
+  location, not from anything a caller supplies) now also recognizes `pathlib.Path` construction and
+  its `.parent`/`.resolve()`/`.absolute()`/`.with_name()`/`.with_suffix()` chain, not just
+  `os.path.*`. A path assembled entirely through `pathlib` starting from `__file__` no longer fires.
+- New `exclude_if: cli_argument` predicate for `BAS-LLM10-009` and `BAS-LLM10-012`: a value traced
+  entirely to `sys.argv`, an `argparse.ArgumentParser`'s own `.parse_args()`/`.parse_known_args()`
+  result, or a `click`/`typer` command's own declared parameter is the operator's own command line,
+  not attacker-reachable input, and no longer fires. A value that also mixes in any other non-literal
+  source is unaffected and still fires.
+- Values from Python's `tempfile` module (`mkdtemp()`, `mkstemp()`, `gettempdir()`, the name bound by
+  `with TemporaryDirectory() as ...`, `NamedTemporaryFile(...).name`) are now recognized as
+  OS-generated and not attacker-influenced, for both `BAS-LLM10-009` and `BAS-LLM10-012` — but only
+  when every argument passed to the call is itself already proven safe; a caller-controlled
+  `prefix`/`suffix`/`dir` argument is unaffected and still fires.
+- `BAS-LLM10-009`: a helper function whose parameter reaches a shell with no processing in between,
+  and which nothing in the file calls from a recognized entry point (an MCP tool, a web-framework
+  route or request handler, a CLI command), is now reported as a low-confidence observation instead
+  of a defect — out of the default report, visible with `--show-observations`. A parameter an entry
+  point forwards into the helper, the entry point itself, or a value this file can trace to another
+  source, is unaffected and still reports a defect.
 
 ## [0.1.7] - 2026-09-25
 

@@ -23,6 +23,7 @@ pub mod scan;
 pub mod skill;
 
 mod credential;
+mod dotenv;
 mod error;
 pub(crate) mod flow;
 mod generated;

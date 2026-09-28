@@ -111,7 +111,10 @@ use crate::flow::{FlowGraph, FlowLanguage, SinkKind, SourceKind, guards, shadow}
 use crate::test_path::is_test_path;
 
 use super::error::{Result, RuleError};
-use super::schema::{RuleDef, RuleFile, RuleLanguage, TestPathPolicy, UnprovenDef, UnprovenKind};
+use super::schema::{
+    ExcludeIfDef, ExcludeIfKind, RuleDef, RuleFile, RuleLanguage, TestPathPolicy, UnprovenDef,
+    UnprovenKind,
+};
 
 /// A grammar the engine can parse and match rules against, guessed from a
 /// file's extension.
@@ -186,6 +189,7 @@ struct CompiledRule {
     metavariable_matches: Vec<(String, RegexMatcher)>,
     metavariable_not_matches: Vec<(String, RegexMatcher)>,
     flow: Option<CompiledFlow>,
+    exclude_if: Option<CompiledExcludeIf>,
 }
 
 /// Appended to the description of a finding reported through a `flow:`
@@ -225,16 +229,27 @@ impl CompiledUnproven {
 
 /// A rule's `flow:` clause, validated at load time.
 ///
-/// The provenance gate. Everything above it in [`CompiledRule`] decides
-/// whether a piece of code has the *shape* of a defect; this decides whether
-/// the value flowing through that shape actually came from somewhere
-/// untrusted. See [`crate::flow`] for why that distinction is the whole point
-/// of this tier.
+/// Everything above it in [`CompiledRule`] decides whether a piece of code
+/// has the *shape* of a defect; this decides whether the value flowing
+/// through that shape is one this rule should report at all. In its common
+/// form (`sources: Some(...)`) it is the provenance gate: the value must
+/// have come from somewhere untrusted, and [`crate::flow`] explains why that
+/// distinction is the whole point of this tier. In its other form (`sources:
+/// None`) there is no provenance question to ask -- every value not closed
+/// over literals this file fixes and (with `unguarded`) not already
+/// dominated by a guard is reported, whatever produced it; see
+/// [`super::schema::FlowDef`]'s own docs for when a rule reaches for this
+/// form instead.
 struct CompiledFlow {
     /// Which captured metavariable to test.
     variable: String,
-    /// The source kinds that satisfy the gate. Non-empty, enforced at load.
-    sources: Vec<SourceKind>,
+    /// The source kinds that satisfy the gate, when the rule has one.
+    ///
+    /// `Some(non_empty)` when the rule wrote a `source:` list (non-empty,
+    /// enforced at load); `None` when it left `source:` out entirely, which
+    /// means there is no provenance requirement at all -- every value that
+    /// clears the closed/guard checks below is `Proven`.
+    sources: Option<Vec<SourceKind>>,
     /// Whether a guard dominating the sink suppresses the match.
     unguarded: bool,
     /// When set, calls to a local function forwarding the value into a sink of
@@ -246,6 +261,12 @@ struct CompiledFlow {
     unproven: Option<CompiledUnproven>,
     /// Drop a match whose callee is a bare name this file rebinds itself.
     builtin_callee: bool,
+    /// When true, a match whose captured value is a pure pass-through of a
+    /// non-entry-point function's own parameter, unreachable in this file
+    /// from any recognized entry point, is reported as an observation
+    /// instead of the rule's declared kind. See
+    /// `crate::flow::graph::FlowGraph::is_passthrough_observation_eligible`.
+    passthrough_downgrade: bool,
 }
 
 impl CompiledFlow {
@@ -259,8 +280,14 @@ impl CompiledFlow {
         if self.unguarded && guards::is_guarded(graph, node_id) {
             return FlowVerdict::Drop;
         }
+        // No `source:` list means no provenance requirement: a value that
+        // reached this point is not closed and (if `unguarded`) not guarded,
+        // so it is proven regardless of where it came from.
+        let Some(sources) = &self.sources else {
+            return FlowVerdict::Proven;
+        };
         match graph.source_kind_of(node_id) {
-            Some(kind) if self.sources.contains(&kind) => FlowVerdict::Proven,
+            Some(kind) if sources.contains(&kind) => FlowVerdict::Proven,
             // An untraced value takes the unproven path when this clause
             // has one; a value traced to a source this rule does not list
             // is known not to be what the rule is about, so it is dropped
@@ -269,6 +296,15 @@ impl CompiledFlow {
             Some(_) | None => FlowVerdict::Drop,
         }
     }
+}
+
+/// A rule's `exclude_if:` clause, validated at load time.
+struct CompiledExcludeIf {
+    /// Which captured metavariable to test.
+    variable: String,
+    /// Which Tier-2 predicate(s) to test it with; the match is dropped if
+    /// *any* proves the value safe.
+    kinds: Vec<ExcludeIfKind>,
 }
 
 impl CompiledRule {
@@ -314,6 +350,7 @@ impl CompiledRule {
 
         let flow = compile_flow(&def, &any_vars)?;
         let none_in_file = compile_none_in_file(&def, grammar, lang, &any_vars)?;
+        let exclude_if = compile_exclude_if(&def.id, def.language, def.exclude_if)?;
 
         let mut metavariable_matches = Vec::with_capacity(def.metavariable_matches.len());
         for (var, regex_src) in def.metavariable_matches {
@@ -364,6 +401,7 @@ impl CompiledRule {
             metavariable_matches,
             metavariable_not_matches,
             flow,
+            exclude_if,
         })
     }
 
@@ -461,9 +499,37 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
             language: format!("{:?}", def.language).to_lowercase(),
         });
     }
-    let sources = flow.source.kinds();
-    if sources.is_empty() {
-        return Err(RuleError::EmptyFlowSources { id: def.id.clone() });
+    // `source:` is optional: a rule may skip the provenance gate entirely and
+    // rely only on the closed/guard/shadow checks below (the same
+    // unconditional-composition philosophy `BAS-LLM10-009`/`-017`/`-018`
+    // already use). Only when the rule wrote a `source:` list is that list
+    // validated -- there is nothing to validate about its absence.
+    let sources = match &flow.source {
+        None => None,
+        Some(spec) => {
+            let kinds = spec.kinds();
+            if kinds.is_empty() {
+                return Err(RuleError::EmptyFlowSources { id: def.id.clone() });
+            }
+            Some(kinds)
+        }
+    };
+    // `unproven:` only changes what happens to a value whose source *cannot*
+    // be traced against a `source:` list. With no `source:` at all, every
+    // value that clears the closed/guard checks is already `Proven`, so
+    // there is no untraceable path for `unproven:` to change anything about.
+    if sources.is_none() && flow.unproven.is_some() {
+        return Err(RuleError::UnprovenWithoutSource { id: def.id.clone() });
+    }
+    // A sourceless `flow:` clause combined with `flow.sink` would let the
+    // wrapper-sink pass report every call to a local wrapper whose argument
+    // is merely not closed and (with `unguarded`) not guarded -- a
+    // materially broader reach than any shipped rule exercises today, and
+    // genuinely untested behavior. Rejected here rather than shipped
+    // silently; a rule author who actually needs this combination can lift
+    // the restriction deliberately later.
+    if sources.is_none() && flow.sink.is_some() {
+        return Err(RuleError::FlowSinkWithoutSource { id: def.id.clone() });
     }
     // The wrapper-sink pass `flow.sink` turns on builds its findings
     // straight from `wrapper_sink_calls`, never through
@@ -473,6 +539,14 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
     // here rather than shipped half-working.
     if flow.sink.is_some() && !def.none_in_file.is_empty() {
         return Err(RuleError::FlowSinkWithNoneInFile { id: def.id.clone() });
+    }
+    // The wrapper-sink pass `flow.sink` turns on builds its own findings
+    // straight from `wrapper_sink_calls`, bypassing the per-node match loop
+    // `passthrough_downgrade` is computed in -- rejected here rather than
+    // shipped silently half-working, for the same reason as the
+    // `none_in_file` check just above.
+    if flow.sink.is_some() && flow.passthrough_downgrade {
+        return Err(RuleError::PassthroughDowngradeWithSink { id: def.id.clone() });
     }
     // `flow.unproven` only changes what a defect rule reports: an
     // observation rule already reports everything it matches as an
@@ -523,6 +597,7 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
         sink: flow.sink,
         unproven,
         builtin_callee: flow.builtin_callee,
+        passthrough_downgrade: flow.passthrough_downgrade,
     }))
 }
 
@@ -558,6 +633,38 @@ fn compile_none_in_file<L: LanguageExt + Copy>(
             Ok((pattern, vars))
         })
         .collect()
+}
+
+/// Validate and compile a rule's `exclude_if:` clause, if it declared one.
+///
+/// Exactly the same Python-only contract `flow:` enforces, for the same
+/// reason: the predicate this clause tests only exists for
+/// tree-sitter-python. Split out of [`CompiledRule::compile`] to keep that
+/// function's length in check, the same way [`compile_patterns`] is.
+fn compile_exclude_if(
+    id: &str,
+    language: RuleLanguage,
+    exclude_if: Option<ExcludeIfDef>,
+) -> Result<Option<CompiledExcludeIf>> {
+    match exclude_if {
+        None => Ok(None),
+        Some(_) if language != RuleLanguage::Python => {
+            Err(RuleError::ExcludeIfUnsupportedLanguage {
+                id: id.to_string(),
+                language: format!("{language:?}").to_lowercase(),
+            })
+        }
+        Some(exclude) => {
+            let kinds = exclude.kind.kinds();
+            if kinds.is_empty() {
+                return Err(RuleError::EmptyExcludeIfKinds { id: id.to_string() });
+            }
+            Ok(Some(CompiledExcludeIf {
+                variable: exclude.variable,
+                kinds,
+            }))
+        }
+    }
 }
 
 fn compile_patterns<L: LanguageExt + Copy>(
@@ -898,11 +1005,28 @@ fn scan_with<L: LanguageExt + Copy>(
                     }
                 }
             }
+            // Keyed on who can reach this call, not on whether the value's
+            // origin is provable -- see `passthrough_observation_for`.
+            let passthrough_observation = rule.flow.as_ref().is_some_and(|flow| {
+                passthrough_observation_for(flow, candidate.get_env(), matched, &node, &mut graph)
+            });
             if rule.excluded_by_file(&node, candidate.get_env()) {
                 continue;
             }
+            if let Some(exclude) = &rule.exclude_if
+                && excluded_by_predicate(exclude, candidate.get_env(), &node, &mut graph)
+            {
+                continue;
+            }
 
-            let finding = build_finding(rule, relative_path, source, matched, unproven);
+            let finding = build_finding(
+                rule,
+                relative_path,
+                source,
+                matched,
+                unproven,
+                passthrough_observation,
+            );
             push_unique(&mut findings, &mut seen, finding);
         }
     }
@@ -932,7 +1056,12 @@ fn scan_with<L: LanguageExt + Copy>(
         {
             let graph = graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
             for (call, unproven) in wrapper_sink_calls(&node, graph, sink, flow) {
-                let finding = build_finding(rule, relative_path, source, &call, unproven);
+                // `flow.sink` and `flow.passthrough_downgrade` are mutually
+                // exclusive -- rejected at load time by
+                // `RuleError::PassthroughDowngradeWithSink` -- so a rule
+                // reaching this path never has `passthrough_downgrade` set,
+                // and the real check is never needed here.
+                let finding = build_finding(rule, relative_path, source, &call, unproven, false);
                 push_unique(&mut findings, &mut seen, finding);
             }
         }
@@ -945,6 +1074,57 @@ fn scan_with<L: LanguageExt + Copy>(
     // `merge_same_location` sorts on (location, rule id), which those keys
     // make a total order.
     ScanOutcome::Scanned(merge_same_location(findings))
+}
+
+/// Whether `flow.passthrough_downgrade` proves the pass-through-observation
+/// shape at `matched`'s captured value, building the flow graph on
+/// first use. Split out of [`scan_with`] to keep that function within
+/// clippy's line-count lint, the same reason [`compile_flow`] is split out of
+/// [`CompiledRule::compile`].
+///
+/// Computed independently of [`CompiledFlow::verdict`]: that method answers
+/// whether a value's *origin* is provable, this answers whether the function
+/// it was captured in is reachable from a recognized entry point, so it can
+/// apply even to a value `verdict` already called [`FlowVerdict::Proven`] --
+/// `Origin::Parameter` traces perfectly well, it just traces to a caller this
+/// file does not see.
+fn passthrough_observation_for<'r, D: Doc>(
+    flow: &CompiledFlow,
+    candidate_env: &MetaVarEnv<'r, D>,
+    matched: &Node<'r, D>,
+    node: &Node<'r, D>,
+    graph: &mut Option<FlowGraph>,
+) -> bool {
+    if !flow.passthrough_downgrade {
+        return false;
+    }
+    let Some(captured) = candidate_env.get_match(&flow.variable) else {
+        return false;
+    };
+    let graph = graph.get_or_insert_with(|| FlowGraph::build(node, FlowLanguage::Python));
+    graph.is_passthrough_observation_eligible(matched, captured)
+}
+
+/// Whether `exclude.kind` proves the value at `exclude.variable` safe,
+/// building the flow graph on first use. Split out of [`scan_with`] for the
+/// same line-count reason as [`passthrough_observation_for`].
+fn excluded_by_predicate<'r, D: Doc>(
+    exclude: &CompiledExcludeIf,
+    candidate_env: &MetaVarEnv<'r, D>,
+    node: &Node<'r, D>,
+    graph: &mut Option<FlowGraph>,
+) -> bool {
+    let Some(captured) = candidate_env.get_match(&exclude.variable) else {
+        return false;
+    };
+    let graph = graph.get_or_insert_with(|| FlowGraph::build(node, FlowLanguage::Python));
+    exclude.kinds.iter().any(|kind| match kind {
+        ExcludeIfKind::ClosedValue => graph.is_closed(captured.node_id()),
+        ExcludeIfKind::ConstantPath => graph.is_constant_path(captured.node_id()),
+        ExcludeIfKind::ShellQuoted => graph.is_shell_quoted(captured.node_id()),
+        ExcludeIfKind::StdinDispatch => graph.is_stdin_dispatch(captured.node_id()),
+        ExcludeIfKind::CliArgument => graph.is_cli_argument(captured.node_id()),
+    })
 }
 
 /// Whether the file's text contains, as a whole identifier, any name a
@@ -1051,13 +1231,18 @@ fn wrapper_sink_calls<'r, D: Doc>(
 /// path rather than proven provenance: it downgrades the kind to
 /// [`Kind::Observation`], the confidence to [`Confidence::Low`], and appends
 /// [`UNPROVEN_NOTE`] to the description, regardless of the rule's own
-/// declared kind and confidence.
+/// declared kind and confidence. `passthrough_observation` is whether
+/// `flow.passthrough_downgrade` proved the pass-through-helper shape at this
+/// match; unlike `unproven`, it changes only `kind` -- `confidence` and
+/// `description` are untouched, since the value's origin here is proven
+/// (`Origin::Parameter`), just not reachable from a recognized entry point.
 fn build_finding<D: Doc>(
     rule: &CompiledRule,
     relative_path: &Path,
     source: &str,
     matched: &Node<'_, D>,
     unproven: bool,
+    passthrough_observation: bool,
 ) -> Finding {
     let start = matched.start_pos();
     let line = start.line() + 1;
@@ -1079,6 +1264,7 @@ fn build_finding<D: Doc>(
     // fixture; a rule that cannot afford even that says `in_test_paths:
     // report`.
     let kind = if unproven
+        || passthrough_observation
         || (rule.in_test_paths == TestPathPolicy::Downgrade && is_test_path(relative_path))
     {
         Kind::Observation

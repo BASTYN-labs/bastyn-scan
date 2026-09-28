@@ -328,6 +328,164 @@ rules:
     );
 }
 
+/// A `flow:` clause that omits `source:` entirely does not gate on
+/// provenance at all -- `BAS-LLM10-004`'s own new shape. Everything else in
+/// [`crate::flow`]'s composition (closed values, guards, builtin shadowing)
+/// still applies; only the "where did this come from" question is gone.
+const UNCONDITIONAL_FLOW_RULE: &str = r"
+rules:
+  - id: BAS-FLOW-030
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      unguarded: true
+      builtin_callee: true
+    description: eval() runs a non-literal argument.
+    remediation: Do not.
+";
+
+/// The measurement this clause exists to fix: a value traced to a
+/// catalogued source and a value with no known origin at all must be
+/// treated identically -- both `Proven` -- since there is no source list
+/// left to tell them apart.
+#[test]
+fn a_sourceless_flow_clause_proves_a_traced_value() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    let source = "def handle(ticket):\n    plan = client.chat.completions.create(prompt=ticket).choices[0].message.content\n    eval(plan)\n";
+    let findings = scan_source(&ruleset, Path::new("app/handler.py"), source);
+    let finding = only(&findings);
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
+}
+
+#[test]
+fn a_sourceless_flow_clause_proves_an_untraceable_value_too() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    // `mystery` is an untraced function parameter -- no assignment, no call,
+    // nothing the flow graph can classify. With a `source:` list this would
+    // be `Unproven` or `Drop`; with none, it is `Proven`, exactly like the
+    // traced value above.
+    let findings = scan_source(
+        &ruleset,
+        Path::new("app/handler.py"),
+        "def handle(mystery):\n    eval(mystery)\n",
+    );
+    let finding = only(&findings);
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
+}
+
+/// `unguarded: true` still means what it says with no `source:`: a value
+/// already checked against a fixed set before reaching the sink is still not
+/// reported.
+#[test]
+fn a_sourceless_unguarded_flow_clause_still_drops_a_guarded_value() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    let source = "\
+ALLOWED = (\"a\", \"b\")
+
+
+def handle(value):
+    if value not in ALLOWED:
+        raise ValueError(value)
+    eval(value)
+";
+    assert!(!fires(&ruleset, source));
+}
+
+/// `builtin_callee: true` still means what it says with no `source:`: a call
+/// through a name this file rebinds itself is not the builtin, and is still
+/// not reported.
+#[test]
+fn a_sourceless_flow_clause_still_drops_a_call_through_a_shadowed_builtin() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    let source =
+        "def eval(value):\n    return value\n\n\ndef handle(mystery):\n    return eval(mystery)\n";
+    assert!(!fires(&ruleset, source));
+}
+
+/// `is_closed` still runs before the sourceless shortcut: a value built only
+/// from literals this file fixes is dropped the same as it would be with a
+/// `source:` list, not proven just because there is no provenance question
+/// left to ask. Only indirectly covered elsewhere by the
+/// `eval_guarded_by_local_check.py` corpus fixture; this pins it directly at
+/// the engine level.
+#[test]
+fn a_sourceless_flow_clause_still_drops_a_closed_value() {
+    let ruleset = RuleSet::from_yaml(UNCONDITIONAL_FLOW_RULE).unwrap();
+    assert!(!fires(
+        &ruleset,
+        "def handle():\n    x = \"a\" + \"b\"\n    eval(x)\n"
+    ));
+}
+
+/// `unproven:` only means something when there is a `source:` list for a
+/// value's origin to fail against -- with none, every non-closed, non-guarded
+/// value is already `Proven`, so the combination is a meaningless
+/// configuration, rejected at load time.
+#[test]
+fn unproven_without_source_fails_to_load() {
+    let yaml = r"
+rules:
+  - id: BAS-FLOW-031
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      unguarded: true
+      unproven:
+        kind: observation
+    description: eval() runs a non-literal argument.
+    remediation: Do not.
+";
+    let error = RuleSet::from_yaml(yaml).unwrap_err();
+    assert!(
+        matches!(error, RuleError::UnprovenWithoutSource { .. }),
+        "{error:?}"
+    );
+}
+
+/// `flow.sink` with no `flow.source` would let the wrapper-sink pass report
+/// every call to a local wrapper whose argument is merely not closed and not
+/// guarded -- a materially broader, currently untested reach no shipped rule
+/// asks for. Rejected at load time rather than shipped silently.
+#[test]
+fn sink_without_source_fails_to_load() {
+    let yaml = r"
+rules:
+  - id: BAS-FLOW-032
+    title: eval() or exec() run on a non-literal expression
+    kind: defect
+    severity: high
+    confidence: medium
+    categories: [LLM10]
+    language: python
+    any:
+      - eval($ARG)
+    flow:
+      variable: ARG
+      sink: code_execution
+    description: eval() runs a non-literal argument.
+    remediation: Do not.
+";
+    let error = RuleSet::from_yaml(yaml).unwrap_err();
+    assert!(
+        matches!(error, RuleError::FlowSinkWithoutSource { .. }),
+        "{error:?}"
+    );
+}
+
 #[test]
 fn an_unknown_flow_field_is_a_load_error() {
     let yaml = r"
@@ -736,4 +894,48 @@ fn bas_zt4_001_skips_a_value_already_limited_by_a_fixed_set_check() {
         findings.iter().all(|f| f.rule_id != "BAS-ZT4-001"),
         "a guarded value must not be reported: {findings:#?}"
     );
+}
+
+/// `flow.passthrough_downgrade` reports a bare pass-through of a
+/// non-entry-point function's own parameter as an observation, not a
+/// defect, when nothing in the file wires it to a recognized entry point.
+#[test]
+fn passthrough_downgrade_reports_a_bare_parameter_helper_as_an_observation() {
+    let rules = RuleSet::embedded().unwrap();
+    let source = "\
+import subprocess
+
+
+def run_shell_cmd(cmd):
+    return subprocess.run(cmd, shell=True)
+";
+    let findings = scan_source(&rules, Path::new("app/helpers.py"), source);
+    let finding = findings
+        .iter()
+        .find(|f| f.rule_id == "BAS-LLM10-009")
+        .expect("a BAS-LLM10-009 finding");
+    assert_eq!(finding.kind, crate::finding::Kind::Observation);
+}
+
+/// The companion case: the same bare-parameter shape inside a function
+/// decorated `@mcp.tool()` -- a recognized entry point -- must stay a
+/// defect, since this file itself hands that parameter an agent-chosen
+/// value.
+#[test]
+fn passthrough_downgrade_does_not_apply_inside_an_entry_point() {
+    let rules = RuleSet::embedded().unwrap();
+    let source = "\
+import subprocess
+
+
+@mcp.tool()
+def run_shell_cmd(cmd):
+    return subprocess.run(cmd, shell=True)
+";
+    let findings = scan_source(&rules, Path::new("app/helpers.py"), source);
+    let finding = findings
+        .iter()
+        .find(|f| f.rule_id == "BAS-LLM10-009")
+        .expect("a BAS-LLM10-009 finding");
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
 }

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::cve::{self, Dependency, UnresolvedDependency};
+use crate::dotenv;
 use crate::error::{Error, Result};
 use crate::finding::{Finding, Kind};
 use crate::generated;
@@ -182,6 +183,7 @@ fn is_analysed(relative: &Path) -> bool {
         || infra::is_infra_file(relative)
         || instructions::is_instruction_file(relative)
         || skill::is_skill_file(relative)
+        || dotenv::is_env_file(relative)
 }
 
 /// What one pass over the tree produced.
@@ -333,12 +335,14 @@ fn analyse_file(root: &Path, relative: &Path, ruleset: &RuleSet) -> Option<FileA
     let infra_file = infra::is_infra_file(relative);
     let instruction_file = instructions::is_instruction_file(relative);
     let skill_file = skill::is_skill_file(relative);
+    let env_file = dotenv::is_env_file(relative);
     if source_language.is_none()
         && !mcp_config
         && !manifest
         && !infra_file
         && !instruction_file
         && !skill_file
+        && !env_file
     {
         return None;
     }
@@ -429,6 +433,12 @@ fn analyse_file(root: &Path, relative: &Path, ruleset: &RuleSet) -> Option<FileA
         // A SKILL.md manifest: frontmatter completeness, embedded prompt
         // injection, and excessive-agency language -- see `crate::skill`.
         out.findings.extend(skill::inspect(relative, &contents));
+    }
+
+    if env_file {
+        // A .env file is walked by walk.rs's own always-walk allowlist
+        // specifically because it holds credentials -- see dotenv module docs.
+        out.findings.extend(dotenv::inspect(relative, &contents));
     }
 
     if manifest {
@@ -571,6 +581,59 @@ mod tests {
         assert_eq!(
             report.summary.files_scanned, 2,
             "both container files must be counted as scanned"
+        );
+        assert!(report.skipped.is_empty(), "{:#?}", report.skipped);
+    }
+
+    /// `.env` is one of `walk.rs`'s always-walked security-relevant dot-paths,
+    /// but only [`is_analysed`]/`analyse_file` actually opening it makes that
+    /// promise real. Before `dotenv` existed, a `.env` sitting right at the
+    /// scan root -- exactly where `walk.rs`'s allowlist reaches -- was walked
+    /// and then silently dropped: `analyse_file` returned `None`, so it was
+    /// never read, never counted as scanned, and the report still claimed
+    /// full coverage. This is `container_configuration_is_analysed_by_the_
+    /// scan`'s sibling for that gap: the tree is built at `TempDir`'s own
+    /// root specifically so `.env` sits where `walk.rs`'s allowlist doc
+    /// comment says it always reaches, which `tests/corpus/vulnerable/
+    /// dotenv_leak/.env` (nested two levels under this corpus's single
+    /// shared scan root) cannot exercise — see the comment in
+    /// `tests/corpus/expected.toml` next to that fixture.
+    #[test]
+    fn dot_env_credentials_are_analysed_by_the_scan() {
+        let dir = tree(&[(
+            ".env",
+            "OPENAI_API_KEY=sk-proj-7f3a9c1eAbCdEfGh1234\nDB_PASSWORD=hunter2million\nDEBUG=true\n",
+        )]);
+
+        let report = scan(dir.path(), &offline()).unwrap();
+
+        assert_eq!(rule_ids(&report), ["BAS-ZT1-021", "BAS-ZT1-022"]);
+        assert_eq!(
+            report.summary.files_scanned, 1,
+            ".env must be counted as scanned, not silently skipped"
+        );
+        assert!(report.skipped.is_empty(), "{:#?}", report.skipped);
+    }
+
+    /// `.env.example` is still one of `walk.rs`'s always-walked paths and
+    /// must stay counted as scanned -- the placeholder-suffix guard in
+    /// `dotenv::inspect` is "looked at, nothing to report", not "never
+    /// opened". A `.env.example` that quietly fell out of coverage would be
+    /// exactly the silent-narrowing failure `walk.rs`'s own module doc
+    /// comment exists to prevent.
+    #[test]
+    fn a_dot_env_example_file_is_scanned_but_never_flagged() {
+        let dir = tree(&[(
+            ".env.example",
+            "OPENAI_API_KEY=sk-your-key-here\nDB_PASSWORD=changeme\n",
+        )]);
+
+        let report = scan(dir.path(), &offline()).unwrap();
+
+        assert!(report.findings.is_empty(), "{:#?}", report.findings);
+        assert_eq!(
+            report.summary.files_scanned, 1,
+            ".env.example must still be counted as scanned"
         );
         assert!(report.skipped.is_empty(), "{:#?}", report.skipped);
     }

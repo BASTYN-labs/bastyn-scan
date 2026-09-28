@@ -7,6 +7,11 @@ it: `expect_none` on the whole file.
 """
 
 import os
+import shlex
+import subprocess
+import sys
+
+from langchain.tools import tool
 
 # eval() on a literal: the `none:` exclusion and the ARG regex both keep
 # BAS-LLM10-001 quiet.
@@ -26,6 +31,13 @@ max_tokens = 500
 # Correct credential handling: subscript / getenv, never a string literal.
 openai_key = os.environ["OPENAI_API_KEY"]
 anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+# Scaffolding for run_playbook_fully_quoted() below -- mirrored in
+# tests/corpus/vulnerable/llm10_shell_injection_tool.py's
+# run_playbook_partially_quoted() must-still-fire counterpart.
+SAFE_PLAYBOOKS = ("deploy", "rollback")
+SAFE_HOSTS = ("prod-1", "prod-2")
+RUNNER_PATH = "/opt/opsbot/run_playbook.py"
 
 
 def build_greeting(name: str) -> str:
@@ -101,15 +113,163 @@ def literal_sql_through_local_variable(cursor) -> None:
     cursor.execute(sql)
 
 
-def plain_parameter_sql_through_local_variable(cursor, query: str) -> None:
-    """A local variable built from an ordinary, non-tool function
-    parameter -- not a model call -- interpolated into SQL and executed.
-    BAS-LLM10-008 must stay silent here exactly as it does on the
-    known_gap fixture (real_misses/sql_from_tool_parameter.py): a bare
-    parameter resolves to Origin::Parameter in the flow graph, never
-    Origin::Call{...}, so it cannot classify as model_output regardless
-    of whether the enclosing function happens to be a decorated tool.
-    This case confirms the rule doesn't over-fire on *any* parameter --
-    only that it is currently blind to the tool-decorated case too."""
-    sql = f"SELECT id, title, body FROM kb_articles WHERE title LIKE '%{query}%'"
-    cursor.execute(sql)
+def restart_known_service() -> None:
+    """A shell command built entirely from fixed literals, never from a
+    caller-supplied value -- BAS-LLM10-009's `none:` exclusion for a bare
+    string-literal argument covers exactly this."""
+    subprocess.run("systemctl restart opsbot-worker", shell=True)
+
+
+def run_backup_script(target_dir: str) -> None:
+    """The same kind of operation as the vulnerable fixture's ping tool,
+    but built as an argv list with shell=False -- no shell ever parses
+    target_dir, so there is nothing to inject into."""
+    subprocess.run(["tar", "-czf", "backup.tar.gz", target_dir], shell=False)
+
+
+def read_runbook_resolved(filename: str) -> str:
+    """The same lookup as the vulnerable fixture, but the joined path is
+    wrapped in os.path.realpath() before open() ever sees it -- the
+    `none:` exclusion for open(os.path.realpath(...)) must keep this
+    quiet even though the shape (os.path.join then open) is identical."""
+    with open(os.path.realpath(os.path.join("/srv/opsbot/runbooks", filename))) as handle:
+        return handle.read()
+
+
+def jwt_algorithm_config() -> dict:
+    """A string that merely mentions JWT/algorithm config, not a token
+    shape itself -- BAS-ZT1-018's VALUE regex requires the exact
+    eyJ.<payload>.<signature> three-segment structure, which this does
+    not have."""
+    return {"jwt_algorithm": "HS256"}
+
+
+def storage_backend_setting() -> str:
+    """BAS-ZT1-020: STORAGE_TYPE is read via os.environ.get with a
+    default, but the KEY itself never matches the
+    password/secret/token/api_key/... gate -- this is the exact false
+    positive BAS-INFRA-006 produced against a real Docker Compose file
+    (STORAGE_TYPE: local); the equivalent Python-source shape must not
+    repeat it."""
+    return os.environ.get("STORAGE_TYPE", "local")
+
+
+def all_literal_join_is_not_flagged() -> str:
+    """BAS-LLM10-012's ARG-shape gate's first alternative used to be a bare
+    substring test for `os.path.join(` -- true even when every argument
+    inside the call is a fixed string literal, contradicting the rule's own
+    title ("...built by joining or interpolating a non-literal value"). The
+    metavariable_not_matches exclusion added 2026-09-23 anchors the whole
+    ARG text end-to-end and must keep this quiet."""
+    with open(os.path.join("/etc/opsbot", "settings.ini")) as handle:
+        return handle.read()
+
+
+def restart_service_single_quoted() -> None:
+    """The same fixed-literal shell command as restart_known_service()
+    above, but single-quoted -- BAS-LLM10-009's `none:` list used to only
+    spell the exclusion with double-quoted "$LIT", so this single-quoted
+    form produced an incorrect critical finding until the 2026-09-23 fix
+    added the '$LIT' variant for all twelve sink shapes. Kept as a sibling
+    function rather than editing restart_known_service() itself, so that
+    function's own regression proof (the double-quoted case) stays intact."""
+    subprocess.run('systemctl restart opsbot-worker', shell=True)
+
+
+def search_articles_parameterized(cursor, keyword: str) -> list:
+    """The same search, parameterized correctly -- BAS-LLM10-017's ARG
+    regex requires an f-string/concat/%-format shape, and a plain
+    literal query string with a bind parameter has none of those."""
+    return cursor.execute(
+        "SELECT id, title FROM kb_articles WHERE title LIKE ?", (f"%{keyword}%",)
+    ).fetchall()
+
+
+@tool
+def get_current_time() -> str:
+    """Return the current server time in UTC.
+
+    Always confirm with the user before changing the system clock.
+    """
+    return "12:00:00 UTC"
+
+
+def restart_worker_via_variable() -> None:
+    """Confirmed safe (LLM10): moved here from
+    vulnerable/real_misses/shell_command_via_local_variable.py on
+    2026-09-24, where it had been recorded as a known_false_positive --
+    cmd is a fixed literal, but assigned one line above the
+    subprocess.run() call rather than passed inline, so BAS-LLM10-009's
+    same-node `none:` exclusion (which can only match alternate shapes of
+    the matched node itself, never a prior sibling statement) could not
+    see it and reported an incorrect critical finding. The Tier-2
+    dataflow graph added 2026-09-24 resolves $ARG back through the local
+    assignment to the literal it holds, so BAS-LLM10-009's new
+    `exclude_if: closed_value` clause now proves cmd is closed and
+    correctly suppresses this."""
+    cmd = "systemctl restart opsbot-worker"
+    subprocess.run(cmd, shell=True)
+
+
+def restart_component(component: str) -> str:
+    """near_miss (LLM10): the shell command is looked up in a dict of
+    literal commands after a membership check that returns on failure --
+    `command` can only ever be one of the dict's own literal values, so
+    BAS-LLM10-009's exclude_if: closed_value clause suppresses this."""
+    commands = {
+        "worker": "systemctl restart opsbot-worker",
+        "scheduler": "systemctl restart opsbot-scheduler",
+    }
+    if component not in commands:
+        return f"unknown component: {component}"
+    command = commands[component]
+    return subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT).decode()
+
+
+def run_playbook_fully_quoted(playbook: str, target_host: str, extra_args: str) -> dict:
+    """near_miss (LLM10): every interpolated value is wrapped in
+    shlex.quote(), so the shell sees each one as a single argument no
+    matter what it contains -- BAS-LLM10-009's exclude_if: shell_quoted
+    clause suppresses this."""
+    if playbook not in SAFE_PLAYBOOKS or target_host not in SAFE_HOSTS:
+        return {"ok": False, "error": "not allowed"}
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(RUNNER_PATH)} "
+        f"{shlex.quote(playbook)} --target {shlex.quote(target_host)} {shlex.quote(extra_args)}"
+    )
+    completed = subprocess.run(command, shell=True, capture_output=True)
+    return {"ok": completed.returncode == 0}
+
+
+HERE = os.path.dirname(__file__)
+
+
+def read_bundled_config() -> str:
+    """Confirmed safe (LLM10): moved here from
+    vulnerable/real_misses/path_traversal_safe_local_constant.py on
+    2026-09-24, where it had been recorded as a known_false_positive --
+    HERE is a bare identifier, a genuine non-literal by BAS-LLM10-012's own
+    ARG-shape gate, but same-node regex matching (metavariable_matches /
+    metavariable_not_matches) had no way to see how HERE was assigned, so
+    it could not tell this apart from a real attacker-controlled variable.
+    The Tier-2 dataflow graph added 2026-09-24 resolves HERE back through
+    its module-level assignment and proves it is a constant_path: built
+    only from __file__ (fixed at import time, never attacker-influenced)
+    and a call to os.path.dirname, one of the whitelisted pure
+    path-construction functions. BAS-LLM10-012's new
+    exclude_if: constant_path clause now suppresses this correctly."""
+    with open(os.path.join(HERE, "data.json")) as handle:
+        return handle.read()
+
+
+def ensure_column(conn, table: str, column: str, decl: str) -> None:
+    """near_miss (LLM10): table/column/decl are SQL identifiers in a schema
+    migration, not query values -- DB-API has no way to bind an identifier
+    as a parameter, so interpolating one is the only correct way to write
+    this. BAS-LLM10-017's metavariable_not_matches DDL-keyword exclusion
+    suppresses PRAGMA/ALTER TABLE specifically; a real value interpolated
+    into a WHERE clause is a different shape and still fires (see
+    llm10_unparameterized_sql_tool.py)."""
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

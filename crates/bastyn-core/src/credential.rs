@@ -45,6 +45,27 @@ pub(crate) fn looks_like_credential_key(name: &str) -> bool {
         .any(|fragment| normalized.contains(fragment))
 }
 
+/// Value tokens that name a storage backend, mode, or format rather than
+/// holding a credential -- matched exactly (case-insensitively) against the
+/// *whole* trimmed value, never a substring, so a real secret that merely
+/// contains one of these words (`localpass123`) still fires. Measured
+/// 2026-09-24: `SECRETKEY_STORAGE_TYPE: local` in a real docker-compose.yml
+/// -- the key matches `SECRET`, so every other signal here said "secret",
+/// but the value is a mode setting a deployment chooses from a small fixed
+/// set, not something anyone types in as a password.
+///
+/// Deliberately excludes database/cloud-provider product names
+/// (`postgres`, `mysql`, `redis`, `s3`, ...) and generic words like
+/// `default`/`standard`/`basic`/`simple`, even though some real deployments
+/// do use them as a mode/backend selector: those same words are also
+/// extremely common real default passwords (`POSTGRES_PASSWORD: postgres`
+/// ships in the official Postgres image's own README as a "for local dev"
+/// example people routinely forget to change). This list stays limited to
+/// words that could never plausibly be typed as an actual credential value.
+const ENUM_MODE_VALUES: &[&str] = &[
+    "local", "remote", "memory", "disk", "file", "none", "disabled", "enabled",
+];
+
 /// Value fragments — matched case-insensitively — that mark a value as an
 /// obvious documentation placeholder rather than something a real deployment
 /// would run with. Deliberately narrow: a genuinely weak password
@@ -60,12 +81,28 @@ const PLACEHOLDER_MARKERS: &[&str] = &[
     "yourpassword",
     "insert_your",
     "insert-your",
-    "replace_with",
-    "replace-with",
+    // A general "replace ..." placeholder shape, not just the narrower
+    // "replace_with"/"replace-with" this subsumes: a bare `REPLACE_ME` or
+    // `REPLACEME` (no "with") is just as common a placeholder and was
+    // missed by the two entries below alone. Safe as a bare substring for
+    // the same reason "your" is below -- the English word "replace" inside
+    // a real high-entropy secret is astronomically unlikely.
+    "replace",
     "xxx",
     "todo",
     "fixme",
     "example.com",
+    // A general "your-...-here"/"your_..."-style placeholder shape, not just
+    // the password-specific "your_password"/"your-password"/"yourpassword"
+    // above: `sk-your-key-here`, `REPLACE_WITH_YOUR_ACTUAL_STRIPE_KEY`, and
+    // similar template text all use "your" to mean "put your own value
+    // here", regardless of which credential it is. Safe as a bare substring
+    // for the same reason this file already treats "at-least"/"minimum" as
+    // safe general fragments: the word "your" inside a real generated
+    // secret's own random characters is astronomically unlikely, unlike a
+    // broad word such as "key" or "secret" that a real secret's *name*
+    // might legitimately contain.
+    "your",
     // A value scrubbed *before* being written out (a log line, a persisted
     // copy of upstream API data) rather than a leaked secret -- the opposite
     // of what this check exists to catch. Measured 2026-08-31:
@@ -131,6 +168,9 @@ pub(crate) fn is_hardcoded_credential_value(value: &str) -> bool {
     if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
         return false;
     }
+    if ENUM_MODE_VALUES.contains(&lower.as_str()) {
+        return false;
+    }
     // `OPENAI_API_KEY_NAME=OPENAI_API_KEY` -- a SCREAMING_SNAKE_CASE value is
     // the shape of an env-var *name*, not a secret. A real secret practically
     // never comes out this way (no lowercase, no punctuation), and this is
@@ -189,6 +229,47 @@ pub(crate) fn is_public_by_design_credential(value: &str) -> bool {
     PUBLIC_BY_DESIGN_PREFIXES
         .iter()
         .any(|prefix| value.starts_with(prefix))
+}
+
+/// True if `value` has the shape of a provider API key.
+///
+/// This is `BAS-ZT1-003`'s `^sk-[A-Za-z0-9_-]{16,}$` written out, not a second
+/// opinion about what a secret looks like: the same shape decides in a
+/// Dockerfile, in a `.env` file, or in TypeScript source, so one config
+/// cannot be a credential in one file and a harmless string in another.
+/// Anchored at both ends, which is what keeps `sk-tools/bin` — a path that
+/// merely starts the same way — out.
+///
+/// Originally private to `infra::dockerfile` (`BAS-INFRA-002`'s check); moved
+/// here once `dotenv` (`BAS-ZT1-021`) needed the identical shape check on a
+/// second file format.
+///
+/// Unlike [`is_hardcoded_credential_value`], the shape check alone used to be
+/// the whole story here -- no [`PLACEHOLDER_MARKERS`] check at all. That let
+/// `sk-your-key-here-1234567890abcdef` and
+/// `sk-REPLACE_WITH_YOUR_ACTUAL_STRIPE_KEY` both through: 16+ characters
+/// after `sk-`, every one alphanumeric/`_`/`-`, so the shape check alone
+/// cannot tell a placeholder from a real key. Measured directly against a
+/// user report: both values produced a `BAS-ZT1-021` finding in a genuine,
+/// partially-filled-in `.env` file, not just an `.env.example`. The same
+/// placeholder check `is_hardcoded_credential_value` already runs is applied
+/// here too, so both callers (`dotenv`'s `BAS-ZT1-021`, `infra::dockerfile`'s
+/// `BAS-INFRA-002`) get it at once.
+pub(crate) fn is_provider_key_literal(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("sk-") else {
+        return false;
+    };
+    if rest.len() < 16
+        || !rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    !PLACEHOLDER_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 /// Name fragments — matched the same way as [`CREDENTIAL_KEY_FRAGMENTS`],
@@ -323,6 +404,37 @@ mod tests {
     }
 
     #[test]
+    fn a_storage_backend_mode_word_is_not_hardcoded() {
+        for value in ["local", "LOCAL", "memory", "disk", "file", "disabled"] {
+            assert!(!is_hardcoded_credential_value(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_database_or_cloud_provider_name_is_a_real_weak_credential() {
+        // Regression for the ENUM_MODE_VALUES over-exclusion: these words are
+        // also extremely common real default passwords (`POSTGRES_PASSWORD:
+        // postgres` ships in the official Postgres image's own README as a
+        // "for local dev" example), so they must NOT be excluded just
+        // because they also name a database/cloud product. `local` -- the
+        // original motivating case (a mode setting, not a password) -- must
+        // still be excluded.
+        for value in ["postgres", "mysql", "redis", "default", "basic"] {
+            assert!(is_hardcoded_credential_value(value), "{value}");
+        }
+        assert!(!is_hardcoded_credential_value("local"));
+    }
+
+    #[test]
+    fn a_value_merely_containing_an_enum_word_still_fires() {
+        // The exclusion is exact-match, not substring -- a real credential
+        // that happens to start with a mode word must not be swallowed.
+        for value in ["localpass123", "redis-svc-4f8a1c62d90b47e3a5216fbc8de07394"] {
+            assert!(is_hardcoded_credential_value(value), "{value}");
+        }
+    }
+
+    #[test]
     fn a_vendor_published_public_key_is_not_a_hardcoded_credential() {
         // PostHog project keys and Stripe publishable keys are documented as
         // safe to embed in client-side code. Every other signal here says
@@ -356,6 +468,27 @@ mod tests {
             "{{ .Values.password }}",
             "REPLACE_WITH_YOUR_TOKEN",
             "xxx",
+        ] {
+            assert!(!is_hardcoded_credential_value(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_general_replace_or_your_shaped_placeholder_is_not_hardcoded() {
+        // Regression for the false-positive report's own named examples: a
+        // bare "REPLACE..." with no "_WITH_" in it, and a general
+        // "your-...-here"-style placeholder for a credential other than a
+        // password. Before this fix, PLACEHOLDER_MARKERS only had the
+        // password-specific "your_password"/"your-password"/"yourpassword"
+        // and the narrower "replace_with"/"replace-with", so none of these
+        // shapes were excluded.
+        for value in [
+            "REPLACE_ME",
+            "REPLACEME",
+            "replace-me",
+            "your-key-here",
+            "your_api_key",
+            "your-openai-key",
         ] {
             assert!(!is_hardcoded_credential_value(value), "{value}");
         }
@@ -476,5 +609,47 @@ mod tests {
             credential_severity("API_TOKEN", "Sup3rWeakPass!"),
             crate::finding::Severity::High
         );
+    }
+
+    #[test]
+    fn a_provider_key_literal_is_recognised_by_shape() {
+        for value in [
+            "sk-proj-9f2b7d41c6a8e35019bd",
+            "sk-proj-7f3a9c1eAbCdEfGh1234",
+        ] {
+            assert!(is_provider_key_literal(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_value_that_merely_starts_with_sk_dash_is_not_a_provider_key() {
+        for value in ["sk-tools/bin", "sk-short", "not-a-key"] {
+            assert!(!is_provider_key_literal(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_provider_key_shaped_placeholder_is_not_reported() {
+        // Regression: `is_provider_key_literal` used to be shape-only (the
+        // `sk-` prefix, 16+ characters, alphanumeric/`_`/`-`), with no
+        // [`PLACEHOLDER_MARKERS`] check at all -- unlike its sibling
+        // `is_hardcoded_credential_value`. Both of these satisfy the shape
+        // check and, before this fix, were reported as leaked keys even in
+        // a genuine, non-example `.env` file or Dockerfile.
+        for value in [
+            "sk-your-key-here-1234567890",
+            "sk-REPLACE_WITH_YOUR_ACTUAL_KEY_1234567890",
+            "sk-REPLACE_ME_1234567890123456",
+            "sk-openai-your_api_key-000000",
+        ] {
+            assert!(!is_provider_key_literal(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_genuine_looking_provider_key_still_fires_after_the_placeholder_fix() {
+        // The fix above must not become so broad that it starts rejecting a
+        // real, correctly-shaped key that merely has no placeholder text.
+        assert!(is_provider_key_literal("sk-proj-Ab3xR9kLm2Qw7ZvN4tYh8sJ"));
     }
 }
