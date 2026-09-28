@@ -5,7 +5,7 @@ BAS-LLM10-009 fires on the function's own body -- a non-literal command
 reaching a shell -- with no reachability analysis: "does anything call
 this" is a whole-program question this file-local engine cannot answer
 (a caller could live in another file, another package, or nowhere at
-all). Fix D's flow.passthrough_downgrade clause (2026-09-28) turns this
+all). flow.passthrough_downgrade turns this
 specific shape -- a bare pass-through of a non-entry-point function's own
 parameter -- into a correctly-handled observation rather than a false
 positive: see bastyn.yml's comment on BAS-LLM10-009.

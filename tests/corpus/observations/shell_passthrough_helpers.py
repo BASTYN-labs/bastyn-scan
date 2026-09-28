@@ -1,4 +1,4 @@
-"""Fix D (BAS-LLM10-009's flow.passthrough_downgrade): a generic "run this
+"""BAS-LLM10-009's flow.passthrough_downgrade: a generic "run this
 command" helper whose command is simply its own parameter is reported as an
 observation rather than a defect when nothing in this file wires it to a
 recognized agent- or web-framework entry point (@mcp.tool()/@app.route()/a

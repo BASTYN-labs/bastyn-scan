@@ -45,7 +45,7 @@ HERE = Path(__file__).parent
 
 def read_user_file(name: str) -> str:
     """BAS-LLM10-012: HERE is a module-level, __file__-derived constant_path
-    -- Fix A's own case -- but name is a function parameter interpolated
+    built via pathlib, but name is a function parameter interpolated
     into the same f-string. exclude_if: constant_path ANDs every
     interpolation with the surrounding literal text, so mixing a parameter
     into an otherwise-constant f-string must still fire."""
@@ -58,7 +58,7 @@ from flask import request
 
 def export() -> str:
     """BAS-LLM10-012: args.root traces to the operator's own command line
-    (argparse's parse_args()) -- Fix B's new exclude_if: cli_argument clause
+    (argparse's parse_args()) -- exclude_if: cli_argument
     would suppress that half on its own -- but it is joined with
     request.args["f"], flask's own HTTP query-parameter dict, a second
     non-literal segment cli_argument knows nothing about. Both

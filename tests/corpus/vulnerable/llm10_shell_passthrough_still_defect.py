@@ -1,17 +1,19 @@
-"""Fix D's must-still-fire siblings: each function here looks like a bare
-pass-through helper, the shape tests/corpus/observations/
+"""flow.passthrough_downgrade's must-still-fire siblings: each function here
+looks like a bare pass-through helper, the shape tests/corpus/observations/
 shell_passthrough_helpers.py proves is downgraded to an observation, but
-each one fails a different one of flow.passthrough_downgrade's four
-conditions, so BAS-LLM10-009 must keep reporting it as a defect.
+each one fails a different one of flow.passthrough_downgrade's conditions,
+so BAS-LLM10-009 must keep reporting it as a defect.
 """
 
 import contextlib
 import json
 import subprocess
 from http.server import BaseHTTPRequestHandler
+from flask import Flask, request
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("x")
+app = Flask(__name__)
 
 
 @contextlib.contextmanager
@@ -53,7 +55,7 @@ def ping(host: str) -> str:
 
 
 def ping_reassigned(host: str) -> str:
-    """Defect (fix round 1 regression): host is REASSIGNED to a composed
+    """Defect: host is REASSIGNED to a composed
     f-string using its own name before reaching the sink -- the reassignment
     is itself a binding of `host`, so is_provably_bare_passthrough's
     zero-bindings rule for a parameter root correctly disqualifies it, the
@@ -65,7 +67,7 @@ def ping_reassigned(host: str) -> str:
 
 
 def run_branch_alias(p: str, condition: bool) -> None:
-    """Defect (fix round 1 regression): cmd is bound twice, once in each arm
+    """Defect: cmd is bound twice, once in each arm
     of an if/else -- one arm composes a command, the other passes `p`
     through bare. Since there is no way to prove, from this file-local
     syntactic check alone, which arm's binding actually reaches the sink,
@@ -79,7 +81,7 @@ def run_branch_alias(p: str, condition: bool) -> None:
 
 
 def run_for_loop_alias(p: str) -> None:
-    """Defect (fix round 1 regression): cmd is bound by a `for` loop target,
+    """Defect: cmd is bound by a `for` loop target,
     not a plain assignment -- is_provably_bare_passthrough only ever follows
     a plain `assignment` as its one permitted local-alias hop, so a `for`
     target (which this analysis has no way to reason about the iterable of)
@@ -89,7 +91,7 @@ def run_for_loop_alias(p: str) -> None:
 
 
 class HandlerA(BaseHTTPRequestHandler):
-    """Defect (fix round 1 regression, C3): two unrelated
+    """Defect: two unrelated
     BaseHTTPRequestHandler subclasses each define their own do_GET. Deciding
     "is the enclosing function an entry point" from a name-keyed map that
     drops an ambiguous (multiply-defined) name would have dropped BOTH
@@ -113,7 +115,7 @@ class HandlerB(BaseHTTPRequestHandler):
 
 
 class Runner:
-    """Defect (fix round 1 regression, I1b): self.cmd was set in __init__
+    """Defect: self.cmd was set in __init__
     from run_tool()'s own @mcp.tool()-decorated parameter, but this
     file-local analysis has no way to trace an attribute write in one method
     to an attribute read in another -- self/cls must never qualify as a
@@ -133,7 +135,7 @@ def run_tool(cmd: str) -> None:
 
 
 class QualifiedForward:
-    """Defect (fix round 2 regression, reviewer finding I1b): _exec's own
+    """Defect: _exec's own
     cmd parameter is a bare pass-through, but run() -- an
     @mcp.tool()-decorated entry-point method -- forwards its own cmd
     parameter into _exec via a qualified self._exec(cmd) call.
@@ -151,7 +153,7 @@ class QualifiedForward:
 
 
 def run_attribute_mutated(hook) -> None:
-    """Defect (fix round 2 regression, reviewer finding N1): hook.command is
+    """Defect: hook.command is
     reassigned in place before reaching the sink -- path_is_reassigned finds
     the exact-text-matching assignment target and disqualifies the whole
     path, regardless of how bare hook.command looks at the sink call
@@ -161,7 +163,7 @@ def run_attribute_mutated(hook) -> None:
 
 
 def run_subscript_mutated(opts) -> None:
-    """Defect (fix round 2 regression, reviewer finding N1): opts["cmd"] is
+    """Defect: opts["cmd"] is
     reassigned in place before reaching the sink -- same reasoning as
     run_attribute_mutated() above, for a subscript path instead of an
     attribute path."""
@@ -170,7 +172,7 @@ def run_subscript_mutated(opts) -> None:
 
 
 def run_comprehension_target(cmd: str) -> list:
-    """Defect (fix round 2 regression, reviewer finding N2): the list
+    """Defect: the list
     comprehension's own `for cmd in [...]` target shadows the outer
     parameter. occurrences_of's read-whitelist does not recognize a
     comprehension's for_in_clause target as a safe read, so it classifies
@@ -181,7 +183,7 @@ def run_comprehension_target(cmd: str) -> list:
 
 
 def run_match_case_capture(cmd: str) -> None:
-    """Defect (fix round 2 regression, reviewer finding N2): case [cmd]:
+    """Defect: case [cmd]:
     captures a new binding of `cmd` from the match subject, shadowing the
     outer parameter -- the same "unrecognized construct disqualifies"
     reasoning as run_comprehension_target() above, for a match/case capture
@@ -193,7 +195,7 @@ def run_match_case_capture(cmd: str) -> None:
 
 
 def run_nonlocal_write(cmd: str) -> None:
-    """Defect (fix round 2 regression, reviewer finding N2): a nested
+    """Defect: a nested
     function declares cmd nonlocal and reassigns it to a composed value.
     is_declared_nonlocal_or_global disqualifies cmd unconditionally the
     moment any nonlocal/global declaration names it anywhere in the
@@ -209,8 +211,7 @@ def run_nonlocal_write(cmd: str) -> None:
 
 
 def run_all(cmd: str) -> list:
-    """Defect (fix round 3 regression, reviewer finding: lambda
-    scope-boundary mismatch): the lambda's own cmd parameter shadows
+    """Defect: the lambda's own cmd parameter shadows
     run_all's own cmd parameter. The sink reads the LAMBDA's cmd -- bound to
     a composed f-string drawn from cmds -- not run_all's untouched one.
     is_passthrough_observation_eligible now finds its enclosing scope by
@@ -223,23 +224,20 @@ def run_all(cmd: str) -> list:
 
 
 def run_lambda_default_capture(cmd: str) -> None:
-    """Defect (fix round 3 regression, same reviewer finding as run_all()
-    above): the same lambda-scope-boundary shape, via a default-argument
-    capture instead of map()."""
+    """Defect: the same lambda-scope-boundary shape as run_all() above, via
+    a default-argument capture instead of map()."""
     fn = lambda cmd=f"sh -c {cmd}": subprocess.run(cmd, shell=True)  # noqa: E731
     fn()
 
 
 def run_lambda_immediately_invoked(cmd: str) -> None:
-    """Defect (fix round 3 regression, same reviewer finding as run_all()
-    above): the same lambda-scope-boundary shape, immediately invoked
-    rather than stored or mapped."""
+    """Defect: the same lambda-scope-boundary shape as run_all() above,
+    immediately invoked rather than stored or mapped."""
     (lambda cmd: subprocess.run(cmd, shell=True))(cmd)
 
 
 def run_with_parenthesized_target(cmd: str) -> None:
-    """Defect (fix round 3 regression, reviewer finding: wrapper-node-in-
-    write-position fails open): `as (cmd)` parses `(cmd)` as a
+    """Defect: `as (cmd)` parses `(cmd)` as a
     parenthesized_expression wrapping the bound name, not a plain
     identifier target -- is_definitely_safe_read used to accept
     parenthesized_expression unconditionally as a safe read, without
@@ -250,3 +248,56 @@ def run_with_parenthesized_target(cmd: str) -> None:
     parenthesized wrapper."""
     with ctx(f"ping {cmd}") as (cmd):
         subprocess.run(cmd, shell=True)
+
+
+def _exec_request_cmd(cmd: str) -> str:
+    """Defect: cmd is a bare pass-through of this function's own parameter,
+    and this function is not itself an entry point -- but run_route()
+    below (a Flask route, an entry point) calls it with
+    request.args["cmd"], a value read from the global request object
+    rather than from any of run_route's own parameters. Disqualifying a
+    callee whenever an entry point calls it with any argument this graph
+    cannot prove is safe, rather than only when that argument traces to
+    one of the entry point's own parameters, is what keeps this a defect:
+    a route handler with no function parameter carrying the request at all
+    is exactly as much an entry point receiving untrusted input as one
+    that does."""
+    return subprocess.check_output(cmd, shell=True, text=True)
+
+
+@app.route("/run")
+def run_route() -> str:
+    return _exec_request_cmd(request.args["cmd"])
+
+
+def _exec_model_output(cmd: str) -> str:
+    """Defect: same reasoning as _exec_request_cmd() above, but the
+    argument reaching this helper from run_model_output() below is a local
+    variable holding a model reply, not a value read from a request
+    global."""
+    return subprocess.check_output(cmd, shell=True, text=True)
+
+
+@mcp.tool()
+def run_model_output(q: str) -> str:
+    cmd = llm.invoke(q).content
+    return _exec_model_output(cmd)
+
+
+def run_django_view(request) -> str:
+    """Defect: request.GET["cmd"] is two levels of attribute/subscript
+    access on the parameter request -- an attribute (.GET), then a
+    subscript on that result. A bare pass-through is bounded to exactly
+    one level of attribute or subscript on the root parameter, matching
+    the specification's own p / p.attr / p["key"] condition literally, so
+    this two-level shape stays a defect."""
+    return subprocess.check_output(request.GET["cmd"], shell=True, text=True)
+
+
+def run_non_literal_subscript_key(opts, key) -> str:
+    """Defect: opts[key] has a non-literal subscript key -- key is itself
+    a variable, not a fixed value written in this file. A bare
+    pass-through's subscript key must itself be a literal, matching the
+    specification's p["key"] wording, so a variable key like this one
+    stays a defect."""
+    return subprocess.check_output(opts[key], shell=True, text=True)

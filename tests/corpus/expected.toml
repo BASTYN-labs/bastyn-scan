@@ -128,7 +128,7 @@ why      = "Model output formatted into SQL with str.format. The flow graph carr
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 26
+line     = 29
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -137,39 +137,48 @@ why      = "host is interpolated into a shell command with no validation at all.
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 36
+line     = 39
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "the allowlist only inspects the command's first token, then the whole string reaches a shell. run_allowlisted_command() is decorated @mcp.tool() (Fix D, 2026-09-28: the fixture was missing decorator syntax its own docstring implies -- 'a small set of ... tools exposed to the agent' -- so it must stay a defect rather than being downgraded by flow.passthrough_downgrade)."
+why      = "the allowlist only inspects the command's first token, then the whole string reaches a shell. run_allowlisted_command() is decorated @mcp.tool() -- a recognized entry point -- so it must stay a defect rather than being downgraded by flow.passthrough_downgrade."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 48
+line     = 51
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted. run_denylisted_command() is decorated @mcp.tool() (Fix D, 2026-09-28: same reasoning as run_allowlisted_command() above)."
+why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted. run_denylisted_command() is decorated @mcp.tool() -- same reasoning as run_allowlisted_command() above."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 62
+line     = 65
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted. Also unaffected by Fix D's flow.passthrough_downgrade: ARG is an f-string mixing three different parameters, which resolves Origin::Unknown, not Origin::Parameter."
+why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted. Also unaffected by flow.passthrough_downgrade: ARG is an f-string mixing three different parameters, which resolves Origin::Unknown, not Origin::Parameter."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 75
+line     = 78
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "unpack(): tmpdir is tempfile.mkdtemp()'s OS-generated directory (tempfile-closed, so BAS-LLM10-009's new exclude_if: closed_value tempfile handling would otherwise drop this command), but archive_name is a real caller-supplied parameter interpolated into the same shell command -- Resolved::combine ANDs closed across every f-string segment, so one non-closed segment keeps the whole command non-closed and this must still fire, the same 'one segment breaks the exclusion' shape run_playbook_partially_quoted() above proves for shell_quoted. Also unaffected by Fix D's flow.passthrough_downgrade: ARG is an f-string mixing a call result (tmpdir) with a parameter (archive_name), which resolves Origin::Unknown, not Origin::Parameter."
+why      = "unpack(): tmpdir is tempfile.mkdtemp()'s OS-generated directory (tempfile-closed, so BAS-LLM10-009's exclude_if: closed_value tempfile handling would otherwise drop this command), but archive_name is a real caller-supplied parameter interpolated into the same shell command -- Resolved::combine ANDs closed across every f-string segment, so one non-closed segment keeps the whole command non-closed and this must still fire, the same 'one segment breaks the exclusion' shape run_playbook_partially_quoted() above proves for shell_quoted. Also unaffected by flow.passthrough_downgrade: ARG is an f-string mixing a call result (tmpdir) with a parameter (archive_name), which resolves Origin::Unknown, not Origin::Parameter."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 89
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "make_workspace(): tempfile.mkdtemp(prefix=prefix) is only OS-generated end to end when called with no arguments -- called with a caller-supplied prefix, the returned path is not closed, since exclude_if: closed_value now requires every argument passed to a tempfile-closed callee to itself be closed (or there to be no arguments at all), the same all-args-must-be-safe pattern already applied to os.path.join and similar pure path-construction functions."
 
 [[expect]]
 file     = "vulnerable/shell_command_not_stdin_sourced.py"
@@ -214,7 +223,7 @@ rule     = "BAS-LLM10-012"
 category = "LLM10"
 kind     = "defect"
 severity = "high"
-why      = "HERE is a module-level, pathlib Path(__file__)-derived constant_path (Fix A's own case, added to teach constant_path about pathlib), but name is a function parameter interpolated into the same f-string as HERE -- exclude_if: constant_path ANDs constant_path across every interpolation, so a parameter mixed in with an otherwise-constant f-string must still fire."
+why      = "HERE is a module-level, pathlib Path(__file__)-derived constant_path, but name is a function parameter interpolated into the same f-string as HERE -- exclude_if: constant_path ANDs constant_path across every interpolation, so a parameter mixed in with an otherwise-constant f-string must still fire."
 
 [[expect]]
 file     = "vulnerable/llm10_path_traversal_tool.py"
@@ -223,7 +232,7 @@ rule     = "BAS-LLM10-012"
 category = "LLM10"
 kind     = "defect"
 severity = "high"
-why      = "args.root traces to the operator's own command line (argparse's parse_args()) -- BAS-LLM10-012's new exclude_if: cli_argument clause (Fix B, added 2026-09-28) would suppress that half on its own -- but it is joined with request.args[\"f\"], flask's own HTTP query-parameter dict, a second non-literal segment cli_argument knows nothing about. Both exclude_if: constant_path and exclude_if: cli_argument AND their predicate across every argument of os.path.join, so mixing one CLI-sourced segment with one HTTP-sourced segment must still fire."
+why      = "args.root traces to the operator's own command line (a genuine argparse.ArgumentParser().parse_args()) -- BAS-LLM10-012's exclude_if: cli_argument clause would suppress that half on its own -- but it is joined with request.args[\"f\"], flask's own HTTP query-parameter dict, a second non-literal segment cli_argument knows nothing about. Both exclude_if: constant_path and exclude_if: cli_argument AND their predicate across every argument of os.path.join, so mixing one CLI-sourced segment with one HTTP-sourced segment must still fire."
 
 [[expect]]
 file     = "vulnerable/llm10_unparameterized_sql_tool.py"
@@ -655,8 +664,8 @@ why      = "subprocess.run(COMMANDS[component], shell=True), where COMMANDS is a
 #
 # The fourth -- a shell-injection sink inside a function nothing in this
 # file calls (reachability) -- used to be here too, at
-# vulnerable/real_misses/shell_command_via_unreachable_function.py. Fix D
-# (2026-09-28, flow.passthrough_downgrade) turned that specific fixture's
+# vulnerable/real_misses/shell_command_via_unreachable_function.py.
+# flow.passthrough_downgrade turned that specific fixture's
 # shape (a bare pass-through of the unreachable function's own parameter)
 # into a correctly-handled case rather than a false positive: it is now an
 # `[[expect]]` entry with `kind = "observation"` below, not a
@@ -673,7 +682,7 @@ rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "observation"
 severity = "critical"
-why      = "subprocess.check_output(command, shell=True, ...) inside run_raw_command(), a function nothing in this corpus imports or calls. Promoted from known_false_positive on 2026-09-28 (Fix D): command is a bare pass-through of run_raw_command's own command parameter, run_raw_command is not itself a recognized entry point (@mcp.tool()/@app.route()/do_GET-style), and no entry point in this file forwards a parameter into it -- flow.passthrough_downgrade reports it as an observation instead of a defect. severity stays the rule's own declared severity (critical); only kind changes."
+why      = "subprocess.check_output(command, shell=True, ...) inside run_raw_command(), a function nothing in this corpus imports or calls. Promoted from known_false_positive: command is a bare pass-through of run_raw_command's own command parameter, run_raw_command is not itself a recognized entry point (@mcp.tool()/@app.route()/do_GET-style), and no entry point in this file calls it with an untrusted argument -- flow.passthrough_downgrade reports it as an observation instead of a defect. severity stays the rule's own declared severity (critical); only kind changes."
 
 [[known_false_positive]]
 file     = "vulnerable/real_misses/shell_command_behind_disabled_flag.py"
@@ -955,7 +964,25 @@ why = "command traces to an unprocessed sys.stdin read (json.load(sys.stdin)) --
 
 [[expect_none]]
 file = "clean/cli_argument_paths.py"
-why = "Fix B (2026-09-28): every value traces entirely to the operator's own command line, excluded via the new exclude_if: cli_argument clause on BAS-LLM10-009/BAS-LLM10-012. main() is the spec's own must-NOT-fire snippet verbatim: argparse's --eval-dir joined into an open() path (args.eval_dir, from parse_args()) and sys.argv[1] interpolated into a shell command. cli() and run() exercise the click/typer command-parameter source shape in isolation: a @click.command()/@click.option(...)-decorated function and an @app.command()-decorated function (app = typer.Typer()) whose own parameter reaches subprocess.run(..., shell=True)."
+why = "Every value traces entirely to the operator's own command line, excluded via exclude_if: cli_argument on BAS-LLM10-009/BAS-LLM10-012. main() joins argparse's --eval-dir into an open() path (args.eval_dir, from a genuine argparse.ArgumentParser().parse_args() call) and interpolates sys.argv[1] into a shell command. cli() and run() exercise the click/typer command-parameter source shape in isolation: a @click.command()/@click.option(...)-decorated function and an @app.command()-decorated function (app = typer.Typer()) whose own parameter reaches subprocess.run(..., shell=True)."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_via_request_parser.py"
+line     = 24
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run(): args comes from reqparse.RequestParser().parse_args() -- a Flask-RESTful/flask-restx HTTP request parser, not argparse.ArgumentParser. exclude_if: cli_argument requires the parse_args()/parse_known_args() receiver to actually resolve to a call to argparse.ArgumentParser(...), so a same-named method on an unrelated request-parsing class must not be trusted the same way."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_via_request_parser.py"
+line     = 25
+rule     = "BAS-LLM10-012"
+category = "LLM10"
+kind     = "defect"
+severity = "high"
+why      = "run(): same reasoning as the BAS-LLM10-009 finding on the line above, for the file path this rule inspects rather than the shell command -- args[\"file\"] is HTTP request data, not the operator's own command line."
 
 [[expect_none]]
 file = "clean/module_constant_path_join.py"
@@ -963,11 +990,11 @@ why = "DATA_DIR is a module-level literal assignment; constant_path already trac
 
 [[expect_none]]
 file = "clean/pathlib_constant_root.py"
-why = "Fix A: constant_path learns pathlib. HERE and ASSETS both trace back to __file__ through Path(__file__), .parent, the / operator, .resolve(), .parents[...] (a subscript, which already passes constant_path through unchanged like any other attribute read), and str() -- every one of them either already generic (attribute/subscript/binary_operator resolution) or newly whitelisted (PATH_CONST_FUNCTIONS' Path/str entries, PATHLIB_ZERO_ARG_METHODS' resolve). load_overlay's f-string and load_readme's + concatenation both already fold constant_path across their parts once the root itself resolves correctly, so no separate string-shape handling was needed."
+why = "constant_path understands pathlib as well as os.path. HERE and ASSETS both trace back to __file__ through Path(__file__), .parent, the / operator, .resolve(), .parents[...] (a subscript, which already passes constant_path through unchanged like any other attribute read), and str() -- every one of them either already generic (attribute/subscript/binary_operator resolution) or explicitly whitelisted (PATH_CONST_FUNCTIONS' Path/str entries, PATHLIB_ZERO_ARG_METHODS' resolve). load_overlay's f-string and load_readme's + concatenation both already fold constant_path across their parts once the root itself resolves correctly, so no separate string-shape handling was needed."
 
 [[expect_none]]
 file = "clean/tempdir_shell.py"
-why = "Fix C (2026-09-28): a value traced to tempfile is an OS-generated temp path, never attacker-influenced, so it reads as both closed (BAS-LLM10-009's exclude_if: closed_value) and constant_path (BAS-LLM10-012's exclude_if: constant_path) via the new TEMPFILE_CLOSED_CALLEES whitelist. sync_repo() proves the with tempfile.TemporaryDirectory() as tmpdir: / workspace = Path(tmpdir) shape: tmpdir is closed via the as-target binding resolving through TemporaryDirectory()'s own call Resolved, and workspace is closed too because Path(...) now propagates .closed across its arguments the same way it already propagated .constant_path (the two facts are otherwise computed independently for a call node) -- without that propagation, os.system(f\"cd {workspace} && ...\") would still fire even though the path is provably safe. collect_diagnostics() proves the same two exclusions on a bare tempfile.mkdtemp() value with no Path(...)/as-pattern wrapping at all. See vulnerable/llm10_shell_injection_tool.py's unpack() for the must-still-fire sibling that mixes a tempfile value with a real caller-supplied parameter."
+why = "a value traced to tempfile is an OS-generated temp path when called with no arguments or only already-safe arguments, never attacker-influenced, so it reads as both closed (BAS-LLM10-009's exclude_if: closed_value) and constant_path (BAS-LLM10-012's exclude_if: constant_path) via the TEMPFILE_CLOSED_CALLEES whitelist. sync_repo() proves the with tempfile.TemporaryDirectory() as tmpdir: / workspace = Path(tmpdir) shape: tmpdir is closed via the as-target binding resolving through TemporaryDirectory()'s own call Resolved, and workspace is closed too because Path(...) now propagates .closed across its arguments the same way it already propagated .constant_path (the two facts are otherwise computed independently for a call node) -- without that propagation, os.system(f\"cd {workspace} && ...\") would still fire even though the path is provably safe. collect_diagnostics() proves the same two exclusions on a bare tempfile.mkdtemp() value with no Path(...)/as-pattern wrapping at all. See vulnerable/llm10_shell_injection_tool.py's unpack() for the must-still-fire sibling that mixes a tempfile value with a real caller-supplied parameter."
 
 # clean/dotenv_example/.env.example carries no [[expect_none]] entry here for
 # the same reachability reason documented next to vulnerable/dotenv_leak/.env
@@ -1380,7 +1407,7 @@ severity = "high"
 why      = "eval() on a literal held in a const. Observation for the same reason as line 4."
 
 # =====================================================================
-# Fix D (2026-09-28): flow.passthrough_downgrade. observations/
+# flow.passthrough_downgrade (BAS-LLM10-009). observations/
 # shell_passthrough_helpers.py proves the downgrade; vulnerable/
 # llm10_shell_passthrough_still_defect.py proves each of its four
 # conditions individually keeps a lookalike shape a defect. See
@@ -1408,7 +1435,7 @@ why      = "HookExecutor.execute(): command is one plain local alias of hook.com
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 26
+line     = 28
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1417,7 +1444,7 @@ why      = "execute_command(): command is a bare pass-through, but execute_comma
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 33
+line     = 35
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1426,7 +1453,7 @@ why      = "_exec(): cmd is a bare pass-through and _exec is not itself an entry
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 46
+line     = 48
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1435,7 +1462,7 @@ why      = "apply_manifest(): manifest traces to json.load(open(path)), a file_r
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 52
+line     = 54
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1444,120 +1471,120 @@ why      = "ping(): the command is an f-string composed around host, not host it
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 64
+line     = 66
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "ping_reassigned() (fix round 1 regression, reviewer finding C1): host is reassigned to a composed f-string using its own name before reaching the sink. The reassignment is itself a binding of `host`, so is_provably_bare_passthrough's zero-bindings rule for a parameter root disqualifies it, the same as any other reassigned name would be."
+why      = "ping_reassigned(): host is reassigned to a composed f-string using its own name before reaching the sink. The reassignment is itself a binding of `host`, so is_provably_bare_passthrough's zero-bindings rule for a parameter root disqualifies it, the same as any other reassigned name would be."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 78
+line     = 80
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_branch_alias() (fix round 1 regression, reviewer finding C2): cmd is bound once in each arm of an if/else, one arm composed, the other a bare pass-through. A second binding of the name anywhere in the function -- regardless of which branch -- disqualifies it, since this file-local syntactic check cannot prove which arm's binding reaches the sink."
+why      = "run_branch_alias(): cmd is bound once in each arm of an if/else, one arm composed, the other a bare pass-through. A second binding of the name anywhere in the function -- regardless of which branch -- disqualifies it, since this file-local syntactic check cannot prove which arm's binding reaches the sink."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 88
+line     = 90
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_for_loop_alias() (fix round 1 regression, reviewer finding C2): cmd is bound by a for-loop target, not a plain assignment -- is_provably_bare_passthrough only ever follows a plain assignment as its one permitted local-alias hop, so a for-loop target disqualifies the name."
+why      = "run_for_loop_alias(): cmd is bound by a for-loop target, not a plain assignment -- is_provably_bare_passthrough only ever follows a plain assignment as its one permitted local-alias hop, so a for-loop target disqualifies the name."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 103
+line     = 105
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "HandlerA.do_GET() (fix round 1 regression, reviewer finding C3): two unrelated BaseHTTPRequestHandler subclasses each define their own do_GET. Entry-point status is decided directly from each function's own node, never from a name-keyed map that could drop an ambiguously-defined name, so this do_GET is independently, correctly recognized as an entry point despite HandlerB below sharing its method name."
+why      = "HandlerA.do_GET(): two unrelated BaseHTTPRequestHandler subclasses each define their own do_GET. Entry-point status is decided directly from each function's own node, never from a name-keyed map that could drop an ambiguously-defined name, so this do_GET is independently, correctly recognized as an entry point despite HandlerB below sharing its method name."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 112
+line     = 114
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "HandlerB.do_GET() (fix round 1 regression, reviewer finding C3): the second do_GET sharing HandlerA's method name above -- both are independently recognized as entry points, so neither is wrongly downgraded."
+why      = "HandlerB.do_GET(): the second do_GET sharing HandlerA's method name above -- both are independently recognized as entry points, so neither is wrongly downgraded."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 127
+line     = 129
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "Runner.go() (fix round 1 regression, reviewer finding I1b): self.cmd was set in __init__ from run_tool()'s own @mcp.tool()-decorated parameter, but this file-local analysis cannot trace an attribute write in one method to a read in another. self/cls never qualify as a bare-parameter root, so self.cmd stays a defect."
+why      = "Runner.go(): self.cmd was set in __init__ from run_tool()'s own @mcp.tool()-decorated parameter, but this file-local analysis cannot trace an attribute write in one method to a read in another. self/cls never qualify as a bare-parameter root, so self.cmd stays a defect."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 146
+line     = 148
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "QualifiedForward._exec() (fix round 2 regression, reviewer finding I1b): _exec's own cmd is a bare pass-through, but run() -- an @mcp.tool()-decorated entry-point method -- forwards its own cmd parameter into _exec via a qualified self._exec(cmd) call. collect_entry_point_forwards now recognizes self.NAME(...)/cls.NAME(...) qualified calls, not just a bare NAME(...) call, so this stays a defect."
+why      = "QualifiedForward._exec(): _exec's own cmd is a bare pass-through, but run() -- an @mcp.tool()-decorated entry-point method -- forwards its own cmd parameter into _exec via a qualified self._exec(cmd) call. collect_entry_point_forwards recognizes self.NAME(...)/cls.NAME(...) qualified calls, not just a bare NAME(...) call, so this stays a defect."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 160
+line     = 162
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_attribute_mutated() (fix round 2 regression, reviewer finding N1): hook.command is reassigned in place (hook.command = f\"sh -c {hook.command}\") before reaching the sink. path_is_reassigned finds the exact-text-matching assignment target and disqualifies the whole attribute path, regardless of how bare hook.command looks at the sink call itself."
+why      = "run_attribute_mutated(): hook.command is reassigned in place (hook.command = f\"sh -c {hook.command}\") before reaching the sink. path_is_reassigned finds the exact-text-matching assignment target and disqualifies the whole attribute path, regardless of how bare hook.command looks at the sink call itself."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 169
+line     = 171
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_subscript_mutated() (fix round 2 regression, reviewer finding N1): opts[\"cmd\"] is reassigned in place before reaching the sink -- same reasoning as run_attribute_mutated() above, for a subscript path instead of an attribute path."
+why      = "run_subscript_mutated(): opts[\"cmd\"] is reassigned in place before reaching the sink -- same reasoning as run_attribute_mutated() above, for a subscript path instead of an attribute path."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 180
+line     = 182
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_comprehension_target() (fix round 2 regression, reviewer finding N2): the list comprehension's own for cmd in [...] target shadows the outer parameter. occurrences_of's read-whitelist does not recognize a comprehension's for_in_clause target as a safe read, so it classifies as Occurrence::Other and disqualifies cmd outright."
+why      = "run_comprehension_target(): the list comprehension's own for cmd in [...] target shadows the outer parameter. occurrences_of's read-whitelist does not recognize a comprehension's for_in_clause target as a safe read, so it classifies as Occurrence::Other and disqualifies cmd outright."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 192
+line     = 194
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_match_case_capture() (fix round 2 regression, reviewer finding N2): case [cmd]: captures a new binding of cmd from the match subject, shadowing the outer parameter -- the same unrecognized-construct-disqualifies reasoning as run_comprehension_target() above, for a match/case capture instead of a comprehension target."
+why      = "run_match_case_capture(): case [cmd]: captures a new binding of cmd from the match subject, shadowing the outer parameter -- the same unrecognized-construct-disqualifies reasoning as run_comprehension_target() above, for a match/case capture instead of a comprehension target."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 208
+line     = 210
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_nonlocal_write() (fix round 2 regression, reviewer finding N2): a nested function declares cmd nonlocal and reassigns it to a composed value. is_declared_nonlocal_or_global disqualifies cmd unconditionally the moment any nonlocal/global declaration names it anywhere in the function."
+why      = "run_nonlocal_write(): a nested function declares cmd nonlocal and reassigns it to a composed value. is_declared_nonlocal_or_global disqualifies cmd unconditionally the moment any nonlocal/global declaration names it anywhere in the function."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 222
+line     = 223
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_all() (fix round 3 regression, reviewer finding: lambda scope-boundary mismatch): the lambda's own cmd parameter shadows run_all's cmd. is_passthrough_observation_eligible now finds its enclosing scope by walking up to the nearest SCOPE_KINDS ancestor (function_definition OR lambda), not just the nearest function_definition, so it correctly stops at the lambda -- which, having no name, is never eligible for the downgrade at all."
+why      = "run_all(): the lambda's own cmd parameter shadows run_all's cmd. is_passthrough_observation_eligible finds its enclosing scope by walking up to the nearest SCOPE_KINDS ancestor (function_definition OR lambda), not just the nearest function_definition, so it correctly stops at the lambda -- which, having no name, is never eligible for the downgrade at all."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
@@ -1566,44 +1593,72 @@ rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_lambda_default_capture() (fix round 3 regression, same reviewer finding as run_all() above): the lambda-scope-boundary shape via a default-argument capture instead of map()."
+why      = "run_lambda_default_capture(): the same lambda-scope-boundary shape as run_all() above, via a default-argument capture instead of map()."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 237
+line     = 236
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_lambda_immediately_invoked() (fix round 3 regression, same reviewer finding as run_all() above): the lambda-scope-boundary shape, immediately invoked rather than stored or mapped."
+why      = "run_lambda_immediately_invoked(): the same lambda-scope-boundary shape as run_all() above, immediately invoked rather than stored or mapped."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 252
+line     = 250
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_with_parenthesized_target() (fix round 3 regression, reviewer finding: wrapper-node-in-write-position fails open): `as (cmd)` parses `(cmd)` as a parenthesized_expression wrapping the bound name, a binding context, not a read -- classify_occurrence now climbs through a chain of WRAPPER_KINDS ancestors before deciding, instead of accepting a parenthesized_expression parent unconditionally as a safe read."
+why      = "run_with_parenthesized_target(): `as (cmd)` parses `(cmd)` as a parenthesized_expression wrapping the bound name, a binding context, not a read -- classify_occurrence climbs through a chain of wrapper-kind ancestors before deciding, instead of accepting a parenthesized_expression parent unconditionally as a safe read."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 265
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "_exec_request_cmd(): cmd is a bare pass-through of this function's own parameter, but run_route() (a Flask route, an entry point) calls it with request.args[\"cmd\"] -- a value read from the global request object, not from any of run_route's own parameters. An entry point that calls a local function with an argument this graph cannot prove is safe disqualifies that callee from the downgrade, regardless of whether the argument traces to the entry point's own parameter list."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 278
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "_exec_model_output(): same reasoning as _exec_request_cmd() above, but the argument reaching this helper from run_model_output() is a local variable holding a model reply, not a value read from a request global."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 294
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_django_view(): request.GET[\"cmd\"] is two levels of attribute/subscript access on the parameter request (an attribute, .GET, then a subscript on that result). A bare pass-through is bounded to exactly one level of attribute or subscript on the root parameter, matching the specification's own p / p.attr / p[\"key\"] condition literally, so this two-level shape stays a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 303
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_non_literal_subscript_key(): opts[key] has a non-literal subscript key -- key is itself a variable, not a fixed value written in this file. A bare pass-through's subscript key must itself be a literal, matching the specification's p[\"key\"] wording, so a variable key stays a defect."
 
 # ---------------------------------------------------------------------
-# Fix D fix round 1 (2026-09-28), reviewer finding I1c: known, bounded
-# limitation of collect_entry_point_forwards, documented rather than
-# fixed -- see bastyn.yml's comment on BAS-LLM10-009.
+# Known, bounded limitations of collect_entry_point_forwards, documented
+# rather than fixed -- see bastyn.yml's comment on BAS-LLM10-009.
 # ---------------------------------------------------------------------
 
 [[known_gap]]
 file     = "vulnerable/real_misses/shell_command_via_chained_tool_forward.py"
 line     = 25
 category = "LLM10"
-why      = "_inner()'s cmd is forwarded from run() (an @mcp.tool() entry point) through _outer() -- two hops, not the one hop collect_entry_point_forwards checks for. flow.passthrough_downgrade wrongly reports this as an observation instead of a defect. The same bounded-depth precedent FlowGraph::wrapper_sink_parameters's own doc comment already accepts for the sink side (\"a wrapper around a wrapper is out of reach by construction, not merely untested\") applies here on the entry-point-forwarding side; extending it to arbitrary-depth call chains is out of this fix's scope."
-
-# ---------------------------------------------------------------------
-# Fix D fix round 3 (2026-09-28), reviewer finding (entry-point-forwarding
-# callee shapes): known, bounded limitation of
-# collect_entry_point_forwards's callee-shape recognition, documented
-# rather than fixed -- see bastyn.yml's comment on BAS-LLM10-009.
-# ---------------------------------------------------------------------
+why      = "_inner()'s cmd is forwarded from run() (an @mcp.tool() entry point) through _outer() -- two hops, not the one hop collect_entry_point_forwards checks for. flow.passthrough_downgrade wrongly reports this as an observation instead of a defect. The same bounded-depth precedent FlowGraph::wrapper_sink_parameters's own doc comment already accepts for the sink side (\"a wrapper around a wrapper is out of reach by construction, not merely untested\") applies here on the entry-point-forwarding side; extending it to arbitrary-depth call chains is out of this check's scope."
 
 [[known_gap]]
 file     = "vulnerable/real_misses/shell_command_via_thread_pool_forward.py"
