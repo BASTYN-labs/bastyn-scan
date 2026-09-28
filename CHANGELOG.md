@@ -111,6 +111,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   skill-runner's own command-dispatch control-channel shape, the same trust boundary as `argv` rather
   than attacker-reachable input. A command that reaches a shell via any other non-literal path is
   unaffected.
+- `BAS-LLM10-012`'s `constant_path` check (a file path proven to come only from this file's own
+  location, not from anything a caller supplies) now also recognizes `pathlib.Path` construction and
+  its `.parent`/`.resolve()`/`.absolute()`/`.with_name()`/`.with_suffix()` chain, not just
+  `os.path.*`. A path assembled entirely through `pathlib` starting from `__file__` no longer fires.
+- New `exclude_if: cli_argument` predicate for `BAS-LLM10-009` and `BAS-LLM10-012`: a value traced
+  entirely to `sys.argv`, an `argparse.ArgumentParser`'s own `.parse_args()`/`.parse_known_args()`
+  result, or a `click`/`typer` command's own declared parameter is the operator's own command line,
+  not attacker-reachable input, and no longer fires. A value that also mixes in any other non-literal
+  source is unaffected and still fires.
+- Values from Python's `tempfile` module (`mkdtemp()`, `mkstemp()`, `gettempdir()`, the name bound by
+  `with TemporaryDirectory() as ...`, `NamedTemporaryFile(...).name`) are now recognized as
+  OS-generated and not attacker-influenced, for both `BAS-LLM10-009` and `BAS-LLM10-012` — but only
+  when every argument passed to the call is itself already proven safe; a caller-controlled
+  `prefix`/`suffix`/`dir` argument is unaffected and still fires.
+- `BAS-LLM10-009`: a helper function whose parameter reaches a shell with no processing in between,
+  and which nothing in the file calls from a recognized entry point (an MCP tool, a web-framework
+  route or request handler, a CLI command), is now reported as a low-confidence observation instead
+  of a defect — out of the default report, visible with `--show-observations`. A parameter an entry
+  point forwards into the helper, the entry point itself, or a value this file can trace to another
+  source, is unaffected and still reports a defect.
 
 ## [0.1.7] - 2026-09-25
 
