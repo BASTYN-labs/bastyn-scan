@@ -1408,7 +1408,7 @@ why      = "HookExecutor.execute(): command is one plain local alias of hook.com
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 20
+line     = 26
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1417,7 +1417,7 @@ why      = "execute_command(): command is a bare pass-through, but execute_comma
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 27
+line     = 33
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1426,7 +1426,7 @@ why      = "_exec(): cmd is a bare pass-through and _exec is not itself an entry
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 40
+line     = 46
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1435,7 +1435,7 @@ why      = "apply_manifest(): manifest traces to json.load(open(path)), a file_r
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 46
+line     = 52
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1444,7 +1444,7 @@ why      = "ping(): the command is an f-string composed around host, not host it
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 58
+line     = 64
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1453,7 +1453,7 @@ why      = "ping_reassigned() (fix round 1 regression, reviewer finding C1): hos
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 72
+line     = 78
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1462,7 +1462,7 @@ why      = "run_branch_alias() (fix round 1 regression, reviewer finding C2): cm
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 82
+line     = 88
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1471,7 +1471,7 @@ why      = "run_for_loop_alias() (fix round 1 regression, reviewer finding C2): 
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 97
+line     = 103
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1480,7 +1480,7 @@ why      = "HandlerA.do_GET() (fix round 1 regression, reviewer finding C3): two
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 106
+line     = 112
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1489,7 +1489,7 @@ why      = "HandlerB.do_GET() (fix round 1 regression, reviewer finding C3): the
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 121
+line     = 127
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1498,7 +1498,7 @@ why      = "Runner.go() (fix round 1 regression, reviewer finding I1b): self.cmd
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 140
+line     = 146
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1507,7 +1507,7 @@ why      = "QualifiedForward._exec() (fix round 2 regression, reviewer finding I
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 154
+line     = 160
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1516,7 +1516,7 @@ why      = "run_attribute_mutated() (fix round 2 regression, reviewer finding N1
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 163
+line     = 169
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1525,7 +1525,7 @@ why      = "run_subscript_mutated() (fix round 2 regression, reviewer finding N1
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 174
+line     = 180
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1534,7 +1534,7 @@ why      = "run_comprehension_target() (fix round 2 regression, reviewer finding
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 186
+line     = 192
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -1543,12 +1543,48 @@ why      = "run_match_case_capture() (fix round 2 regression, reviewer finding N
 
 [[expect]]
 file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
-line     = 202
+line     = 208
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
 why      = "run_nonlocal_write() (fix round 2 regression, reviewer finding N2): a nested function declares cmd nonlocal and reassigns it to a composed value. is_declared_nonlocal_or_global disqualifies cmd unconditionally the moment any nonlocal/global declaration names it anywhere in the function."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 222
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_all() (fix round 3 regression, reviewer finding: lambda scope-boundary mismatch): the lambda's own cmd parameter shadows run_all's cmd. is_passthrough_observation_eligible now finds its enclosing scope by walking up to the nearest SCOPE_KINDS ancestor (function_definition OR lambda), not just the nearest function_definition, so it correctly stops at the lambda -- which, having no name, is never eligible for the downgrade at all."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 229
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_lambda_default_capture() (fix round 3 regression, same reviewer finding as run_all() above): the lambda-scope-boundary shape via a default-argument capture instead of map()."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 237
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_lambda_immediately_invoked() (fix round 3 regression, same reviewer finding as run_all() above): the lambda-scope-boundary shape, immediately invoked rather than stored or mapped."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 252
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_with_parenthesized_target() (fix round 3 regression, reviewer finding: wrapper-node-in-write-position fails open): `as (cmd)` parses `(cmd)` as a parenthesized_expression wrapping the bound name, a binding context, not a read -- classify_occurrence now climbs through a chain of WRAPPER_KINDS ancestors before deciding, instead of accepting a parenthesized_expression parent unconditionally as a safe read."
 
 # ---------------------------------------------------------------------
 # Fix D fix round 1 (2026-09-28), reviewer finding I1c: known, bounded
@@ -1561,3 +1597,16 @@ file     = "vulnerable/real_misses/shell_command_via_chained_tool_forward.py"
 line     = 25
 category = "LLM10"
 why      = "_inner()'s cmd is forwarded from run() (an @mcp.tool() entry point) through _outer() -- two hops, not the one hop collect_entry_point_forwards checks for. flow.passthrough_downgrade wrongly reports this as an observation instead of a defect. The same bounded-depth precedent FlowGraph::wrapper_sink_parameters's own doc comment already accepts for the sink side (\"a wrapper around a wrapper is out of reach by construction, not merely untested\") applies here on the entry-point-forwarding side; extending it to arbitrary-depth call chains is out of this fix's scope."
+
+# ---------------------------------------------------------------------
+# Fix D fix round 3 (2026-09-28), reviewer finding (entry-point-forwarding
+# callee shapes): known, bounded limitation of
+# collect_entry_point_forwards's callee-shape recognition, documented
+# rather than fixed -- see bastyn.yml's comment on BAS-LLM10-009.
+# ---------------------------------------------------------------------
+
+[[known_gap]]
+file     = "vulnerable/real_misses/shell_command_via_thread_pool_forward.py"
+line     = 26
+category = "LLM10"
+why      = "_exec()'s cmd is forwarded from run() (an @mcp.tool() entry point) through asyncio.to_thread(_exec, cmd) -- a callee shape collect_entry_point_forwards does not recognize (only a bare NAME(...) call or a self/cls-qualified NAME(...) call are). flow.passthrough_downgrade wrongly reports this as an observation instead of a defect. The space of ways Python code can pass a callable and its argument along (thread pools, unbound-method calls, super() calls, decorator registries, dict-of-callables dispatch, ...) is genuinely open-ended; this is one representative shape, not exhaustive -- see bastyn.yml's comment for the others, which fail identically for the identical reason."

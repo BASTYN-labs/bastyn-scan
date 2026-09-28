@@ -5,12 +5,18 @@ each one fails a different one of flow.passthrough_downgrade's four
 conditions, so BAS-LLM10-009 must keep reporting it as a defect.
 """
 
+import contextlib
 import json
 import subprocess
 from http.server import BaseHTTPRequestHandler
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("x")
+
+
+@contextlib.contextmanager
+def ctx(value):
+    yield value
 
 
 @mcp.tool()
@@ -200,3 +206,47 @@ def run_nonlocal_write(cmd: str) -> None:
 
     fix()
     subprocess.run(cmd, shell=True)
+
+
+def run_all(cmd: str) -> list:
+    """Defect (fix round 3 regression, reviewer finding: lambda
+    scope-boundary mismatch): the lambda's own cmd parameter shadows
+    run_all's own cmd parameter. The sink reads the LAMBDA's cmd -- bound to
+    a composed f-string drawn from cmds -- not run_all's untouched one.
+    is_passthrough_observation_eligible now finds its enclosing scope by
+    walking up to the nearest SCOPE_KINDS ancestor (function_definition OR
+    lambda), not just the nearest function_definition, so it correctly
+    stops at the lambda -- which, having no name, is never eligible for the
+    downgrade at all."""
+    cmds = [f"ping {cmd}", f"traceroute {cmd}"]
+    return list(map(lambda cmd: subprocess.run(cmd, shell=True), cmds))
+
+
+def run_lambda_default_capture(cmd: str) -> None:
+    """Defect (fix round 3 regression, same reviewer finding as run_all()
+    above): the same lambda-scope-boundary shape, via a default-argument
+    capture instead of map()."""
+    fn = lambda cmd=f"sh -c {cmd}": subprocess.run(cmd, shell=True)  # noqa: E731
+    fn()
+
+
+def run_lambda_immediately_invoked(cmd: str) -> None:
+    """Defect (fix round 3 regression, same reviewer finding as run_all()
+    above): the same lambda-scope-boundary shape, immediately invoked
+    rather than stored or mapped."""
+    (lambda cmd: subprocess.run(cmd, shell=True))(cmd)
+
+
+def run_with_parenthesized_target(cmd: str) -> None:
+    """Defect (fix round 3 regression, reviewer finding: wrapper-node-in-
+    write-position fails open): `as (cmd)` parses `(cmd)` as a
+    parenthesized_expression wrapping the bound name, not a plain
+    identifier target -- is_definitely_safe_read used to accept
+    parenthesized_expression unconditionally as a safe read, without
+    checking whether the wrapper itself sat in a write position.
+    classify_occurrence now climbs through a chain of WRAPPER_KINDS
+    ancestors before deciding, so it correctly reaches as_pattern_target
+    (a binding context, not a read) instead of stopping at the
+    parenthesized wrapper."""
+    with ctx(f"ping {cmd}") as (cmd):
+        subprocess.run(cmd, shell=True)

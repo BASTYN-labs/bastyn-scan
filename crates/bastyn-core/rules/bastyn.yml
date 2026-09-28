@@ -355,6 +355,21 @@ rules:
   #     container names through the graph is a materially larger change
   #     than this fix wave's scope. See
   #     tests/corpus/vulnerable/real_misses/shell_command_via_mutated_registry.py.
+  #     2026-09-28, fix round 3 (reviewer finding N1): the same limitation
+  #     applies to flow.passthrough_downgrade's own
+  #     path_is_reassigned check below -- its exact-text-match search finds
+  #     `hook.command = ...`/`opts["cmd"] = ...` in the same function, but
+  #     not a quote-style mismatch (`opts['cmd']` vs `opts["cmd"]`), a
+  #     variable subscript key (`opts[k] = ...`), mutation reached only
+  #     through a second alias (`h = hook; h.command = ...`), or a
+  #     method-based mutation (`opts.update(cmd=...)`, `setattr(hook,
+  #     "command", ...)`) -- all of these are the identical
+  #     "mutated-container tracking is materially larger than this scope"
+  #     gap as the COMMANDS example above, just reached through
+  #     `is_provably_bare_passthrough` instead of `exclude_if: closed_value`.
+  #     Not fixed for the same reason; not separately fixtured, since
+  #     shell_command_via_mutated_registry.py above already documents the
+  #     identical class of limitation.
   # ---------------------------------------------------------------------
 
   - id: BAS-LLM10-009
@@ -511,6 +526,27 @@ rules:
     #     identical reason, and is not separately fixtured). Extending this
     #     to arbitrary-depth forwarding is materially larger than this fix
     #     round's scope; recorded rather than attempted.
+    #
+    #     2026-09-28, fix round 3, broadened: the one-hop bound above is not
+    #     the only limit -- collect_entry_point_forwards also only recognizes
+    #     the callee SHAPE of that one hop as a direct bare-name call or a
+    #     self/cls-qualified method call. Any other way Python code can pass
+    #     a callable and its argument along -- a thread pool
+    #     (`asyncio.to_thread(_exec, cmd)`, `pool.submit(_exec, cmd)`), an
+    #     unbound-method call (`Class._exec(self, cmd)`), a `super()` call
+    #     (`super()._exec(cmd)`), a decorator registry, indirect dispatch
+    #     through a dict of callables, ... -- is invisible to it, and the
+    #     forwarded helper is wrongly downgraded to an observation. This is
+    #     now the third distinct callee shape this mechanism has needed to
+    #     special-case (bare call, then self/cls-qualified, now these), and
+    #     the space of "ways to pass a callable and its argument somewhere
+    #     else" is genuinely open-ended -- a fourth special case is not being
+    #     added. See
+    #     tests/corpus/vulnerable/real_misses/shell_command_via_thread_pool_forward.py's
+    #     known_gap entry for one representative shape (`asyncio.to_thread`,
+    #     chosen as the most realistic in an async MCP server); the others
+    #     named above fail identically, for the identical reason, and are not
+    #     separately fixtured.
     flow:
       variable: ARG
       passthrough_downgrade: true
