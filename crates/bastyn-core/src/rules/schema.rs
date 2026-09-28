@@ -242,6 +242,14 @@ pub(crate) struct FlowDef {
     /// builtin only ever reports the builtin.
     #[serde(default)]
     pub(crate) builtin_callee: bool,
+    /// When true, a match whose captured value is a pure pass-through of a
+    /// non-entry-point function's own parameter, unreachable in this file
+    /// from any recognized entry point, is reported as `Kind::Observation`
+    /// instead of the rule's declared kind -- `title` and `remediation`
+    /// unchanged, only `kind`. See
+    /// `crate::flow::graph::FlowGraph::is_passthrough_observation_eligible`.
+    #[serde(default)]
+    pub(crate) passthrough_downgrade: bool,
 }
 
 /// A `flow.unproven:` clause, exactly as written in YAML.

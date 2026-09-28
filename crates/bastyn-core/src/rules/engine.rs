@@ -261,6 +261,12 @@ struct CompiledFlow {
     unproven: Option<CompiledUnproven>,
     /// Drop a match whose callee is a bare name this file rebinds itself.
     builtin_callee: bool,
+    /// When true, a match whose captured value is a pure pass-through of a
+    /// non-entry-point function's own parameter, unreachable in this file
+    /// from any recognized entry point, is reported as an observation
+    /// instead of the rule's declared kind. See
+    /// `crate::flow::graph::FlowGraph::is_passthrough_observation_eligible`.
+    passthrough_downgrade: bool,
 }
 
 impl CompiledFlow {
@@ -534,6 +540,14 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
     if flow.sink.is_some() && !def.none_in_file.is_empty() {
         return Err(RuleError::FlowSinkWithNoneInFile { id: def.id.clone() });
     }
+    // The wrapper-sink pass `flow.sink` turns on builds its own findings
+    // straight from `wrapper_sink_calls`, bypassing the per-node match loop
+    // `passthrough_downgrade` is computed in -- rejected here rather than
+    // shipped silently half-working, for the same reason as the
+    // `none_in_file` check just above.
+    if flow.sink.is_some() && flow.passthrough_downgrade {
+        return Err(RuleError::PassthroughDowngradeWithSink { id: def.id.clone() });
+    }
     // `flow.unproven` only changes what a defect rule reports: an
     // observation rule already reports everything it matches as an
     // observation, so the field would be a no-op there.
@@ -583,6 +597,7 @@ fn compile_flow(def: &RuleDef, any_vars: &HashSet<String>) -> Result<Option<Comp
         sink: flow.sink,
         unproven,
         builtin_callee: flow.builtin_callee,
+        passthrough_downgrade: flow.passthrough_downgrade,
     }))
 }
 
@@ -990,27 +1005,28 @@ fn scan_with<L: LanguageExt + Copy>(
                     }
                 }
             }
+            // Fix D: keyed on who can reach this call, not on whether the
+            // value's origin is provable -- see `passthrough_observation_for`.
+            let passthrough_observation = rule.flow.as_ref().is_some_and(|flow| {
+                passthrough_observation_for(flow, candidate.get_env(), matched, &node, &mut graph)
+            });
             if rule.excluded_by_file(&node, candidate.get_env()) {
                 continue;
             }
             if let Some(exclude) = &rule.exclude_if
-                && let Some(captured) = candidate.get_env().get_match(&exclude.variable)
+                && excluded_by_predicate(exclude, candidate.get_env(), &node, &mut graph)
             {
-                let graph =
-                    graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
-                let excluded = exclude.kinds.iter().any(|kind| match kind {
-                    ExcludeIfKind::ClosedValue => graph.is_closed(captured.node_id()),
-                    ExcludeIfKind::ConstantPath => graph.is_constant_path(captured.node_id()),
-                    ExcludeIfKind::ShellQuoted => graph.is_shell_quoted(captured.node_id()),
-                    ExcludeIfKind::StdinDispatch => graph.is_stdin_dispatch(captured.node_id()),
-                    ExcludeIfKind::CliArgument => graph.is_cli_argument(captured.node_id()),
-                });
-                if excluded {
-                    continue;
-                }
+                continue;
             }
 
-            let finding = build_finding(rule, relative_path, source, matched, unproven);
+            let finding = build_finding(
+                rule,
+                relative_path,
+                source,
+                matched,
+                unproven,
+                passthrough_observation,
+            );
             push_unique(&mut findings, &mut seen, finding);
         }
     }
@@ -1040,7 +1056,12 @@ fn scan_with<L: LanguageExt + Copy>(
         {
             let graph = graph.get_or_insert_with(|| FlowGraph::build(&node, FlowLanguage::Python));
             for (call, unproven) in wrapper_sink_calls(&node, graph, sink, flow) {
-                let finding = build_finding(rule, relative_path, source, &call, unproven);
+                // `flow.sink` and `flow.passthrough_downgrade` are mutually
+                // exclusive -- rejected at load time by
+                // `RuleError::PassthroughDowngradeWithSink` -- so a rule
+                // reaching this path never has `passthrough_downgrade` set,
+                // and the real check is never needed here.
+                let finding = build_finding(rule, relative_path, source, &call, unproven, false);
                 push_unique(&mut findings, &mut seen, finding);
             }
         }
@@ -1053,6 +1074,57 @@ fn scan_with<L: LanguageExt + Copy>(
     // `merge_same_location` sorts on (location, rule id), which those keys
     // make a total order.
     ScanOutcome::Scanned(merge_same_location(findings))
+}
+
+/// Whether `flow.passthrough_downgrade` proves the pass-through-observation
+/// shape (Fix D) at `matched`'s captured value, building the flow graph on
+/// first use. Split out of [`scan_with`] to keep that function within
+/// clippy's line-count lint, the same reason [`compile_flow`] is split out of
+/// [`CompiledRule::compile`].
+///
+/// Computed independently of [`CompiledFlow::verdict`]: that method answers
+/// whether a value's *origin* is provable, this answers whether the function
+/// it was captured in is reachable from a recognized entry point, so it can
+/// apply even to a value `verdict` already called [`FlowVerdict::Proven`] --
+/// `Origin::Parameter` traces perfectly well, it just traces to a caller this
+/// file does not see.
+fn passthrough_observation_for<'r, D: Doc>(
+    flow: &CompiledFlow,
+    candidate_env: &MetaVarEnv<'r, D>,
+    matched: &Node<'r, D>,
+    node: &Node<'r, D>,
+    graph: &mut Option<FlowGraph>,
+) -> bool {
+    if !flow.passthrough_downgrade {
+        return false;
+    }
+    let Some(captured) = candidate_env.get_match(&flow.variable) else {
+        return false;
+    };
+    let graph = graph.get_or_insert_with(|| FlowGraph::build(node, FlowLanguage::Python));
+    graph.is_passthrough_observation_eligible(matched, captured)
+}
+
+/// Whether `exclude.kind` proves the value at `exclude.variable` safe,
+/// building the flow graph on first use. Split out of [`scan_with`] for the
+/// same line-count reason as [`passthrough_observation_for`].
+fn excluded_by_predicate<'r, D: Doc>(
+    exclude: &CompiledExcludeIf,
+    candidate_env: &MetaVarEnv<'r, D>,
+    node: &Node<'r, D>,
+    graph: &mut Option<FlowGraph>,
+) -> bool {
+    let Some(captured) = candidate_env.get_match(&exclude.variable) else {
+        return false;
+    };
+    let graph = graph.get_or_insert_with(|| FlowGraph::build(node, FlowLanguage::Python));
+    exclude.kinds.iter().any(|kind| match kind {
+        ExcludeIfKind::ClosedValue => graph.is_closed(captured.node_id()),
+        ExcludeIfKind::ConstantPath => graph.is_constant_path(captured.node_id()),
+        ExcludeIfKind::ShellQuoted => graph.is_shell_quoted(captured.node_id()),
+        ExcludeIfKind::StdinDispatch => graph.is_stdin_dispatch(captured.node_id()),
+        ExcludeIfKind::CliArgument => graph.is_cli_argument(captured.node_id()),
+    })
 }
 
 /// Whether the file's text contains, as a whole identifier, any name a
@@ -1159,13 +1231,18 @@ fn wrapper_sink_calls<'r, D: Doc>(
 /// path rather than proven provenance: it downgrades the kind to
 /// [`Kind::Observation`], the confidence to [`Confidence::Low`], and appends
 /// [`UNPROVEN_NOTE`] to the description, regardless of the rule's own
-/// declared kind and confidence.
+/// declared kind and confidence. `passthrough_observation` is whether
+/// `flow.passthrough_downgrade` proved the pass-through-helper shape at this
+/// match; unlike `unproven`, it changes only `kind` -- `confidence` and
+/// `description` are untouched, since the value's origin here is proven
+/// (`Origin::Parameter`), just not reachable from a recognized entry point.
 fn build_finding<D: Doc>(
     rule: &CompiledRule,
     relative_path: &Path,
     source: &str,
     matched: &Node<'_, D>,
     unproven: bool,
+    passthrough_observation: bool,
 ) -> Finding {
     let start = matched.start_pos();
     let line = start.line() + 1;
@@ -1187,6 +1264,7 @@ fn build_finding<D: Doc>(
     // fixture; a rule that cannot afford even that says `in_test_paths:
     // report`.
     let kind = if unproven
+        || passthrough_observation
         || (rule.in_test_paths == TestPathPolicy::Downgrade && is_test_path(relative_path))
     {
         Kind::Observation

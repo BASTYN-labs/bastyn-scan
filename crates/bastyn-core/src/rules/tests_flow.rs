@@ -895,3 +895,47 @@ fn bas_zt4_001_skips_a_value_already_limited_by_a_fixed_set_check() {
         "a guarded value must not be reported: {findings:#?}"
     );
 }
+
+/// Fix D: `flow.passthrough_downgrade` reports a bare pass-through of a
+/// non-entry-point function's own parameter as an observation, not a
+/// defect, when nothing in the file wires it to a recognized entry point.
+#[test]
+fn passthrough_downgrade_reports_a_bare_parameter_helper_as_an_observation() {
+    let rules = RuleSet::embedded().unwrap();
+    let source = "\
+import subprocess
+
+
+def run_shell_cmd(cmd):
+    return subprocess.run(cmd, shell=True)
+";
+    let findings = scan_source(&rules, Path::new("app/helpers.py"), source);
+    let finding = findings
+        .iter()
+        .find(|f| f.rule_id == "BAS-LLM10-009")
+        .expect("a BAS-LLM10-009 finding");
+    assert_eq!(finding.kind, crate::finding::Kind::Observation);
+}
+
+/// The companion case: the same bare-parameter shape inside a function
+/// decorated `@mcp.tool()` -- a recognized entry point -- must stay a
+/// defect, since this file itself hands that parameter an agent-chosen
+/// value.
+#[test]
+fn passthrough_downgrade_does_not_apply_inside_an_entry_point() {
+    let rules = RuleSet::embedded().unwrap();
+    let source = "\
+import subprocess
+
+
+@mcp.tool()
+def run_shell_cmd(cmd):
+    return subprocess.run(cmd, shell=True)
+";
+    let findings = scan_source(&rules, Path::new("app/helpers.py"), source);
+    let finding = findings
+        .iter()
+        .find(|f| f.rule_id == "BAS-LLM10-009")
+        .expect("a BAS-LLM10-009 finding");
+    assert_eq!(finding.kind, crate::finding::Kind::Defect);
+}

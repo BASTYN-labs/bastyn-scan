@@ -252,4 +252,21 @@ pub enum RuleError {
         /// The offending rule's id.
         id: String,
     },
+
+    /// A rule declared both `flow.sink` and `flow.passthrough_downgrade`.
+    ///
+    /// The wrapper-sink pass (`flow.sink`) builds its own findings straight
+    /// from `wrapper_sink_calls`, bypassing the per-node match loop that
+    /// `passthrough_downgrade` is computed in -- the combination is rejected
+    /// here rather than shipped silently half-working, the same reasoning
+    /// `FlowSinkWithNoneInFile` already applies to `none_in_file`.
+    #[error(
+        "rule `{id}`: `flow.sink` and `flow.passthrough_downgrade` cannot be combined; the \
+         wrapper-sink pass `flow.sink` enables builds its findings outside the per-node match \
+         loop `passthrough_downgrade` is computed in"
+    )]
+    PassthroughDowngradeWithSink {
+        /// The offending rule's id.
+        id: String,
+    },
 }
