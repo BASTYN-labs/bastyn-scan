@@ -124,3 +124,79 @@ class Runner:
 @mcp.tool()
 def run_tool(cmd: str) -> None:
     Runner(cmd).go()
+
+
+class QualifiedForward:
+    """Defect (fix round 2 regression, reviewer finding I1b): _exec's own
+    cmd parameter is a bare pass-through, but run() -- an
+    @mcp.tool()-decorated entry-point method -- forwards its own cmd
+    parameter into _exec via a qualified self._exec(cmd) call.
+    collect_entry_point_forwards now recognizes self.NAME(...)/
+    cls.NAME(...) qualified calls the same way it already recognized a bare
+    NAME(...) call, so this stays a defect instead of being wrongly
+    downgraded to an observation."""
+
+    def _exec(self, cmd: str) -> str:
+        return subprocess.check_output(cmd, shell=True, text=True)
+
+    @mcp.tool()
+    def run(self, cmd: str) -> str:
+        return self._exec(cmd)
+
+
+def run_attribute_mutated(hook) -> None:
+    """Defect (fix round 2 regression, reviewer finding N1): hook.command is
+    reassigned in place before reaching the sink -- path_is_reassigned finds
+    the exact-text-matching assignment target and disqualifies the whole
+    path, regardless of how bare hook.command looks at the sink call
+    itself."""
+    hook.command = f"sh -c {hook.command}"
+    subprocess.run(hook.command, shell=True)
+
+
+def run_subscript_mutated(opts) -> None:
+    """Defect (fix round 2 regression, reviewer finding N1): opts["cmd"] is
+    reassigned in place before reaching the sink -- same reasoning as
+    run_attribute_mutated() above, for a subscript path instead of an
+    attribute path."""
+    opts["cmd"] = "ping " + opts["cmd"]
+    subprocess.run(opts["cmd"], shell=True)
+
+
+def run_comprehension_target(cmd: str) -> list:
+    """Defect (fix round 2 regression, reviewer finding N2): the list
+    comprehension's own `for cmd in [...]` target shadows the outer
+    parameter. occurrences_of's read-whitelist does not recognize a
+    comprehension's for_in_clause target as a safe read, so it classifies
+    as Occurrence::Other and disqualifies `cmd` outright, rather than
+    silently treating an unrecognized construct as safe the way an
+    enumerate-the-writes design would."""
+    return [subprocess.run(cmd, shell=True) for cmd in [f"ping {cmd}"]]
+
+
+def run_match_case_capture(cmd: str) -> None:
+    """Defect (fix round 2 regression, reviewer finding N2): case [cmd]:
+    captures a new binding of `cmd` from the match subject, shadowing the
+    outer parameter -- the same "unrecognized construct disqualifies"
+    reasoning as run_comprehension_target() above, for a match/case capture
+    instead of a comprehension target."""
+    payload = [f"ping {cmd}"]
+    match payload:
+        case [cmd]:
+            subprocess.run(cmd, shell=True)
+
+
+def run_nonlocal_write(cmd: str) -> None:
+    """Defect (fix round 2 regression, reviewer finding N2): a nested
+    function declares cmd nonlocal and reassigns it to a composed value.
+    is_declared_nonlocal_or_global disqualifies cmd unconditionally the
+    moment any nonlocal/global declaration names it anywhere in the
+    function, without attempting to model nonlocal's scope-crossing
+    semantics precisely."""
+
+    def fix() -> None:
+        nonlocal cmd
+        cmd = f"ping {cmd}"
+
+    fix()
+    subprocess.run(cmd, shell=True)

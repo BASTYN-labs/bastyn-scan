@@ -492,25 +492,25 @@ rules:
     #     `@app.api_route`) -- a pure widening of entry-point recognition,
     #     the safe direction.
     #   - I1c, known limitation (not fixed, documented instead):
-    #     collect_entry_point_forwards only matches a parameter forwarded
-    #     one hop, through a *bare* local-function call
-    #     (`@mcp.tool() def run(cmd): return _exec(cmd)`) -- the same
-    #     bounded-depth precedent FlowGraph::wrapper_sink_parameters's own
-    #     doc comment already accepts on the sink side ("a wrapper around a
-    #     wrapper is out of reach by construction, not merely untested").
-    #     Two shapes fall outside that one hop and are wrongly downgraded to
-    #     observations: a longer bare-call chain (`run(cmd) -> _outer(cmd) ->
-    #     _inner(cmd)`, two hops instead of one -- see
+    #     collect_entry_point_forwards matches a parameter forwarded exactly
+    #     one hop, through either a *bare* local-function call
+    #     (`@mcp.tool() def run(cmd): return _exec(cmd)`) or, as of fix round
+    #     2 (2026-09-28, reviewer finding I1b), a *qualified*
+    #     `self.NAME(...)`/`cls.NAME(...)` call on the same instance
+    #     (`@mcp.tool() def run(self, cmd): return self._exec(cmd)`) -- the
+    #     same bounded-depth precedent FlowGraph::wrapper_sink_parameters's
+    #     own doc comment already accepts on the sink side ("a wrapper around
+    #     a wrapper is out of reach by construction, not merely untested").
+    #     A longer chain still falls outside that one hop and is wrongly
+    #     downgraded to an observation: `run(cmd) -> _outer(cmd) ->
+    #     _inner(cmd)`, two hops instead of one, whether each hop is bare,
+    #     qualified, or a mix of the two -- see
     #     tests/corpus/vulnerable/real_misses/shell_command_via_chained_tool_forward.py's
-    #     known_gap entry) and a *qualified* one-hop forward
-    #     (`@mcp.tool() def run(self, cmd): return self._exec(cmd)` -- out of
-    #     scope for the same reason `collect_entry_point_forwards`'s own doc
-    #     comment already gives for excluding `self.method(cmd)`: matching
-    #     local `def` names specifically, not catalogued sinks, has no
-    #     concept of "this attribute access names a sibling method").
-    #     Extending either to arbitrary-depth or qualified-call forwarding is
-    #     materially larger than this fix round's scope; recorded rather than
-    #     attempted.
+    #     known_gap entry (which exercises the all-bare-calls case; a
+    #     qualified two-hop chain would fail the identical way, for the
+    #     identical reason, and is not separately fixtured). Extending this
+    #     to arbitrary-depth forwarding is materially larger than this fix
+    #     round's scope; recorded rather than attempted.
     flow:
       variable: ARG
       passthrough_downgrade: true

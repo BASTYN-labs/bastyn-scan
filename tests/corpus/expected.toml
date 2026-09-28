@@ -1496,6 +1496,60 @@ kind     = "defect"
 severity = "critical"
 why      = "Runner.go() (fix round 1 regression, reviewer finding I1b): self.cmd was set in __init__ from run_tool()'s own @mcp.tool()-decorated parameter, but this file-local analysis cannot trace an attribute write in one method to a read in another. self/cls never qualify as a bare-parameter root, so self.cmd stays a defect."
 
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 140
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "QualifiedForward._exec() (fix round 2 regression, reviewer finding I1b): _exec's own cmd is a bare pass-through, but run() -- an @mcp.tool()-decorated entry-point method -- forwards its own cmd parameter into _exec via a qualified self._exec(cmd) call. collect_entry_point_forwards now recognizes self.NAME(...)/cls.NAME(...) qualified calls, not just a bare NAME(...) call, so this stays a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 154
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_attribute_mutated() (fix round 2 regression, reviewer finding N1): hook.command is reassigned in place (hook.command = f\"sh -c {hook.command}\") before reaching the sink. path_is_reassigned finds the exact-text-matching assignment target and disqualifies the whole attribute path, regardless of how bare hook.command looks at the sink call itself."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 163
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_subscript_mutated() (fix round 2 regression, reviewer finding N1): opts[\"cmd\"] is reassigned in place before reaching the sink -- same reasoning as run_attribute_mutated() above, for a subscript path instead of an attribute path."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 174
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_comprehension_target() (fix round 2 regression, reviewer finding N2): the list comprehension's own for cmd in [...] target shadows the outer parameter. occurrences_of's read-whitelist does not recognize a comprehension's for_in_clause target as a safe read, so it classifies as Occurrence::Other and disqualifies cmd outright."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 186
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_match_case_capture() (fix round 2 regression, reviewer finding N2): case [cmd]: captures a new binding of cmd from the match subject, shadowing the outer parameter -- the same unrecognized-construct-disqualifies reasoning as run_comprehension_target() above, for a match/case capture instead of a comprehension target."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 202
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "run_nonlocal_write() (fix round 2 regression, reviewer finding N2): a nested function declares cmd nonlocal and reassigns it to a composed value. is_declared_nonlocal_or_global disqualifies cmd unconditionally the moment any nonlocal/global declaration names it anywhere in the function."
+
 # ---------------------------------------------------------------------
 # Fix D fix round 1 (2026-09-28), reviewer finding I1c: known, bounded
 # limitation of collect_entry_point_forwards, documented rather than
