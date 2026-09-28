@@ -324,11 +324,18 @@ rules:
   # suppress it. Matches docs/rule-catalogue.md's LLM10.12.
   #
   # Known false positives, documented rather than papered over:
-  #   - a sink inside a function nothing in the file calls still fires --
-  #     this rule has no reachability analysis, and "does anything call
-  #     this" is a whole-program question a file-local structural rule
-  #     cannot answer. See
-  #     tests/corpus/vulnerable/real_misses/shell_command_via_unreachable_function.py.
+  #   - a sink inside a function nothing in the file calls still fires when
+  #     its command is built from more than a bare parameter (e.g. two
+  #     parameters concatenated, or a parameter mixed with a call result) --
+  #     this rule still has no whole-program reachability analysis for that
+  #     shape. 2026-09-28: the narrower, much more common case where the
+  #     command argument is a bare pass-through of the enclosing function's
+  #     own parameter (def run_raw_command(command): subprocess.run(command,
+  #     shell=True)) is no longer left as a false positive -- see
+  #     flow.passthrough_downgrade below. See
+  #     tests/corpus/vulnerable/real_misses/shell_command_via_unreachable_function.py
+  #     (now an `[[expect]]` observation, not a `known_false_positive`) and
+  #     tests/corpus/observations/shell_passthrough_helpers.py.
   #   - a sink reachable only when a module-level boolean constant is
   #     flipped from its shipped value still fires -- this rule has no
   #     constant-propagation or dead-branch analysis, so it cannot prove
@@ -424,6 +431,25 @@ rules:
     exclude_if:
       variable: ARG
       kind: [closed_value, shell_quoted, stdin_dispatch, cli_argument]
+    # 2026-09-28: added flow.passthrough_downgrade (Fix D). A bare parameter
+    # reaching a shell with no other non-literal segment (def run(command):
+    # subprocess.run(command, shell=True)) resolves Origin::Parameter, which
+    # exclude_if above cannot touch -- none of closed_value/shell_quoted/
+    # stdin_dispatch/cli_argument claims anything about a value from an
+    # unseen caller. Whether that is a real defect depends on who can call
+    # `run`: an @mcp.tool()/@app.route()/do_GET-style entry point hands it an
+    # agent- or request-chosen value (still a defect), but a private helper
+    # this file itself never wires to such an entry point is reported as an
+    # observation instead -- the value is proven to come from a parameter,
+    # just not proven to be attacker-reachable. See
+    # crate::flow::graph::FlowGraph::is_passthrough_observation_eligible for
+    # the four conditions and tests/corpus/observations/
+    # shell_passthrough_helpers.py /
+    # tests/corpus/vulnerable/llm10_shell_passthrough_still_defect.py for the
+    # observation-vs-still-a-defect regression pair.
+    flow:
+      variable: ARG
+      passthrough_downgrade: true
     description: >
       A command string that is not a fixed literal reaches a shell
       (subprocess...shell=True, os.system, or os.popen). A shell
@@ -451,7 +477,13 @@ rules:
       command line -- sys.argv[...], an attribute of
       <ArgumentParser>.parse_args()/.parse_known_args(), or a click/typer
       command function's own parameter -- the same argv-is-trusted boundary,
-      not attacker-reachable input.
+      not attacker-reachable input. Also reported as an observation, rather
+      than dropped or reported as a defect, when the command is a bare
+      pass-through of a non-entry-point function's own parameter that is
+      unreachable in this file from any recognized agent- or web-framework
+      entry point (@mcp.tool(), @app.route(), a do_GET-style handler, ...):
+      the value is proven to come from a parameter, just not proven to be
+      attacker-reachable.
     remediation: >
       Never build a shell command string from anything other than a fixed
       literal. Call the target program directly with an argv list and

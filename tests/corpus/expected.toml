@@ -137,39 +137,39 @@ why      = "host is interpolated into a shell command with no validation at all.
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 35
+line     = 36
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "the allowlist only inspects the command's first token, then the whole string reaches a shell."
+why      = "the allowlist only inspects the command's first token, then the whole string reaches a shell. run_allowlisted_command() is decorated @mcp.tool() (Fix D, 2026-09-28: the fixture was missing decorator syntax its own docstring implies -- 'a small set of ... tools exposed to the agent' -- so it must stay a defect rather than being downgraded by flow.passthrough_downgrade)."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 46
+line     = 48
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted."
+why      = "the denylist blocks a few substrings; anything else still reaches a shell unrestricted. run_denylisted_command() is decorated @mcp.tool() (Fix D, 2026-09-28: same reasoning as run_allowlisted_command() above)."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 60
+line     = 62
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted."
+why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted. Also unaffected by Fix D's flow.passthrough_downgrade: ARG is an f-string mixing three different parameters, which resolves Origin::Unknown, not Origin::Parameter."
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 73
+line     = 75
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
-why      = "unpack(): tmpdir is tempfile.mkdtemp()'s OS-generated directory (tempfile-closed, so BAS-LLM10-009's new exclude_if: closed_value tempfile handling would otherwise drop this command), but archive_name is a real caller-supplied parameter interpolated into the same shell command -- Resolved::combine ANDs closed across every f-string segment, so one non-closed segment keeps the whole command non-closed and this must still fire, the same 'one segment breaks the exclusion' shape run_playbook_partially_quoted() above proves for shell_quoted."
+why      = "unpack(): tmpdir is tempfile.mkdtemp()'s OS-generated directory (tempfile-closed, so BAS-LLM10-009's new exclude_if: closed_value tempfile handling would otherwise drop this command), but archive_name is a real caller-supplied parameter interpolated into the same shell command -- Resolved::combine ANDs closed across every f-string segment, so one non-closed segment keeps the whole command non-closed and this must still fire, the same 'one segment breaks the exclusion' shape run_playbook_partially_quoted() above proves for shell_quoted. Also unaffected by Fix D's flow.passthrough_downgrade: ARG is an f-string mixing a call result (tmpdir) with a parameter (archive_name), which resolves Origin::Unknown, not Origin::Parameter."
 
 [[expect]]
 file     = "vulnerable/shell_command_not_stdin_sourced.py"
@@ -646,19 +646,34 @@ why      = "subprocess.run(COMMANDS[component], shell=True), where COMMANDS is a
 # ---------------------------------------------------------------------
 
 # ---------------------------------------------------------------------
-# The four remaining false positives from the community precision report
-# that Tasks 4-7 did not close, each because closing it properly needs an
-# analysis materially larger than that round's scope (reachability,
-# dead-branch/constant-propagation, interprocedural call-site analysis,
+# Three of the four remaining false positives from the community precision
+# report that Tasks 4-7 did not close, each because closing it properly
+# needs an analysis materially larger than that round's scope
+# (dead-branch/constant-propagation, interprocedural call-site analysis,
 # and call-context distinction, respectively). Recorded here rather than
 # silently left out, same practice as every other entry in this file.
+#
+# The fourth -- a shell-injection sink inside a function nothing in this
+# file calls (reachability) -- used to be here too, at
+# vulnerable/real_misses/shell_command_via_unreachable_function.py. Fix D
+# (2026-09-28, flow.passthrough_downgrade) turned that specific fixture's
+# shape (a bare pass-through of the unreachable function's own parameter)
+# into a correctly-handled case rather than a false positive: it is now an
+# `[[expect]]` entry with `kind = "observation"` below, not a
+# `known_false_positive` here. The general reachability gap is not fully
+# closed -- a command built from more than a bare parameter inside an
+# unreachable function still fires as a defect -- but no corpus fixture
+# currently demonstrates that narrower remaining case.
 # ---------------------------------------------------------------------
 
-[[known_false_positive]]
+[[expect]]
 file     = "vulnerable/real_misses/shell_command_via_unreachable_function.py"
 line     = 21
+rule     = "BAS-LLM10-009"
 category = "LLM10"
-why      = "subprocess.check_output(command, shell=True, ...) inside a function nothing in this file calls. BAS-LLM10-009 has no reachability analysis -- whether anything calls run_raw_command is a whole-program question a file-local structural rule cannot answer, so it reports the shape regardless of whether the function is ever invoked."
+kind     = "observation"
+severity = "critical"
+why      = "subprocess.check_output(command, shell=True, ...) inside run_raw_command(), a function nothing in this corpus imports or calls. Promoted from known_false_positive on 2026-09-28 (Fix D): command is a bare pass-through of run_raw_command's own command parameter, run_raw_command is not itself a recognized entry point (@mcp.tool()/@app.route()/do_GET-style), and no entry point in this file forwards a parameter into it -- flow.passthrough_downgrade reports it as an observation instead of a defect. severity stays the rule's own declared severity (critical); only kind changes."
 
 [[known_false_positive]]
 file     = "vulnerable/real_misses/shell_command_behind_disabled_flag.py"
@@ -1363,3 +1378,66 @@ category = "LLM10"
 kind     = "observation"
 severity = "high"
 why      = "eval() on a literal held in a const. Observation for the same reason as line 4."
+
+# =====================================================================
+# Fix D (2026-09-28): flow.passthrough_downgrade. observations/
+# shell_passthrough_helpers.py proves the downgrade; vulnerable/
+# llm10_shell_passthrough_still_defect.py proves each of its four
+# conditions individually keeps a lookalike shape a defect. See
+# bastyn.yml's comment on BAS-LLM10-009 and
+# crate::flow::graph::FlowGraph::is_passthrough_observation_eligible.
+# =====================================================================
+
+[[expect]]
+file     = "observations/shell_passthrough_helpers.py"
+line     = 18
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "observation"
+severity = "critical"
+why      = "run_shell_cmd(cmd): cmd is a bare pass-through of run_shell_cmd's own parameter, run_shell_cmd is not a recognized entry point, and nothing in this file forwards an entry point's own parameter into it -- all four flow.passthrough_downgrade conditions hold, so this is reported as an observation rather than a defect."
+
+[[expect]]
+file     = "observations/shell_passthrough_helpers.py"
+line     = 30
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "observation"
+severity = "critical"
+why      = "HookExecutor.execute(): command is one plain local alias of hook.command, itself this method's own parameter -- 'pure pass-through' follows exactly one plain local alias between a parameter and the sink, so this is reported as an observation rather than a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 19
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "execute_command(): command is a bare pass-through, but execute_command is itself decorated @mcp.tool() -- a recognized entry point -- so flow.passthrough_downgrade's condition 2 fails and this stays a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 26
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "_exec(): cmd is a bare pass-through and _exec is not itself an entry point, but the @mcp.tool()-decorated run() below forwards its own cmd parameter into _exec(cmd) -- flow.passthrough_downgrade's condition 3 (no entry point forwards its own parameter into this helper) fails, so this stays a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 39
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "apply_manifest(): manifest traces to json.load(open(path)), a file_read source, not a bare parameter of apply_manifest -- flow.passthrough_downgrade's condition 1 (ARG's Origin is exactly Origin::Parameter) fails outright, so this stays a defect."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_passthrough_still_defect.py"
+line     = 45
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "ping(): the command is an f-string composed around host, not host itself -- not a syntactically bare identifier/attribute/subscript, so flow.passthrough_downgrade's condition 1 fails and this stays a defect."

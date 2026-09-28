@@ -26,6 +26,7 @@ def ping_host(host: str) -> str:
     return subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT).decode()
 
 
+@mcp.tool()
 def run_allowlisted_command(command: str) -> str:
     """BAS-LLM10-009: the allowlist only inspects the first whitespace-
     split token, then runs the entire string through a shell -- 'ls;
@@ -36,6 +37,7 @@ def run_allowlisted_command(command: str) -> str:
     return "command not allowed"
 
 
+@mcp.tool()
 def run_denylisted_command(command: str) -> str:
     """BAS-LLM10-009: the denylist blocks a few dangerous substrings, but
     anything that doesn't contain one of them -- pipes, backticks, cat,
