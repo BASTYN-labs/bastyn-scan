@@ -9,6 +9,7 @@ substring blocklist leaves the rest of the command open to injection.
 import shlex
 import subprocess
 import sys
+import tempfile
 
 # Scaffolding for run_playbook_partially_quoted() below -- mirrored in
 # tests/corpus/clean/near_misses.py's run_playbook_fully_quoted() near-miss
@@ -58,3 +59,15 @@ def run_playbook_partially_quoted(playbook: str, target_host: str, extra_args: s
     )
     completed = subprocess.run(command, shell=True, capture_output=True)
     return {"ok": completed.returncode == 0}
+
+
+def unpack(archive_name: str) -> str:
+    """BAS-LLM10-009: tmpdir is tempfile.mkdtemp()'s OS-generated directory
+    (tempfile-closed, so exclude_if: closed_value would otherwise drop this
+    command), but archive_name is a real caller-supplied parameter
+    interpolated into the same shell command -- one non-closed segment is
+    enough to keep firing, the same combine()-ANDs-across-segments rule
+    run_playbook_partially_quoted() above proves for shell_quoted."""
+    tmpdir = tempfile.mkdtemp()
+    command = f"cd {tmpdir} && tar -xzf {archive_name}"
+    return subprocess.check_output(command, shell=True).decode()

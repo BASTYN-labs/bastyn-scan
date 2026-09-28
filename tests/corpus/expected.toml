@@ -128,7 +128,7 @@ why      = "Model output formatted into SQL with str.format. The flow graph carr
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 25
+line     = 26
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -137,7 +137,7 @@ why      = "host is interpolated into a shell command with no validation at all.
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 34
+line     = 35
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -146,7 +146,7 @@ why      = "the allowlist only inspects the command's first token, then the whol
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 45
+line     = 46
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
@@ -155,12 +155,21 @@ why      = "the denylist blocks a few substrings; anything else still reaches a 
 
 [[expect]]
 file     = "vulnerable/llm10_shell_injection_tool.py"
-line     = 59
+line     = 60
 rule     = "BAS-LLM10-009"
 category = "LLM10"
 kind     = "defect"
 severity = "critical"
 why      = "run_playbook_partially_quoted(): every interpolated segment except extra_args is wrapped in shlex.quote(), but one unquoted segment is enough to break out of the argument that shlex.quote() would otherwise have produced -- BAS-LLM10-009's exclude_if: shell_quoted clause (added to fix report FP3, a fully-quoted false positive) must not suppress this, since is_shell_quoted() ANDs across every interpolation and one unquoted interpolation makes the whole expression not shell_quoted."
+
+[[expect]]
+file     = "vulnerable/llm10_shell_injection_tool.py"
+line     = 73
+rule     = "BAS-LLM10-009"
+category = "LLM10"
+kind     = "defect"
+severity = "critical"
+why      = "unpack(): tmpdir is tempfile.mkdtemp()'s OS-generated directory (tempfile-closed, so BAS-LLM10-009's new exclude_if: closed_value tempfile handling would otherwise drop this command), but archive_name is a real caller-supplied parameter interpolated into the same shell command -- Resolved::combine ANDs closed across every f-string segment, so one non-closed segment keeps the whole command non-closed and this must still fire, the same 'one segment breaks the exclusion' shape run_playbook_partially_quoted() above proves for shell_quoted."
 
 [[expect]]
 file     = "vulnerable/shell_command_not_stdin_sourced.py"
@@ -940,6 +949,10 @@ why = "DATA_DIR is a module-level literal assignment; constant_path already trac
 [[expect_none]]
 file = "clean/pathlib_constant_root.py"
 why = "Fix A: constant_path learns pathlib. HERE and ASSETS both trace back to __file__ through Path(__file__), .parent, the / operator, .resolve(), .parents[...] (a subscript, which already passes constant_path through unchanged like any other attribute read), and str() -- every one of them either already generic (attribute/subscript/binary_operator resolution) or newly whitelisted (PATH_CONST_FUNCTIONS' Path/str entries, PATHLIB_ZERO_ARG_METHODS' resolve). load_overlay's f-string and load_readme's + concatenation both already fold constant_path across their parts once the root itself resolves correctly, so no separate string-shape handling was needed."
+
+[[expect_none]]
+file = "clean/tempdir_shell.py"
+why = "Fix C (2026-09-28): a value traced to tempfile is an OS-generated temp path, never attacker-influenced, so it reads as both closed (BAS-LLM10-009's exclude_if: closed_value) and constant_path (BAS-LLM10-012's exclude_if: constant_path) via the new TEMPFILE_CLOSED_CALLEES whitelist. sync_repo() proves the with tempfile.TemporaryDirectory() as tmpdir: / workspace = Path(tmpdir) shape: tmpdir is closed via the as-target binding resolving through TemporaryDirectory()'s own call Resolved, and workspace is closed too because Path(...) now propagates .closed across its arguments the same way it already propagated .constant_path (the two facts are otherwise computed independently for a call node) -- without that propagation, os.system(f\"cd {workspace} && ...\") would still fire even though the path is provably safe. collect_diagnostics() proves the same two exclusions on a bare tempfile.mkdtemp() value with no Path(...)/as-pattern wrapping at all. See vulnerable/llm10_shell_injection_tool.py's unpack() for the must-still-fire sibling that mixes a tempfile value with a real caller-supplied parameter."
 
 # clean/dotenv_example/.env.example carries no [[expect_none]] entry here for
 # the same reachability reason documented next to vulnerable/dotenv_leak/.env

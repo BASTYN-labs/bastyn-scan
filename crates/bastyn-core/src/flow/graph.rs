@@ -638,6 +638,35 @@ const PATH_CONST_FUNCTIONS: &[&str] = &[
     "str",
 ];
 
+/// Callee paths whose return value is an OS-generated temporary-file/directory
+/// path -- no caller or attacker-influenced input shapes it, so it reads as
+/// both `closed` (BAS-LLM10-009) and `constant_path` (BAS-LLM10-012).
+/// `tempfile.mkstemp` is included because the `"subscript"` arm already
+/// propagates a call's whole `Resolved` regardless of index, so
+/// `tempfile.mkstemp()[1]` (the path; `[0]`, the fd, comes along for the ride
+/// harmlessly, since an `int` is never a rule's `ARG`) inherits this for
+/// free. `tempfile.TemporaryDirectory` is included for the same reason a
+/// `with tempfile.TemporaryDirectory() as tmpdir:` binding already resolves
+/// `tmpdir` through the bound call's own `Resolved` -- no separate
+/// `with`/`as` handling needed.
+const TEMPFILE_CLOSED_CALLEES: &[&str] = &[
+    "tempfile.mkdtemp",
+    "tempfile.gettempdir",
+    "tempfile.mkstemp",
+    "tempfile.TemporaryDirectory",
+];
+
+/// Callee paths whose `.name` attribute read is the OS-generated path of the
+/// temp file the call just created -- `tempfile.NamedTemporaryFile(...).name`
+/// -- no attacker input shapes it, the same trust boundary
+/// [`TEMPFILE_CLOSED_CALLEES`] grants the tempfile APIs whose *return* value
+/// is itself the path. Checked in the `"attribute"` arm of
+/// [`Analyzer::compute`] against the object's own resolved callee, not the
+/// attribute name alone the way [`CLOSED_ATTRIBUTES`] matches `__name__`
+/// etc. regardless of receiver -- `.name` alone is far too common an
+/// attribute to whitelist unconditionally.
+const TEMPFILE_NAME_ATTRIBUTE_RECEIVERS: &[&str] = &["tempfile.NamedTemporaryFile"];
+
 /// `Path` method names that take no argument and, called on a receiver
 /// already proven `constant_path`, preserve that fact -- each is a pure
 /// transformation of the path text with no external input.
@@ -918,6 +947,15 @@ impl<'r, D: Doc> Analyzer<'r, D> {
     /// value, which this graph does not model, so those names are bound to
     /// nothing provable. An attribute or subscript target (`self.x = ...`)
     /// binds no local name at all and is skipped.
+    ///
+    /// `as_pattern_target` -- the target half of `with expr as X:` /
+    /// `except E as X:` -- is not itself an `identifier`; tree-sitter-python
+    /// wraps the real target one level down (`as_pattern_target` -> a single
+    /// named child, ordinarily `identifier`, occasionally `tuple_pattern`/
+    /// `list_pattern` for `with expr as (a, b):`). Unwrapping one level and
+    /// recursing with the same `value` lets the identifier/tuple arms above
+    /// decide how to bind it, exactly as if the grammar had not interposed
+    /// the wrapper node at all.
     fn bind_targets(
         &mut self,
         target: &Node<'r, D>,
@@ -947,6 +985,11 @@ impl<'r, D: Doc> Analyzer<'r, D> {
             "pattern_list" | "tuple_pattern" | "list_pattern" | "list" | "tuple" => {
                 for child in target.named_children() {
                     self.bind_targets(&child, None, visible_from, scope, branches);
+                }
+            }
+            "as_pattern_target" => {
+                if let Some(inner) = target.named_children().next() {
+                    self.bind_targets(&inner, value, visible_from, scope, branches);
                 }
             }
             _ => {}
@@ -1030,21 +1073,7 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     Resolved::literal()
                 }
             }
-            "attribute" => {
-                if let Some(argv) = sys_argv_resolved(node) {
-                    return argv;
-                }
-                let closed_here = node
-                    .field("attribute")
-                    .is_some_and(|attr| CLOSED_ATTRIBUTES.contains(&attr.text().as_ref()));
-                let mut answer = node
-                    .field("object")
-                    .map_or_else(Resolved::unknown, |object| {
-                        self.resolve(&object, scope, depth + 1)
-                    });
-                answer.closed = answer.closed || closed_here;
-                answer
-            }
+            "attribute" => self.resolve_attribute(node, scope, depth),
             "subscript" => node.field("value").map_or_else(Resolved::unknown, |value| {
                 self.resolve(&value, scope, depth + 1)
             }),
@@ -1101,6 +1130,42 @@ impl<'r, D: Doc> Analyzer<'r, D> {
         }
     }
 
+    /// Resolve an `attribute` node (`$OBJECT.$ATTRIBUTE`).
+    ///
+    /// Starts from the whole `Resolved` of `object` -- so a `constant_path`
+    /// or `cli_argument` object's attribute read inherits that fact
+    /// automatically, with no attribute-name-specific code needed -- and
+    /// overwrites only the fields a specific attribute shape proves: `.closed`
+    /// for any name in [`CLOSED_ATTRIBUTES`] regardless of receiver, and both
+    /// `.closed`/`.constant_path` for `.name` read on a call to one of
+    /// [`TEMPFILE_NAME_ATTRIBUTE_RECEIVERS`] --
+    /// `<tempfile.NamedTemporaryFile(...)>.name` is the OS-generated path of
+    /// the temp file the call just created, matched against the object's own
+    /// resolved provenance rather than duplicating the whole call-shape
+    /// check this method's `answer` already paid for by resolving `object`.
+    fn resolve_attribute(&mut self, node: &Node<'r, D>, scope: usize, depth: usize) -> Resolved {
+        if let Some(argv) = sys_argv_resolved(node) {
+            return argv;
+        }
+        let attribute_text = node.field("attribute").map(|attr| attr.text().into_owned());
+        let closed_here = attribute_text
+            .as_deref()
+            .is_some_and(|attr| CLOSED_ATTRIBUTES.contains(&attr));
+        let mut answer = node
+            .field("object")
+            .map_or_else(Resolved::unknown, |object| {
+                self.resolve(&object, scope, depth + 1)
+            });
+        answer.closed = answer.closed || closed_here;
+        if attribute_text.as_deref() == Some("name")
+            && matches!(&answer.prov, Prov::Call { callee } if TEMPFILE_NAME_ATTRIBUTE_RECEIVERS.contains(&callee.as_str()))
+        {
+            answer.closed = true;
+            answer.constant_path = true;
+        }
+        answer
+    }
+
     /// Resolve a `call` node: `.format` on a string literal is handled
     /// specially so it carries its arguments' provenance; anything else
     /// resolves to the return value of the callee named as written.
@@ -1128,7 +1193,32 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     value.is_some_and(|value| self.resolve(&value, scope, depth + 1).constant_path)
                 })
             }))
-            || self.is_pathlib_method_constant_path(node, scope, depth);
+            || self.is_pathlib_method_constant_path(node, scope, depth)
+            || TEMPFILE_CLOSED_CALLEES.contains(&callee.as_str());
+        // Mirrors the `constant_path` all-args check directly above: a
+        // PATH_CONST_FUNCTIONS call (`Path(...)`, `str(...)`,
+        // `os.path.join(...)`, ...) applied only to already-`closed`
+        // arguments is itself closed -- a pure function of a value drawn
+        // from a fixed set still draws from a fixed set. Needed so
+        // `workspace = Path(tmpdir)` (`tmpdir` bound to a
+        // `tempfile.TemporaryDirectory()` call, `closed: true` via
+        // TEMPFILE_CLOSED_CALLEES below) itself ends up `closed: true`:
+        // `constant_path` alone already propagated through `Path(...)`
+        // before this task, but `.closed` -- what BAS-LLM10-009's own
+        // `exclude_if: closed_value` clause actually consults -- did not,
+        // and `str(tempfile.mkdtemp())`/`Path(tmpdir)` are exactly the
+        // shapes a tempfile value reaches a shell command through.
+        let closed_args_closed = PATH_CONST_FUNCTIONS.contains(&callee.as_str())
+            && node.field("arguments").is_some_and(|arguments| {
+                arguments.named_children().all(|argument| {
+                    let value = if argument.kind() == "keyword_argument" {
+                        argument.field("value")
+                    } else {
+                        Some(argument)
+                    };
+                    value.is_some_and(|value| self.resolve(&value, scope, depth + 1).closed)
+                })
+            });
         // `sys.stdin.read()`/`input()` need no argument check: the call
         // itself is the read. `json.load(sys.stdin)` is the same shape but
         // only when its sole argument is `sys.stdin` written exactly that
@@ -1186,7 +1276,9 @@ impl<'r, D: Doc> Analyzer<'r, D> {
                     })
                 }));
         Resolved {
-            closed: callee == "type",
+            closed: callee == "type"
+                || TEMPFILE_CLOSED_CALLEES.contains(&callee.as_str())
+                || closed_args_closed,
             shell_quoted: SHELL_QUOTE_CALLEES.contains(&callee.as_str()),
             constant_path,
             stdin_dispatch,
@@ -2043,5 +2135,35 @@ def handle(client, cursor):
         let (root, graph) = build_python_graph(source);
         let arg = argument_node_of_call(&root, "cursor.execute");
         assert!(matches!(graph.origin_of(arg), Some(Origin::Call { .. })));
+    }
+
+    /// `tmpdir` in `with tempfile.TemporaryDirectory() as tmpdir:` resolves
+    /// through the `as_pattern_target` wrapper to the `with` expression's own
+    /// `Resolved`, the same way any other `as`-bound name does -- proves the
+    /// `"as_pattern_target"` unwrap in `bind_targets` actually binds it
+    /// (previously it silently bound nothing at all, since
+    /// `as_pattern_target` never matched the `"identifier"` arm directly).
+    #[test]
+    fn an_as_bound_with_target_resolves_through_the_with_expression() {
+        let source = "\
+import tempfile
+
+
+def sync_repo():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        return tmpdir
+";
+        let (root, graph) = build_python_graph(source);
+        let return_value = root
+            .root()
+            .dfs()
+            .filter(|node| node.kind() == "return_statement")
+            .find_map(|stmt| stmt.named_children().next())
+            .expect("a return statement returning `tmpdir`");
+
+        assert!(
+            graph.is_closed(return_value.node_id()),
+            "expected tmpdir, bound via as_pattern_target to tempfile.TemporaryDirectory(), to be closed"
+        );
     }
 }
