@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
 ### Added
 
 - **Anonymous scan summary.** After a completed scan, `bastyn scan` sends one counts-only summary
@@ -565,7 +567,8 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.2.0
 [0.1.8]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.8
 [0.1.7]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.7
 [0.1.6]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.6
