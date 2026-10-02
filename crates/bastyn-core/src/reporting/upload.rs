@@ -976,8 +976,14 @@ mod ureq_tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1/runs", listener.local_addr().unwrap());
         drop(listener);
+        // Windows reports a refused connection only after about two seconds of
+        // connection retries, so the timeouts must outlast that.
+        let patient = Timeouts {
+            connect: Duration::from_secs(10),
+            global: Duration::from_secs(10),
+        };
         assert_eq!(
-            transport_for(&url, short()).post(b"{}"),
+            transport_for(&url, patient).post(b"{}"),
             Err(TransportError::Network)
         );
     }
