@@ -344,7 +344,10 @@ mod tests {
 
     #[test]
     fn an_unclaimed_path_yields_nothing_even_with_dockerfile_content() {
-        assert!(rules("notes.md", "FROM python:3.12\nUSER root\n").is_empty());
+        assert_eq!(
+            rules("notes.md", "FROM python:3.12\nUSER root\n"),
+            Vec::<String>::new()
+        );
     }
 
     /// The precision-preserving decision in this module, asserted rather than

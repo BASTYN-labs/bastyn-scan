@@ -145,7 +145,7 @@ fn group_by_a_framework_puts_the_crosswalk_in_the_json() {
                 .contains("not a compliance assessment"),
             "{flag} must carry its own caveat"
         );
-        assert!(!walk["citation"].as_str().unwrap().is_empty());
+        assert_ne!(walk["citation"].as_str().unwrap(), "");
         assert!(walk["source_url"].as_str().unwrap().starts_with("https://"));
 
         let groups = walk["groups"].as_array().unwrap();

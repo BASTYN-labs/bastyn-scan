@@ -115,21 +115,30 @@ mod dependency_tests {
         // Nothing to query, and BAS-MCP-005 already reports it.
         let config = r#"{"mcpServers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/"]}}}"#;
 
-        assert!(server_dependencies(Path::new("mcp.json"), config).is_empty());
+        assert_eq!(
+            server_dependencies(Path::new("mcp.json"), config),
+            Vec::<crate::cve::Dependency>::new()
+        );
     }
 
     #[test]
     fn a_local_interpreter_yields_no_dependency() {
         let config = r#"{"mcpServers":{"own":{"command":"python","args":["-m","our_server"]}}}"#;
 
-        assert!(server_dependencies(Path::new("mcp.json"), config).is_empty());
+        assert_eq!(
+            server_dependencies(Path::new("mcp.json"), config),
+            Vec::<crate::cve::Dependency>::new()
+        );
     }
 
     #[test]
     fn a_malformed_config_yields_no_dependency_rather_than_panicking() {
         // inspect() already reports the malformed file; reporting it twice
         // would be worse than reporting it once.
-        assert!(server_dependencies(Path::new("mcp.json"), "{ not json").is_empty());
+        assert_eq!(
+            server_dependencies(Path::new("mcp.json"), "{ not json"),
+            Vec::<crate::cve::Dependency>::new()
+        );
     }
 
     #[test]
@@ -187,7 +196,7 @@ mod tests {
     #[test]
     fn empty_config_produces_no_findings() {
         let findings = inspect(Path::new("mcp.json"), r#"{"mcpServers": {}}"#).unwrap();
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
     }
 
     /// The headline test: one logical config, expressed in JSON, YAML and

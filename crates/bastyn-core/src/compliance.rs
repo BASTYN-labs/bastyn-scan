@@ -850,7 +850,7 @@ trails"
     fn every_control_carries_quoted_text() {
         for framework in Framework::ALL {
             for control in framework.controls() {
-                assert!(!control.id.is_empty());
+                assert_ne!(control.id, "");
                 assert!(
                     !control.title.is_empty(),
                     "{} has no quoted text",
@@ -963,15 +963,15 @@ trails"
         // The same finding is mapped under NIST, so this is a property of the
         // framework and not of the finding.
         let nist = crosswalk(&report, Framework::NistAiRmf);
-        assert!(nist.unmapped.findings.is_empty());
+        assert_eq!(nist.unmapped.findings, Vec::<usize>::new());
     }
 
     /// A control with no relevant finding is omitted, never listed empty.
     #[test]
     fn controls_with_no_findings_are_omitted() {
         let walk = crosswalk(&empty_report(), Framework::EuAiAct);
-        assert!(walk.groups.is_empty());
-        assert!(walk.unmapped.findings.is_empty());
+        assert_eq!(walk.groups, Vec::<crate::compliance::Group>::new());
+        assert_eq!(walk.unmapped.findings, Vec::<usize>::new());
 
         // Art. 12 has no detector behind ZT6 at all, so it must not appear
         // even on a report that does have findings.
@@ -991,8 +991,8 @@ trails"
             assert_eq!(walk.disclaimer, DISCLAIMER);
             assert_eq!(walk.framework, framework);
             assert!(walk.source_url.starts_with("https://"));
-            assert!(!walk.citation.is_empty());
-            assert!(!walk.standing.is_empty());
+            assert_ne!(walk.citation, "");
+            assert_ne!(walk.standing, "");
         }
     }
 

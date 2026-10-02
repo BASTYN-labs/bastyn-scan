@@ -296,11 +296,9 @@ mod tests {
                 value["crosswalks"][0]["framework"].as_str(),
                 Some(framework.id())
             );
-            assert!(
-                !value["crosswalks"][0]["groups"]
-                    .as_array()
-                    .unwrap()
-                    .is_empty()
+            assert_ne!(
+                value["crosswalks"][0]["groups"].as_array().unwrap().len(),
+                0
             );
         }
     }
@@ -337,7 +335,7 @@ mod tests {
                 walk["disclaimer"].as_str(),
                 Some(crate::compliance::DISCLAIMER)
             );
-            assert!(!walk["standing"].as_str().unwrap().is_empty());
+            assert_ne!(walk["standing"].as_str().unwrap(), "");
         }
     }
 
@@ -383,7 +381,7 @@ mod tests {
             .get("findings")
             .and_then(serde_json::Value::as_array)
             .unwrap();
-        assert!(findings.is_empty());
+        assert_eq!(findings.as_slice(), Vec::<serde_json::Value>::new());
     }
 
     #[test]

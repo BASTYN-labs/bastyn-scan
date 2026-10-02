@@ -1085,7 +1085,10 @@ rules:
 fn none_in_file_drops_a_prompt_sent_in_the_user_role() {
     let rules = RuleSet::from_yaml(USER_ROLE_RULE_PY).unwrap();
     let source = "def chat(client, query):\n    prompt = f\"Summarize: {query}\"\n    return client.x(messages=[{\"role\": \"user\", \"content\": prompt}])\n";
-    assert!(scan_source(&rules, Path::new("app.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 /// The same shape sent as a `role: "system"` message instead has nothing to
@@ -1114,7 +1117,10 @@ fn none_in_file_requires_the_same_bound_text() {
 fn none_in_file_matches_on_text_across_functions() {
     let rules = RuleSet::from_yaml(USER_ROLE_RULE_PY).unwrap();
     let source = "def a(query):\n    prompt = f\"Follow: {query}\"\n    return prompt\n\ndef b(client, prompt):\n    return client.x(messages=[{\"role\": \"user\", \"content\": prompt}])\n";
-    assert!(scan_source(&rules, Path::new("app.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 /// The same exclusion works against a TypeScript/JavaScript grammar, not
@@ -1139,7 +1145,10 @@ rules:
 "#;
     let rules = RuleSet::from_yaml(yaml).unwrap();
     let source = "export function m(query: string) {\n  const prompt = `S: ${query}`;\n  return [{role: \"system\", content: \"x\"}, {role: \"user\", content: prompt}];\n}\n";
-    assert!(scan_source(&rules, Path::new("app.ts"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app.ts"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 /// A `none_in_file` pattern naming a metavariable no `any` pattern binds

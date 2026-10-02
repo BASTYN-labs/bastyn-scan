@@ -1083,7 +1083,7 @@ mod tests {
 
         let (findings, status) = check_with_transport(&deps, false, &transport);
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert!(
             matches!(&status, CveStatus::Unreachable { reason } if reason.contains("connection refused")),
             "status: {status:?}"
@@ -1097,7 +1097,7 @@ mod tests {
 
         let (findings, status) = check_with_transport(&deps, true, &transport);
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert_eq!(status, CveStatus::SkippedOffline);
         assert_eq!(
             transport.post_call_count(),
@@ -1112,7 +1112,7 @@ mod tests {
 
         let (findings, status) = check_with_transport(&[], false, &transport);
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert_eq!(status, CveStatus::NoManifest);
         assert_eq!(transport.post_call_count(), 0);
     }
@@ -1125,7 +1125,7 @@ mod tests {
 
         let (findings, status) = check_with_transport(&deps, false, &transport);
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert_eq!(status, CveStatus::Checked { dependencies: 1 });
     }
 
@@ -1156,7 +1156,7 @@ mod tests {
 
         let (findings, status) = check_with_transport(&deps, false, &transport);
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         // Hitting the round cap leaves pages unread, so the result is
         // incomplete.
         assert_eq!(
@@ -1184,7 +1184,7 @@ mod tests {
         let transport = FakeTransport::new()
             .with_post_response(Ok(r#"{"results":[{"vulns":[]}]}"#.to_string()));
         let (findings, status) = check_with_transport(&deps, false, &transport);
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert_eq!(
             status,
             CveStatus::Partial {
@@ -1208,7 +1208,7 @@ mod tests {
             ))
             .with_post_response(Ok(r#"{"results":[{"vulns":[]}]}"#.to_string()));
         let (findings, status) = check_with_transport(&deps, false, &transport);
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert_eq!(
             status,
             CveStatus::Partial {
@@ -1272,7 +1272,7 @@ mod tests {
                 Err("503".to_string()),
             );
         let (findings, status) = check_with_transport(&deps, false, &transport);
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::<crate::finding::Finding>::new());
         assert_eq!(
             status,
             CveStatus::Partial {

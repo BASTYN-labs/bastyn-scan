@@ -286,13 +286,19 @@ mod tests {
     fn a_file_this_module_does_not_claim_is_never_scanned() {
         let contents = format!("hidden{}text\n", '\u{200B}');
 
-        assert!(inspect(Path::new("README.md"), &contents).is_empty());
+        assert_eq!(
+            inspect(Path::new("README.md"), &contents),
+            Vec::<crate::finding::Finding>::new()
+        );
     }
 
     #[test]
     fn a_clean_instruction_file_produces_nothing() {
         let contents = "# Deploy Skill\n\nRuns `terraform apply` after confirming the plan.\n";
 
-        assert!(inspect(Path::new("SKILL.md"), contents).is_empty());
+        assert_eq!(
+            inspect(Path::new("SKILL.md"), contents),
+            Vec::<crate::finding::Finding>::new()
+        );
     }
 }

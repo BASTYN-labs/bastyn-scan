@@ -2668,10 +2668,9 @@ def log_snippet(code):
 ";
         let (_, graph) = build_python_graph(source);
 
-        assert!(
-            graph
-                .wrapper_sink_parameters("log_snippet", SinkKind::CodeExecution)
-                .is_empty()
+        assert_eq!(
+            graph.wrapper_sink_parameters("log_snippet", SinkKind::CodeExecution),
+            Vec::<usize>::new()
         );
     }
 
@@ -2693,10 +2692,9 @@ def run_later(code):
             graph.wrapper_sink_parameters("run_snippet", SinkKind::CodeExecution),
             vec![0]
         );
-        assert!(
-            graph
-                .wrapper_sink_parameters("run_later", SinkKind::CodeExecution)
-                .is_empty()
+        assert_eq!(
+            graph.wrapper_sink_parameters("run_later", SinkKind::CodeExecution),
+            Vec::<usize>::new()
         );
     }
 
@@ -2714,10 +2712,9 @@ def run_snippet(code):
 ";
         let (_, graph) = build_python_graph(source);
 
-        assert!(
-            graph
-                .wrapper_sink_parameters("run_snippet", SinkKind::CodeExecution)
-                .is_empty()
+        assert_eq!(
+            graph.wrapper_sink_parameters("run_snippet", SinkKind::CodeExecution),
+            Vec::<usize>::new()
         );
     }
 

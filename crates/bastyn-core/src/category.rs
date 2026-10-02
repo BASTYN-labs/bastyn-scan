@@ -437,7 +437,7 @@ mod tests {
             Category::Zt5,
             Category::Zt6,
         ] {
-            assert!(zt.framework_families().is_empty());
+            assert_eq!(zt.framework_families(), Vec::<&str>::new());
         }
     }
 
