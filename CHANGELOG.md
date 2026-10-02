@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- The GitHub Marketplace listing name is now "BASTYN Community - Instant AI Agent Security & Assurance scan".
+
 ## [0.2.0] - 2026-10-02
 
 ### Added
