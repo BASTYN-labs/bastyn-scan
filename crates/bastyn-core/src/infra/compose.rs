@@ -386,8 +386,11 @@ mod tests {
 
     #[test]
     fn a_yaml_file_without_services_is_not_a_compose_file() {
-        assert!(rules("name: something-else\nfoo: bar\n").is_empty());
-        assert!(rules("").is_empty());
+        assert_eq!(
+            rules("name: something-else\nfoo: bar\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(rules(""), Vec::<String>::new());
     }
 
     #[test]
@@ -435,8 +438,14 @@ mod tests {
 
     #[test]
     fn privileged_false_or_absent_is_not_a_finding() {
-        assert!(rules("services:\n  agent:\n    privileged: false\n").is_empty());
-        assert!(rules("services:\n  agent:\n    image: app\n").is_empty());
+        assert_eq!(
+            rules("services:\n  agent:\n    privileged: false\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            rules("services:\n  agent:\n    image: app\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -488,7 +497,10 @@ mod tests {
             assert!(rules(&contents).is_empty(), "{mode} was wrongly flagged");
         }
         // No `pid:` key at all is the overwhelmingly common case.
-        assert!(rules("services:\n  agent:\n    image: app\n").is_empty());
+        assert_eq!(
+            rules("services:\n  agent:\n    image: app\n"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

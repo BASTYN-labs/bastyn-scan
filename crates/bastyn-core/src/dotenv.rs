@@ -339,7 +339,7 @@ mod tests {
     fn ordinary_config_and_boolean_flags_are_silent() {
         let contents = "DEBUG=true\nNODE_ENV=production\nPORT=8080\n";
 
-        assert!(rules(".env", contents).is_empty());
+        assert_eq!(rules(".env", contents), Vec::<String>::new());
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
     fn blank_lines_and_comments_are_skipped() {
         let contents = "\n# a comment\n  # indented comment\nDEBUG=true\n";
 
-        assert!(rules(".env", contents).is_empty());
+        assert_eq!(rules(".env", contents), Vec::<String>::new());
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
     fn a_line_with_no_equals_sign_is_skipped() {
         let contents = "this is not an assignment\nDEBUG=true\n";
 
-        assert!(rules(".env", contents).is_empty());
+        assert_eq!(rules(".env", contents), Vec::<String>::new());
     }
 
     #[test]
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_produces_nothing() {
-        assert!(rules(".env", "").is_empty());
+        assert_eq!(rules(".env", ""), Vec::<String>::new());
     }
 
     #[test]
@@ -474,7 +474,7 @@ mod tests {
         // high-severity secret.
         let contents = "DB_PASSWORD= # fill me in\n";
 
-        assert!(rules(".env", contents).is_empty());
+        assert_eq!(rules(".env", contents), Vec::<String>::new());
     }
 
     #[test]

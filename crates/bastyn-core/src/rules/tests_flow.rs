@@ -170,7 +170,10 @@ def run_snippet(code):
 def handle(path):
     run_snippet(open(path).read())
 ";
-    assert!(scan_source(&ruleset, Path::new("app/handler.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&ruleset, Path::new("app/handler.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 /// Migration has to be possible one rule at a time, so the two gates must be
@@ -244,7 +247,10 @@ rules:
     let source = "def handle(t):\n    \
                   plan = client.chat.completions.create(prompt=t).choices[0].message.content\n    \
                   eval(plan)\n";
-    assert!(scan_source(&ruleset, Path::new("app/handler.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&ruleset, Path::new("app/handler.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 /// The graph is Python-only. A `flow:` rule in a language it cannot analyse is
@@ -616,13 +622,13 @@ fn an_untraceable_value_with_a_matching_name_is_an_observation() {
 #[test]
 fn an_untraceable_value_whose_name_fails_requires_is_dropped() {
     let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
-    assert!(
+    assert_eq!(
         scan_source(
             &rules,
             Path::new("app/run.py"),
             "def run(command):\n    os.system(command)\n"
-        )
-        .is_empty()
+        ),
+        Vec::<crate::finding::Finding>::new()
     );
 }
 
@@ -630,19 +636,22 @@ fn an_untraceable_value_whose_name_fails_requires_is_dropped() {
 fn a_value_from_a_different_known_source_is_dropped_not_observed() {
     let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
     let source = "def run(path):\n    response = json.load(open(path))\n    os.system(response)\n";
-    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app/run.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 #[test]
 fn a_closed_value_is_dropped_even_with_an_unproven_path() {
     let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
-    assert!(
+    assert_eq!(
         scan_source(
             &rules,
             Path::new("app/run.py"),
             "response = \"printf hello\"\nos.system(response)\n"
-        )
-        .is_empty()
+        ),
+        Vec::<crate::finding::Finding>::new()
     );
 }
 
@@ -650,7 +659,10 @@ fn a_closed_value_is_dropped_even_with_an_unproven_path() {
 fn a_guarded_value_is_dropped_even_with_an_unproven_path() {
     let rules = RuleSet::from_yaml(&unproven_rule("defect", UNPROVEN_WITH_REQUIRES)).unwrap();
     let source = "def run(response):\n    if response not in (\"ls\", \"pwd\"):\n        raise ValueError(response)\n    os.system(response)\n";
-    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app/run.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 #[test]
@@ -748,7 +760,10 @@ rules:
 fn builtin_callee_drops_a_call_to_a_shadowed_eval() {
     let rules = RuleSet::from_yaml(BUILTIN_RULE).unwrap();
     let source = "def eval(value):\n    return value\n\ndef run(client):\n    text = client.responses.create(model='m', input='x').output_text\n    return eval(text)\n";
-    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app/run.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 #[test]
@@ -803,7 +818,10 @@ def handle(client):
     model_text = client.responses.create(model='m', input='x').output_text
     run(model_text)
 ";
-    assert!(scan_source(&rules, Path::new("app/run.py"), source).is_empty());
+    assert_eq!(
+        scan_source(&rules, Path::new("app/run.py"), source),
+        Vec::<crate::finding::Finding>::new()
+    );
 }
 
 /// The companion case: with no local `def eval`, the wrapper's `eval` really

@@ -6,6 +6,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **Anonymous scan summary.** After a completed scan, `bastyn scan` sends one counts-only summary
+  (finding counts by rule ID, severity and kind, coverage counts, scan status, scanner version, a
+  hashed project ID, a run ID, timestamps, and CI-or-local). It never contains file paths, code,
+  finding text, dependency names or the repository name. The first run prints a notice on stderr.
+  A failed upload never changes the report, the machine-readable output or the exit code. Turn it
+  off with `--no-reporting`, `--offline`, or `DO_NOT_TRACK` set to a value other than `0`. See
+  "Reporting" in the README.
+- **`--no-reporting`** on `bastyn scan`.
+- **`bastyn project-id [PATH] [--explain]`** prints the project ID scans of a directory report
+  under, and what was hashed to get it. It writes no file and uses no network.
+
+### Changed
+
+- `--offline` now also disables the summary upload, in addition to skipping the CVE lookup.
+
 ### Breaking
 
 - **Minimum supported Rust version raised from 1.88 to 1.90.** A routine dependency bump pulled in a

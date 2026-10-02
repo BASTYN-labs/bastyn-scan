@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "run_id": "3f2b8c1e-9a4d-4e6f-8b2a-1c5d7e9f0a3b",
+  "project_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "id_source": "remote",
+  "scanner_version": "0.1.8",
+  "started_at": "2026-10-01T10:00:00+24:00",
+  "finished_at": "2026-10-01T10:00:42Z",
+  "scan_status": "complete",
+  "coverage": {
+    "files_scanned": 120,
+    "files_skipped": 0,
+    "skips_by_reason": {},
+    "dependency_lookup": "ok"
+  },
+  "findings": [],
+  "environment": "github-actions"
+}

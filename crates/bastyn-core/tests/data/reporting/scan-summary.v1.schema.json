@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bastyn.ai/schemas/scan-summary.v1.schema.json",
+  "title": "Bastyn anonymous scan summary v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "project_id",
+    "id_source",
+    "scanner_version",
+    "started_at",
+    "finished_at",
+    "scan_status",
+    "coverage",
+    "findings",
+    "environment"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": {
+      "type": "string",
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "project_id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "id_source": { "enum": ["remote", "local"] },
+    "scanner_version": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40,
+      "pattern": "^(000[1-9]|00[1-9]\\d|0[1-9]\\d{2}|[1-9]\\d{3})-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(\\.\\d{1,9})?(Z|[+-]([01]\\d|2[0-3]):[0-5]\\d)$"
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40,
+      "pattern": "^(000[1-9]|00[1-9]\\d|0[1-9]\\d{2}|[1-9]\\d{3})-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(\\.\\d{1,9})?(Z|[+-]([01]\\d|2[0-3]):[0-5]\\d)$"
+    },
+    "scan_status": { "enum": ["complete", "partial"] },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files_scanned",
+        "files_skipped",
+        "skips_by_reason",
+        "dependency_lookup"
+      ],
+      "properties": {
+        "files_scanned": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+        "files_skipped": { "type": "integer", "minimum": 0, "maximum": 10000000 },
+        "skips_by_reason": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": { "pattern": "^[a-z0-9_]{1,40}$" },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000000
+          }
+        },
+        "dependency_lookup": { "enum": ["ok", "offline", "failed", "skipped"] }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "severity", "kind", "count"],
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+          },
+          "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+          "kind": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^[a-z0-9_-]{1,40}$"
+          },
+          "count": { "type": "integer", "minimum": 1, "maximum": 10000000 }
+        }
+      }
+    },
+    "environment": {
+      "enum": ["github-actions", "gitlab-ci", "other-ci", "local"]
+    }
+  }
+}

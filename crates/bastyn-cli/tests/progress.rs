@@ -38,6 +38,8 @@ fn vulnerable_fixture() -> &'static Path {
 fn bastyn(cwd: &Path) -> Command {
     let mut command = Command::cargo_bin("bastyn").unwrap();
     command.current_dir(cwd);
+    // No test run may send a scan summary anywhere.
+    command.env("DO_NOT_TRACK", "1");
     command
 }
 

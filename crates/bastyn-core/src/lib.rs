@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod observe;
 pub mod render;
 pub mod report;
+pub mod reporting;
 pub mod rules;
 pub mod scan;
 pub mod skill;

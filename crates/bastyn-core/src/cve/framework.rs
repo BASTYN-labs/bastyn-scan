@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn does_not_flag_a_compound_constraint_with_an_upper_bound() {
         let deps = [unresolved("langchain", ">=0.1.0,<0.2.0", false)];
-        assert!(check(&deps).is_empty());
+        assert_eq!(check(&deps), Vec::<crate::finding::Finding>::new());
     }
 
     #[test]
@@ -236,7 +236,7 @@ mod tests {
         // the framework itself — this is the scoping the task explicitly
         // calls for.
         let deps = [unresolved("openai", "*", true)];
-        assert!(check(&deps).is_empty());
+        assert_eq!(check(&deps), Vec::<crate::finding::Finding>::new());
     }
 
     #[test]

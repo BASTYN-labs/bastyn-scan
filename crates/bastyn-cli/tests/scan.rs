@@ -59,6 +59,8 @@ fn bastyn(cwd: &Path) -> Command {
     command.current_dir(cwd);
     // Keep assertions independent of the terminal the suite happens to run in.
     command.env("NO_COLOR", "1");
+    // No test run may send a scan summary anywhere.
+    command.env("DO_NOT_TRACK", "1");
     command
 }
 
@@ -143,7 +145,7 @@ fn group_by_a_framework_puts_the_crosswalk_in_the_json() {
                 .contains("not a compliance assessment"),
             "{flag} must carry its own caveat"
         );
-        assert!(!walk["citation"].as_str().unwrap().is_empty());
+        assert_ne!(walk["citation"].as_str().unwrap(), "");
         assert!(walk["source_url"].as_str().unwrap().starts_with("https://"));
 
         let groups = walk["groups"].as_array().unwrap();

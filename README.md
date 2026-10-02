@@ -177,7 +177,8 @@ Test code is held to the same rules and reported differently. A password invente
 | `[PATH]` | Directory to scan (default: `.`) |
 | `--fail-on <LEVEL>` | Minimum severity that exits non-zero: `none`, `low`, `medium`, `high` (default), `critical` |
 | `--show-observations` | Show context-dependent observations too |
-| `--offline` | Skip the CVE lookup, the only step that uses the network |
+| `--offline` | Skip the CVE lookup and do not send the anonymous scan summary |
+| `--no-reporting` | Do not send the anonymous scan summary. See [Reporting](#reporting) |
 | `-f`, `--format <FORMAT>` | `text` (default), `json`, or `sarif` |
 | `--group-by <TAXONOMY>` | Which framework to expand in full: `layer` (the default, which expands none and summarises all three), `eu-ai-act`, `nist-ai-rmf`, or `nist-genai`. See [Compliance crosswalk](#compliance-crosswalk) |
 | `-q`, `--quiet` | Print only the summary line |
@@ -252,9 +253,9 @@ Three things are left out on purpose, and all three are listed in the report's "
 
 ### The network, and the kill switch
 
-The CVE lookup is the only thing that touches the network. It sends dependency names and versions to OSV, never your code and never your findings. This is what `npm audit` and `pip-audit` already do.
+The scan itself touches the network in one place: the CVE lookup. It sends dependency names and versions to OSV, never your code and never your findings. This is what `npm audit` and `pip-audit` already do. After a completed scan, Bastyn also sends a small anonymous summary, described under [Reporting](#reporting).
 
-With no connection, Bastyn skips CVEs and says so under "Coverage gaps", with the reason on the line. It never hangs, never fails the scan because OSV is down, and never reports zero CVEs as though the check had run. `--offline` forces the skip.
+With no connection, Bastyn skips CVEs and says so under "Coverage gaps", with the reason on the line. It never hangs, never fails the scan because OSV is down, and never reports zero CVEs as though the check had run. `--offline` forces the skip, and also stops the summary upload.
 
 ### Output for machines
 
@@ -323,6 +324,36 @@ jobs:
           sarif_file: bastyn.sarif
           category: bastyn
 ```
+
+## Reporting
+
+After each completed scan, Bastyn sends one small anonymous summary of the run, unless you turn it off. The first run on a machine prints a notice about this on stderr.
+
+**What is sent:**
+
+- counts of findings, grouped by rule ID, severity and kind (defect or observation)
+- coverage counts: files scanned, files skipped (by reason), and whether the dependency lookup ran
+- the scan status (`complete` or `partial`)
+- the Bastyn version
+- a project ID and a run ID (see below)
+- the start and end time of the scan
+- whether the scan ran in GitHub Actions, GitLab CI, another CI system, or locally
+
+**What is never sent:** file paths, source code, finding text, dependency names, the repository name or URL, or your username. The exact format is a JSON Schema, `crates/bastyn-core/tests/data/reporting/scan-summary.v1.schema.json`, and every field is a count, an enumerated value or one of the identifiers above.
+
+**The project ID** lets scans of the same repository from different machines group together. It is the SHA-256 hash of the normalised git remote (`host/owner/repo`, so the ssh and https spellings of one remote agree). The repository's git configuration is read as plain data; `git` is never run. When there is no remote, CI provider variables are used if present, and otherwise a random value is generated once and stored per folder in your user state directory (`$XDG_STATE_HOME/bastyn`, or `~/.local/state/bastyn`). The name itself is never sent, but a hash can be confirmed by anyone who guesses the name and hashes it, so treat the ID as pseudonymous rather than secret. The **run ID** is a fresh random value for each scan.
+
+**Turning it off.** Any one of these stops reporting, and nothing is read from or written to the state directory when it is off:
+
+- `--no-reporting`
+- `--offline`
+- the `DO_NOT_TRACK` environment variable set to any value other than `0` (an empty or unset value does not opt out)
+
+Nothing in the scanned repository can turn reporting on or off or change where the summary goes.
+
+**A failed upload never changes the scan.** The summary is sent after all output has been written. The report, `--format json` and SARIF output, and the exit code are the same whether the upload succeeds, fails, or times out. A failure prints one line on stderr and nothing else. Uploads are retried a small, bounded number of times and give up quickly.
+
+`bastyn project-id [PATH] --explain` prints the project ID a scan of `PATH` would report, how it was derived, and exactly what was hashed. It reads files only: it creates nothing and uses no network.
 
 ## Measured coverage
 

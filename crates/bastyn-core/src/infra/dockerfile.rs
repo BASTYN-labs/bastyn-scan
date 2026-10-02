@@ -518,8 +518,14 @@ mod tests {
 
     #[test]
     fn an_empty_file_parses_to_nothing() {
-        assert!(parse("").is_empty());
-        assert!(parse("\n\n   \n# just a comment\n").is_empty());
+        assert_eq!(
+            parse(""),
+            Vec::<crate::infra::dockerfile::Instruction>::new()
+        );
+        assert_eq!(
+            parse("\n\n   \n# just a comment\n"),
+            Vec::<crate::infra::dockerfile::Instruction>::new()
+        );
     }
 
     fn user_of(contents: &str) -> String {
@@ -595,7 +601,7 @@ mod tests {
         // root` in a builder is not a defect, because that stage is discarded.
         let builder_drops_root = "FROM node:22 AS builder\nUSER root\nRUN npm ci\n\nFROM node:22-slim\nCOPY --from=builder /app /app\nUSER app\n";
         assert_eq!(user_of(builder_drops_root), "app");
-        assert!(rules(builder_drops_root).is_empty());
+        assert_eq!(rules(builder_drops_root), Vec::<String>::new());
 
         let builder_only = "FROM node:22 AS builder\nUSER app\nRUN npm ci\n\nFROM node:22-slim\nCOPY --from=builder /app /app\n";
         assert_eq!(user_of(builder_only), "<unset>");
@@ -610,7 +616,7 @@ mod tests {
         // included — so the inherited value is what actually runs.
         let inherits_app = "FROM node:22 AS base\nUSER app\n\nFROM base\nCMD [\"node\"]\n";
         assert_eq!(user_of(inherits_app), "app");
-        assert!(rules(inherits_app).is_empty());
+        assert_eq!(rules(inherits_app), Vec::<String>::new());
 
         let inherits_root = "FROM node:22 AS base\nUSER root\n\nFROM base\nCMD [\"node\"]\n";
         assert_eq!(user_of(inherits_root), "root");
@@ -726,7 +732,13 @@ mod tests {
     fn an_empty_dockerfile_produces_nothing() {
         // A file with no instructions describes no container, so there is no
         // boundary to have an opinion about.
-        assert!(run_all(Path::new("Dockerfile"), "").is_empty());
-        assert!(run_all(Path::new("Dockerfile"), "# notes only\n").is_empty());
+        assert_eq!(
+            run_all(Path::new("Dockerfile"), ""),
+            Vec::<crate::finding::Finding>::new()
+        );
+        assert_eq!(
+            run_all(Path::new("Dockerfile"), "# notes only\n"),
+            Vec::<crate::finding::Finding>::new()
+        );
     }
 }

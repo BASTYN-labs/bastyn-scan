@@ -63,6 +63,18 @@ jobs:
       # debug build the tests use.
       - run: cargo build --release --locked
 
+      # The test-only endpoint override exists only in a build with the
+      # `test-endpoint` feature. The shipped binary must not contain its names.
+      - name: Release binary has no test-only reporting overrides
+        shell: bash
+        run: |
+          bin=target/release/bastyn
+          [ "$RUNNER_OS" = "Windows" ] && bin=target/release/bastyn.exe
+          if grep -a -q -e BASTYN_REPORTING_ENDPOINT_FOR_TESTS -e BASTYN_REPORTING_TIMEOUT_MS_FOR_TESTS "$bin"; then
+            echo "::error::the release binary contains test-only reporting variable names"
+            exit 1
+          fi
+
       # Scan our own fixtures with the real binary and assert the exit-code
       # contract. This is the end-to-end check the unit tests cannot make: the
       # shipped artifact, on this platform, against known-answer inputs.
@@ -77,6 +89,8 @@ jobs:
 
       - name: Self-scan (exit-code contract)
         shell: bash
+        env:
+          DO_NOT_TRACK: "1"
         run: |
           # `shell: bash` implies -e, which would abort on the first
           # deliberately non-zero exit before any assertion runs.

@@ -1405,7 +1405,7 @@ mod tests {
             .unwrap()
             .files;
 
-        assert!(files.is_empty());
+        assert_eq!(files, Vec::<std::path::PathBuf>::new());
     }
 
     #[test]

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "run_id": "3f2b8c1e-9a4d-4e6f-8b2a-1c5d7e9f0a3b",
+  "project_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "id_source": "remote",
+  "scanner_version": "0.1.8-rc.1",
+  "started_at": "2026-10-01T10:00:00Z",
+  "finished_at": "2026-10-01T10:00:42Z",
+  "scan_status": "complete",
+  "coverage": {
+    "files_scanned": 842,
+    "files_skipped": 12,
+    "skips_by_reason": {
+      "binary": 9,
+      "too_large": 3
+    },
+    "dependency_lookup": "ok"
+  },
+  "findings": [
+    {
+      "rule_id": "python.lang.security.audit.eval-detected",
+      "severity": "high",
+      "kind": "sast",
+      "count": 2
+    },
+    {
+      "rule_id": "CVE-2024-12345",
+      "severity": "critical",
+      "kind": "dependency",
+      "count": 1
+    },
+    {
+      "rule_id": "secret:generic-api-key",
+      "severity": "medium",
+      "kind": "secret",
+      "count": 4
+    }
+  ],
+  "environment": "gitlab-ci"
+}

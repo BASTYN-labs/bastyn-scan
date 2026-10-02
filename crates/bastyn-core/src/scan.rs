@@ -702,7 +702,7 @@ mod tests {
             "{:?}",
             report.skipped
         );
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, Vec::<crate::finding::Finding>::new());
     }
 
     #[test]
