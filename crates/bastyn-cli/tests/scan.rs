@@ -59,6 +59,8 @@ fn bastyn(cwd: &Path) -> Command {
     command.current_dir(cwd);
     // Keep assertions independent of the terminal the suite happens to run in.
     command.env("NO_COLOR", "1");
+    // No test run may send a scan summary anywhere.
+    command.env("DO_NOT_TRACK", "1");
     command
 }
 

@@ -132,6 +132,24 @@ pub(crate) enum FailOn {
 pub(crate) enum Command {
     /// Scan a repository for AI and agentic security issues.
     Scan(ScanArgs),
+
+    /// Print the project ID that scans of a directory report under.
+    ///
+    /// Reads the directory's git configuration and never runs `git`, writes
+    /// no file and uses no network.
+    ProjectId(ProjectIdArgs),
+}
+
+/// Arguments for `bastyn project-id`.
+#[derive(Debug, Args)]
+pub(crate) struct ProjectIdArgs {
+    /// Directory to resolve the project ID for.
+    #[arg(default_value = ".", value_name = "PATH")]
+    pub(crate) path: PathBuf,
+
+    /// Also print how the ID was derived and exactly what was hashed.
+    #[arg(long)]
+    pub(crate) explain: bool,
 }
 
 /// Arguments for `bastyn scan`.
@@ -177,9 +195,15 @@ pub(crate) struct ScanArgs {
     #[arg(long)]
     pub(crate) show_observations: bool,
 
-    /// Skip the CVE lookup, the only step that uses the network.
+    /// Skip the CVE lookup, and do not send the anonymous scan summary.
     #[arg(long)]
     pub(crate) offline: bool,
+
+    #[arg(
+        long,
+        help = "Do not send the anonymous scan summary. Reporting also stops with --offline, or when DO_NOT_TRACK is set to a value other than 0"
+    )]
+    pub(crate) no_reporting: bool,
 
     /// Do not scan paths matching GLOB. Repeatable.
     ///
@@ -221,8 +245,16 @@ pub(crate) struct ScanArgs {
 mod tests {
     use clap::{CommandFactory as _, Parser as _};
 
-    use super::{Cli, Command, GroupBy};
+    use super::{Cli, Command, GroupBy, ProjectIdArgs, ScanArgs};
     use bastyn_core::Framework;
+
+    /// The `scan` arguments of a parsed command line.
+    fn scan_args(cli: &Cli) -> &ScanArgs {
+        match &cli.command {
+            Command::Scan(args) => args,
+            Command::ProjectId(_) => unreachable!("these tests parse `scan`"),
+        }
+    }
 
     /// Exactly one `--group-by` value is not a crosswalk, and it is the
     /// default.
@@ -233,7 +265,7 @@ mod tests {
     #[test]
     fn the_default_grouping_is_the_one_that_existed_before_the_flag() {
         let cli = Cli::parse_from(["bastyn", "scan"]);
-        let Command::Scan(args) = &cli.command;
+        let args = scan_args(&cli);
         assert_eq!(args.group_by, GroupBy::Layer);
         assert_eq!(args.group_by.framework(), None);
     }
@@ -252,7 +284,7 @@ mod tests {
             ("nist-genai", Framework::NistGenAi),
         ] {
             let cli = Cli::parse_from(["bastyn", "scan", "--group-by", typed]);
-            let Command::Scan(args) = &cli.command;
+            let args = scan_args(&cli);
             assert_eq!(
                 args.group_by.framework(),
                 Some(framework),
@@ -271,7 +303,7 @@ mod tests {
     fn no_framework_is_unreachable_from_the_command_line() {
         for framework in Framework::ALL {
             let cli = Cli::parse_from(["bastyn", "scan", "--group-by", framework.id()]);
-            let Command::Scan(args) = &cli.command;
+            let args = scan_args(&cli);
             assert_eq!(args.group_by.framework(), Some(framework));
         }
     }
@@ -310,5 +342,36 @@ mod tests {
             .to_string();
         assert!(error.contains("eu-ai-act"), "{error}");
         assert!(error.contains("layer"), "{error}");
+    }
+
+    /// Reporting is on unless the flag is given, and the flag does not touch
+    /// `--offline`.
+    #[test]
+    fn no_reporting_is_a_separate_opt_out() {
+        let cli = Cli::parse_from(["bastyn", "scan"]);
+        assert!(!scan_args(&cli).no_reporting);
+        assert!(!scan_args(&cli).offline);
+
+        let cli = Cli::parse_from(["bastyn", "scan", "--no-reporting"]);
+        assert!(scan_args(&cli).no_reporting);
+        assert!(!scan_args(&cli).offline);
+    }
+
+    /// `project-id` defaults to the current directory and takes `--explain`.
+    #[test]
+    fn project_id_arguments_parse() {
+        let cli = Cli::parse_from(["bastyn", "project-id"]);
+        let Command::ProjectId(ProjectIdArgs { path, explain }) = &cli.command else {
+            unreachable!("parsed `project-id`");
+        };
+        assert_eq!(path.as_os_str(), ".");
+        assert!(!explain);
+
+        let cli = Cli::parse_from(["bastyn", "project-id", "some/dir", "--explain"]);
+        let Command::ProjectId(ProjectIdArgs { path, explain }) = &cli.command else {
+            unreachable!("parsed `project-id`");
+        };
+        assert_eq!(path.as_os_str(), "some/dir");
+        assert!(explain);
     }
 }

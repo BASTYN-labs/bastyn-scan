@@ -25,8 +25,15 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+# Lets the integration tests point the summary uploader at a local listener and
+# shorten its timeouts. Off by default: release builds do not enable it, and
+# without it the binary can only send to the production address.
+test-endpoint = ["bastyn-core/test-endpoint"]
+
 [dev-dependencies]
 assert_cmd = { workspace = true }
+boon = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 

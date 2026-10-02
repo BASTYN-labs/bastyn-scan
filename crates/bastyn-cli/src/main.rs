@@ -20,11 +20,14 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     let result = match &cli.command {
-        Command::Scan(args) => commands::scan::run(args, &cli.global),
+        Command::Scan(args) => {
+            commands::scan::run(args, &cli.global).map(commands::scan::Outcome::exit_code)
+        }
+        Command::ProjectId(args) => commands::project_id::run(args).map(|()| exit::CLEAN),
     };
 
     match result {
-        Ok(outcome) => exit::code(outcome.exit_code()),
+        Ok(code) => exit::code(code),
         Err(error) => {
             report(&error);
             exit::code(exit::EXECUTION_ERROR)

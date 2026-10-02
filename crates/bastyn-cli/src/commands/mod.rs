@@ -1,3 +1,4 @@
 //! Subcommand implementations.
 
+pub(crate) mod project_id;
 pub(crate) mod scan;

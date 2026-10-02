@@ -2,9 +2,15 @@
 
 use std::cell::Cell;
 use std::io::{BufWriter, IsTerminal as _, Write};
+use std::time::SystemTime;
 
 use anyhow::Context as _;
 use bastyn_core::render::{CrosswalkDetail, Glyphs, ScanResult, StdoutOptions};
+use bastyn_core::reporting::session::{self, Reported, Request};
+use bastyn_core::reporting::state;
+use bastyn_core::reporting::upload::{
+    Endpoint, Policy, ThreadSleeper, Timeouts, UreqTransport, random_jitter,
+};
 use bastyn_core::{
     Finding, Framework, Observer, Phase, Report, ScanOptions, Severity, WalkOptions, render,
     scan_observed,
@@ -61,8 +67,10 @@ pub(crate) fn run(args: &ScanArgs, global: &GlobalArgs) -> anyhow::Result<Outcom
     let progress = Progress::start(global);
     let watched = Counts::watching(&progress);
 
-    let mut report = scan_observed(&args.path, &options, &watched)
-        .with_context(|| format!("could not scan {}", args.path.display()))?;
+    let started_at = SystemTime::now();
+    let scanned = scan_observed(&args.path, &options, &watched);
+    let finished_at = SystemTime::now();
+    let mut report = scanned.with_context(|| format!("could not scan {}", args.path.display()))?;
 
     // Grouping is applied to the finished report rather than threaded into the
     // scan: it regroups what was found and changes nothing about what was
@@ -137,7 +145,101 @@ pub(crate) fn run(args: &ScanArgs, global: &GlobalArgs) -> anyhow::Result<Outcom
     // `progress::summary_enabled`.
     progress::summary(&report, global);
 
+    // Last, so nothing it does can precede or alter the output above, and
+    // infallible by construction: it returns nothing the exit code could be
+    // derived from.
+    report_summary(args, &report, started_at, finished_at);
+
     Ok(outcome)
+}
+
+/// Send the anonymous scan summary, unless reporting is off.
+///
+/// Whatever happens is at most one line on stderr: the scan's output and exit
+/// code were settled before this runs, and nothing here returns an error.
+fn report_summary(
+    args: &ScanArgs,
+    report: &Report,
+    started_at: SystemTime,
+    finished_at: SystemTime,
+) {
+    let env = |name: &str| std::env::var_os(name);
+    let state_dir = state::state_dir(&env);
+    let request = Request {
+        report,
+        scan_root: &args.path,
+        env: &env,
+        state_dir: state_dir.as_deref(),
+        no_reporting: args.no_reporting,
+        offline: args.offline,
+        started_at,
+        finished_at,
+    };
+
+    let Some((endpoint, timeouts)) = destination() else {
+        // Only reachable with the `test-endpoint` feature.
+        warn("bastyn: skipped the anonymous scan summary: invalid test endpoint.");
+        return;
+    };
+    let transport = UreqTransport::new(&endpoint, timeouts);
+    let mut notice = |text: &str| warn(text);
+
+    match session::run(
+        &request,
+        &transport,
+        &ThreadSleeper,
+        &random_jitter,
+        &Policy::default(),
+        &mut notice,
+    ) {
+        Reported::Failed(reason) => warn(&format!(
+            "bastyn: could not send the anonymous scan summary: {reason}. The scan result is unchanged."
+        )),
+        Reported::NoProjectId(reason) => warn(&format!(
+            "bastyn: skipped the anonymous scan summary: no project ID ({reason})."
+        )),
+        Reported::Disabled(_) | Reported::Sent => {}
+    }
+}
+
+/// One line on stderr. A closed stderr leaves nowhere to complain to.
+fn warn(line: &str) {
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
+}
+
+/// Where the summary goes and how long to wait for it: always the production
+/// collector with the default limits, except in a build with the
+/// `test-endpoint` feature, where the environment can override both. `None`
+/// means the override was set to something unusable.
+#[cfg(not(feature = "test-endpoint"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the same signature as the `test-endpoint` variant, which can fail"
+)]
+fn destination() -> Option<(Endpoint, Timeouts)> {
+    Some((Endpoint::production(), Timeouts::default()))
+}
+
+/// See the non-feature variant. This one reads two variables that exist only
+/// in test builds.
+#[cfg(feature = "test-endpoint")]
+fn destination() -> Option<(Endpoint, Timeouts)> {
+    let endpoint = match std::env::var_os("BASTYN_REPORTING_ENDPOINT_FOR_TESTS") {
+        Some(value) => Endpoint::custom(value.to_str()?)?,
+        None => Endpoint::production(),
+    };
+    let mut timeouts = Timeouts::default();
+    if let Some(millis) = std::env::var("BASTYN_REPORTING_TIMEOUT_MS_FOR_TESTS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let limit = std::time::Duration::from_millis(millis);
+        timeouts = Timeouts {
+            connect: limit,
+            global: limit,
+        };
+    }
+    Some((endpoint, timeouts))
 }
 
 /// An [`Observer`] that forwards to `inner` and keeps the two counts the
