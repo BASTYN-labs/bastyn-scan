@@ -319,7 +319,7 @@ mod tests {
         let Reported::NoProjectId(reason) = &outcome else {
             unreachable!("expected NoProjectId, got {outcome:?}");
         };
-        assert!(!reason.is_empty());
+        assert_ne!(reason, "");
         assert!(!reason.contains('\n'));
         assert_eq!(transport.calls(), 0);
         assert_eq!(notices, 0, "no notice when nothing will be sent");

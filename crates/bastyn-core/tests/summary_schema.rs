@@ -227,7 +227,7 @@ fn real_offline_scans_of_the_fixtures_validate() {
             scanned.summary.files_scanned as u64
         );
         if name == "vulnerable_agent" {
-            assert!(!json["findings"].as_array().unwrap().is_empty());
+            assert_ne!(json["findings"].as_array().unwrap().len(), 0);
         }
     }
 }

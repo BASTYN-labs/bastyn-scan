@@ -735,7 +735,7 @@ mod tests {
         ];
         for dropped in all {
             let reason = dropped.reason();
-            assert!(!reason.is_empty());
+            assert_ne!(reason, "");
             assert!(!reason.contains('\n'), "{reason}");
             assert!(
                 !reason.contains("http://") && !reason.contains("https://"),
