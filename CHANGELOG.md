@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-02
+
+### Changed
+
+- The GitHub Marketplace listing name is now "Instant AI Agent Security & Assurance scan - BASTYN Community".
+
 ## [0.2.1] - 2026-10-02
 
 ### Changed
@@ -573,7 +579,8 @@ single point in time. This paragraph prints no number, because it drifts every t
 added. See [Measured coverage](README.md#measured-coverage) for the current count, always derived
 from the gate rather than typed in here.
 
-[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/BASTYN-labs/bastyn-scan/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.2.2
 [0.2.1]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.2.1
 [0.2.0]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.2.0
 [0.1.8]: https://github.com/BASTYN-labs/bastyn-scan/releases/tag/v0.1.8
