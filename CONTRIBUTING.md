@@ -126,7 +126,7 @@ The `action.yml` default is the one people forget. It decides which binary a cal
 ### Cutting a release
 
 1. Open a pull request against `main` that does the release bump and nothing else:
-   - Set `version` in `Cargo.toml` to the new number.
+   - Set `version` in `Cargo.toml` to the new number, in both `[workspace.package]` and the `bastyn-core` dependency entry.
    - Run `cargo build` and commit the updated `Cargo.lock`.
    - Set the `version` input's `default:` in `action.yml` to the tag, with the leading `v`.
    - In `CHANGELOG.md`, retitle `## [Unreleased]` as `## [X.Y.Z] - YYYY-MM-DD`, put a fresh empty `## [Unreleased]` above it, and update the link definitions at the bottom of the file.
@@ -138,6 +138,8 @@ The `action.yml` default is the one people forget. It decides which binary a cal
    git tag -a v0.1.2 -m "bastyn v0.1.2"
    git push origin v0.1.2
    ```
+
+4. When the workflow has finished, publish the release to the GitHub Marketplace. This is manual: the workflow cannot do it. Open the release on GitHub, choose Edit, tick "Publish this Action to the GitHub Marketplace" and save. The listing's name, description and "Use latest version" snippet come from the releases published this way, so a release that skips this step does not update the listing, however recently it was tagged. The `action.yml` `description` must be 125 characters or fewer, or the publish fails.
 
 Tag a commit that is already on `main`. A tag is not a promise that the code works, so `verify` runs the full test suite against the tagged commit before anything is published.
 
